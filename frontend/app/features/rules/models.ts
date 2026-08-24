@@ -50,7 +50,17 @@ export interface AccountDetail {
   /** 资料刷新失败时的说明。 */
   profile_error?: string;
   /** 当前账号运行状态。 */
-  runtime_state?: 'starting' | 'connecting' | 'online' | 'reconnecting' | 'auth_expired' | 'verification_required' | 'runtime_conflict' | 'error' | 'stopped' | 'disabled';
+  runtime_state?:
+    | "starting"
+    | "connecting"
+    | "online"
+    | "reconnecting"
+    | "auth_expired"
+    | "verification_required"
+    | "runtime_conflict"
+    | "error"
+    | "stopped"
+    | "disabled";
   /** 当前运行状态的用户可见说明。 */
   runtime_message?: string;
   /** 当前运行实例是否已连接。 */
@@ -68,21 +78,21 @@ export interface AccountDetail {
   max_bargain_rounds?: number;
   /** 账号自定义提示词。 */
   custom_prompts?: string;
-	// 账号级计划任务
-	/** 是否启用自动评价。 */
-	auto_rate_enabled?: boolean;
-	/** 自动评价使用的文案。 */
-	rate_content?: string;
-	/** 是否启用每日擦亮。 */
-	auto_polish_enabled?: boolean;
-	/** 每日擦亮执行时间。 */
-	polish_time?: string;
-	/** 最近一次自动评价扫描时间。 */
-	last_rate_scan_at?: number;
-	/** 最近一次擦亮日期。 */
-	last_polish_date?: string;
-	/** 最近一次擦亮时间。 */
-	last_polish_at?: number;
+  // 账号级计划任务
+  /** 是否启用自动评价。 */
+  auto_rate_enabled?: boolean;
+  /** 自动评价使用的文案。 */
+  rate_content?: string;
+  /** 是否启用每日擦亮。 */
+  auto_polish_enabled?: boolean;
+  /** 每日擦亮执行时间。 */
+  polish_time?: string;
+  /** 最近一次自动评价扫描时间。 */
+  last_rate_scan_at?: number;
+  /** 最近一次擦亮日期。 */
+  last_polish_date?: string;
+  /** 最近一次擦亮时间。 */
+  last_polish_at?: number;
 }
 
 /** 由当前 feature adapter 归一后的 Card UI 模型；不直接暴露 HTTP DTO。 */
@@ -92,7 +102,7 @@ export interface Card {
   /** 卡券组名称。 */
   name: string;
   /** 卡券组类型。 */
-  type: 'api' | 'text' | 'data' | 'image';
+  type: "api" | "text" | "data" | "image";
   /** 卡券组说明。 */
   description?: string;
   /** 卡券组是否启用。 */
@@ -106,7 +116,7 @@ export interface Card {
     /** API 卡券请求地址。 */
     url: string;
     /** API 卡券请求方法。 */
-    method: 'GET' | 'POST';
+    method: "GET" | "POST";
     /** API 请求超时时间。 */
     timeout_seconds: number;
     /** API 响应提取路径。 */
@@ -166,9 +176,11 @@ export interface Item {
 }
 
 /** 由当前 feature adapter 归一后的 AutomationTriggerType UI 模型；不直接暴露 HTTP DTO。 */
-export type AutomationTriggerType = 'order_created' | 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';
+export type AutomationTriggerType =
+  "order_created" | "order_paid" | "buyer_reviewed" | "review_missing_timeout";
 /** 由当前 feature adapter 归一后的 AutomationActionType UI 模型；不直接暴露 HTTP DTO。 */
-export type AutomationActionType = 'confirm_shipment' | 'send_card' | 'send_text' | 'adjust_price';
+export type AutomationActionType =
+  "confirm_shipment" | "send_card" | "send_text" | "adjust_price";
 
 // Rules
 /** 由当前 feature adapter 归一后的 ShippingRule UI 模型；不直接暴露 HTTP DTO。 */
@@ -240,7 +252,7 @@ export interface ShippingVariant {
   /** 变体使用的卡券组名称。 */
   card_name?: string;
   /** 卡券类型。 */
-  card_type?: Card['type'];
+  card_type?: Card["type"];
   /** 变体发放数量。 */
   delivery_count: number;
   /** 变体是否启用。 */
@@ -251,6 +263,35 @@ export interface ShippingVariant {
   delay_seconds?: number;
   /** 变体原始配置 JSON。 */
   config_json?: string;
+  /** 发货来源；local 表示本地卡密，external 表示外部货源。 */
+  source_type?: "local" | "external";
+  /** 外部货源实例主键。 */
+  instance_id?: number;
+  /** 用户输入的商品 ID 或包含 ID 的链接。 */
+  goods_ref?: string;
+  /** 校验后的货源商品 ID。 */
+  goods_id?: number;
+  /** 校验后的货源商品名称。 */
+  goods_name?: string;
+  /** 货源商品类型，1 为卡密，2 为直充。 */
+  goods_type?: number;
+  /** 最近一次校验返回的采购价。 */
+  goods_price?: string;
+  /** 管理员设定的采购保护价。 */
+  safe_price?: string;
+  /** 直充附加字段的 JSON 编辑文本。 */
+  attach_json?: string;
+  /** 货源商品校验返回的直充字段定义，用于生成订单字段映射。 */
+  attach_fields?: Array<{
+    /** 货源下单字段 key。 */ key: string;
+    /** 货源展示名称。 */ name: string;
+    /** 输入类型。 */ type: string;
+    /** 输入提示。 */ tip: string;
+    /** 货源校验规则。 */ vali: string;
+    /** 下拉或多选候选值。 */ options?: string[];
+  }>;
+  /** 当前外部商品配置是否已经远程校验。 */
+  product_verified?: boolean;
 }
 
 /** 由当前 feature adapter 归一后的 ReplyRule UI 模型；不直接暴露 HTTP DTO。 */
@@ -262,13 +303,13 @@ export interface ReplyRule {
   /** 回复正文。 */
   reply_content: string;
   /** 关键词匹配方式。 */
-  match_type: 'exact' | 'fuzzy';
+  match_type: "exact" | "fuzzy";
   /** 规则是否启用。 */
   enabled: boolean;
   /** 规则限定的商品标识。 */
   item_id?: string;
   /** 回复类型。 */
-  type?: 'text' | 'image';
+  type?: "text" | "image";
   /** 图片回复地址。 */
   image_url?: string;
 }
@@ -402,7 +443,7 @@ export interface KeywordTypedResponse extends KeywordItemResponse {
   /** 关键词规则主键。 */
   id: number;
   /** 回复类型。 */
-  type: 'text' | 'image';
+  type: "text" | "image";
   /** 图片回复地址。 */
   image_url: string;
 }
@@ -441,9 +482,14 @@ export interface AutomationIssuesEnvelope {
     /** 外部错误说明。 */
     error_message: string;
     /** 异常类别。 */
-    issue_kind: 'external_result_unknown' | 'invalid_snapshot' | 'rule_unavailable' | 'partial_failure' | 'execution_failed';
+    issue_kind:
+      | "external_result_unknown"
+      | "invalid_snapshot"
+      | "rule_unavailable"
+      | "partial_failure"
+      | "execution_failed";
     /** 允许的处理动作。 */
-    allowed_resolutions: Array<'continue' | 'retry' | 'cancel'>;
+    allowed_resolutions: Array<"continue" | "retry" | "cancel">;
     /** 当前动作游标。 */
     action_cursor: number;
     /** 已发送数量。 */

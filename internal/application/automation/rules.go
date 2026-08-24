@@ -412,6 +412,17 @@ func (s *RuleService) normalizeDraftActions(ctx context.Context, userID int64, d
 
 // validateSendCardAction 校验发卡动作的卡密选择和归属；具体卡券类型由执行器处理。
 func (s *RuleService) validateSendCardAction(ctx context.Context, userID int64, draftAction ActionDraft) error {
+	// sourceType 是发货动作配置的货源类型，旧规则默认使用本地卡密。
+	sourceType, instanceID, goodsID, configErr := externalFulfillmentConfig(draftAction.ConfigJSON)
+	if configErr != nil {
+		return configErr
+	}
+	if sourceType == "external" {
+		if instanceID <= 0 || goodsID <= 0 {
+			return errors.New("外部货源动作必须选择货源实例并填写商品 ID")
+		}
+		return nil
+	}
 	if draftAction.CardID <= 0 {
 		return errors.New("发送卡密动作必须选择卡密组")
 	}
@@ -427,6 +438,30 @@ func (s *RuleService) validateSendCardAction(ctx context.Context, userID int64, 
 		return errors.New("API 卡券配置无效，请重新保存后再选择")
 	}
 	return nil
+}
+
+// externalFulfillmentConfig 读取发卡动作中的外部货源标识；本地卡密配置返回 local。
+func externalFulfillmentConfig(raw string) (string, int64, int64, error) {
+	// config 只解析规则校验需要的最小字段。
+	var config struct {
+		SourceType string `json:"source_type"`
+		InstanceID int64  `json:"instance_id"`
+		GoodsID    int64  `json:"goods_id"`
+	}
+	if strings.TrimSpace(raw) == "" {
+		return "local", 0, 0, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil { // err 是动作配置 JSON 的解析错误。
+		return "", 0, 0, errors.New("动作配置必须是 JSON 对象")
+	}
+	config.SourceType = strings.TrimSpace(config.SourceType)
+	if config.SourceType == "" || config.SourceType == "local" {
+		return "local", config.InstanceID, config.GoodsID, nil
+	}
+	if config.SourceType != "external" {
+		return "", 0, 0, errors.New("发货来源只支持 local 或 external")
+	}
+	return config.SourceType, config.InstanceID, config.GoodsID, nil
 }
 
 // validateTriggerActionCombination 校验触发类型允许的动作组合和必需动作。

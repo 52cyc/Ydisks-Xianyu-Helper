@@ -151,8 +151,8 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 37 {
-		t.Fatalf("final migration version=%d, want 37", finalVersion)
+	if finalVersion != 39 {
+		t.Fatalf("final migration version=%d, want 39", finalVersion)
 	}
 }
 

@@ -159,11 +159,19 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger)
 	notifier := notify.New("", store, logger)
 	// automationSenders 为自动化图片卡密注入“临时下载、平台上传、WebSocket 发送”链路，不在本地保存图片。
 	automationSenders := NewAutomationImageSenderProvider(store, manager, func() mtop.Client { return mtop.NewClient() })
+	// miscDependencies 为自动化与 HTTP 共享同一套卡速售实例、订单和加密仓储。
+	miscDependencies, miscErr := NewMiscDependencies(store)
+	if miscErr != nil {
+		return nil, fmt.Errorf("构造外部货源依赖: %w", miscErr)
+	}
+	// externalFulfillment 是付款后自动发货使用的幂等外部货源适配器。
+	externalFulfillment := newAutomationExternalFulfillmentAdapter(miscDependencies.NewFulfillmentService(nil))
 	// autoCenter 依赖已构造但尚未启动的 manager 与 adapter，避免运行期形成部分可用状态。
 	autoCenter := automation.NewWithDependencies(store, automationSenders, logger, automation.CenterDependencies{
-		OrderDetailFetcher: runtimeAdapter,
-		Notifier:           notifier,
-		APICardFetcher:     newAPIDeliveryClient(store, logger),
+		OrderDetailFetcher:  runtimeAdapter,
+		Notifier:            notifier,
+		APICardFetcher:      newAPIDeliveryClient(store, logger),
+		ExternalFulfillment: externalFulfillment,
 	})
 	runtimeAdapter.chat = chatService
 	runtimeAdapter.automation = autoCenter

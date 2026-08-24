@@ -52,7 +52,9 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 		ar.action_cursor,ar.sent_count,ar.updated_at,ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0)
 		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
 		LEFT JOIN automation_rules r ON r.id=ar.rule_id
-		WHERE c.user_id=? AND ar.status='needs_review' AND r.deleted_at IS NULL ORDER BY ar.updated_at DESC,ar.id DESC`, userID)
+		WHERE c.user_id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.sent_count=0 AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
+		AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%')))
+		AND r.deleted_at IS NULL ORDER BY ar.updated_at DESC,ar.id DESC`, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -114,7 +116,9 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	err := a.DB.QueryRowContext(ctx, `SELECT ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0),ar.sent_count,ar.error_message
 		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
 		LEFT JOIN automation_rules r ON r.id=ar.rule_id
-		WHERE ar.id=? AND ar.status='needs_review' AND c.user_id=? AND r.deleted_at IS NULL`, runID, userID).
+		WHERE ar.id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.sent_count=0 AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
+		AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%')))
+		AND c.user_id=? AND r.deleted_at IS NULL`, runID, userID).
 		Scan(&rawEventJSON, &actionStarted, &ruleEnabled, &sentCount, &errorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -133,7 +137,7 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	case "continue":
 		set = "status='running',action_cursor=action_cursor+1,action_started=0,lease_expires_at=0,next_retry_at=0,error_message=''"
 	case "retry":
-		set = "status='running',action_started=0,lease_expires_at=0,next_retry_at=0,error_message=''"
+		set = "status='running',attempt_count=0,action_started=0,lease_expires_at=0,next_retry_at=0,error_message=''"
 	case "cancel":
 		set = "status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0"
 	default:
@@ -141,7 +145,9 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	}
 	// res、err 用于本次流程后续判断的res、err
 	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs SET `+set+`,updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND status='needs_review' AND cookie_id IN (SELECT id FROM cookies WHERE user_id=?)`, runID, userID)
+		WHERE id=? AND (status='needs_review' OR (status='failed' AND sent_count=0 AND action_started=0 AND error_message NOT LIKE '[no_retry]%'
+		AND (attempt_count>=3 OR error_message LIKE '%状态为 cancelled%' OR error_message LIKE '%状态为 refunded%')))
+		AND cookie_id IN (SELECT id FROM cookies WHERE user_id=?)`, runID, userID)
 	if err != nil {
 		return err
 	}

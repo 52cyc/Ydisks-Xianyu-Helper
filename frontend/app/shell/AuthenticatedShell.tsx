@@ -45,6 +45,8 @@ const AccountList = lazy(/* AccountList 页面按路由激活时加载。 */ () 
 const OrderList = lazy(/* OrderList 页面按路由激活时加载。 */ () => import('../features/orders/pages/OrderList'));
 // CardList 是按需加载的卡密页面，避免首屏载入卡密批量处理代码。
 const CardList = lazy(/* CardList 页面按路由激活时加载。 */ () => import('../features/cards/pages/CardList'));
+// Fulfillment 是按需加载的多实例卡速售货源管理页。
+const Fulfillment = lazy(/* Fulfillment 页面按路由激活时加载。 */ () => import('../features/fulfillment/pages/Fulfillment'));
 // ItemList 是按需加载的商品页面，避免首屏载入商品发布编辑器代码。
 const ItemList = lazy(/* ItemList 页面按路由激活时加载。 */ () => import('../features/items/pages/ItemList'));
 // Settings 是按需加载的系统设置页面，仅在管理员访问时加载。
@@ -102,6 +104,7 @@ export const AppContent: React.FC<AppContentProps> = ({
       case 'chat': return <Chat />;
       case 'orders': return <OrderList />;
       case 'cards': return <CardList />;
+      case 'fulfillment': return <Fulfillment />;
       case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} />;
       case 'rules': return <Rules
         initialDeliveryTarget={deliveryRuleTarget}

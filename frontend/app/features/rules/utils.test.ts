@@ -11,6 +11,7 @@ buildReviewConfig,
 cardActionsForTrigger,
 defaultRuleName,
 emptyVariant,
+fulfillmentGoodsID,
 isValidAdjustPrice,
 parseJSONObject,
 shouldReplaceGeneratedName,
@@ -107,12 +108,20 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
   });
 
   test('创建空规格并选择账号展示名称', /* 当前回调处理规则配置和展示状态。 */ () => {
-    expect(emptyVariant()).toEqual({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0 });
+    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0 }));
     // idOnly 是仅包含平台账号标识的最小账号对象。
     const idOnly = { id: 'account-1' } as AccountDetail;
     expect(accountLabel({ id: 'a', nickname: '昵称' } as AccountDetail)).toBe('昵称');
     expect(accountLabel({ id: 'a', remark: '备注' } as AccountDetail)).toBe('备注');
     expect(accountLabel(idOnly)).toBe('account-1');
     expect(accountLabel()).toBe('未知账号');
+  });
+
+  test('从商品 ID 和链接中提取货源商品标识', /* 当前回调验证货源商品输入兼容性。 */ () => {
+    expect(fulfillmentGoodsID('40863')).toBe(40863);
+    expect(fulfillmentGoodsID('４０８６３')).toBe(40863);
+    expect(fulfillmentGoodsID('https://vip.zhikefa.com/goods?id=40863')).toBe(40863);
+    expect(fulfillmentGoodsID('https://example.com/goods/40863/')).toBe(40863);
+    expect(fulfillmentGoodsID('goods')).toBe(0);
   });
 });

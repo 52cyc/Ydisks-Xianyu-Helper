@@ -35,6 +35,8 @@ type automationActionExecutor struct {
 	wakeCredentialBlocked func(context.Context, string)
 	// apiFetcher 为 API 卡发货提供外部请求能力；业务执行器不直接依赖 net/http。
 	apiFetcher func() APICardFetcher
+	// externalFulfillment 返回构造期固定的外部货源履约端口。
+	externalFulfillment func() ExternalFulfillment
 	// cardLocks 串行化同一卡密组的数据库存取和消费。
 	cardLocks sync.Map
 }
@@ -498,6 +500,14 @@ func (e *automationActionExecutor) sendCard(ctx context.Context, task Task, acti
 	if !actionMatchesOrderSpec(task, action) {
 		return 0, nil
 	}
+	// externalConfig 是发卡动作中可选的外部货源配置。
+	externalConfig, configErr := parseExternalActionConfig(action.ConfigJSON)
+	if configErr != nil {
+		return 0, fmt.Errorf("%w: %v", errActionNotPerformed, configErr)
+	}
+	if externalConfig.SourceType == "external" {
+		return e.sendExternalFulfillment(ctx, task, action, externalConfig)
+	}
 	if action.CardID <= 0 {
 		return 0, fmt.Errorf("发送卡密动作缺少卡密组ID")
 	}
@@ -758,19 +768,26 @@ func renderTemplate(tpl string, task Task) string {
 	out := tpl
 	// repl 保存模板占位符与订单字段的映射。
 	repl := map[string]string{
-		"{order_id}":     task.OrderID,
-		"{item_id}":      task.ItemID,
-		"{buyer_id}":     task.BuyerID,
-		"{chat_id}":      task.ChatID,
-		"{trigger_type}": task.TriggerType,
-		"{spec_name}":    task.SpecName,
-		"{spec_value}":   task.SpecValue,
-		"{quantity}":     task.Quantity,
-		"{amount}":       task.Amount,
+		"{order_id}":         task.OrderID,
+		"{item_id}":          task.ItemID,
+		"{buyer_id}":         task.BuyerID,
+		"{chat_id}":          task.ChatID,
+		"{trigger_type}":     task.TriggerType,
+		"{spec_name}":        task.SpecName,
+		"{spec_value}":       task.SpecValue,
+		"{quantity}":         task.Quantity,
+		"{amount}":           task.Amount,
+		"{receiver_name}":    task.ReceiverName,
+		"{receiver_phone}":   task.ReceiverPhone,
+		"{receiver_address}": task.ReceiverAddress,
+		"{receiver_city}":    task.ReceiverCity,
 	}
 	// key 和 value 分别表示当前占位符及其替换值。
 	for key, value := range repl {
 		out = strings.ReplaceAll(out, key, value)
+	}
+	for title, value := range task.OrderFields { // title、value 是闲鱼订单详情中的动态字段及买家填写值。
+		out = strings.ReplaceAll(out, "{order_field:"+title+"}", value)
 	}
 	return out
 }

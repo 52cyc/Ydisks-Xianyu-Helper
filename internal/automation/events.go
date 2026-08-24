@@ -44,6 +44,13 @@ type Task struct {
 	Quantity    string
 	Amount      string
 	OrderStatus string
+	// ReceiverName、ReceiverPhone、ReceiverAddress、ReceiverCity 是订单同步取得的买家收货字段，可供直充参数模板使用。
+	ReceiverName    string
+	ReceiverPhone   string
+	ReceiverAddress string
+	ReceiverCity    string
+	// OrderFields 保存闲鱼订单详情动态字段，供直充货源按字段名称取值。
+	OrderFields map[string]string
 	Text        string
 	UpdateKey   string
 	// ForceConfirmShipment 仅供明确的人工“完整发货”使用；自动事件仍遵循账号自动确认开关。
@@ -58,11 +65,17 @@ type Task struct {
 // 规格和数量来自闲鱼订单，不由自动化规则修改商品属性。
 // OrderDetail 用于本次流程后续判断的订单Detail
 type OrderDetail struct {
-	Quantity    string
-	SpecName    string
-	SpecValue   string
-	Amount      string
-	OrderStatus string
+	Quantity        string
+	SpecName        string
+	SpecValue       string
+	Amount          string
+	OrderStatus     string
+	ReceiverName    string
+	ReceiverPhone   string
+	ReceiverAddress string
+	ReceiverCity    string
+	// OrderFields 保存闲鱼订单详情中的动态标题和值，例如“充值账号”。
+	OrderFields map[string]string
 }
 
 // ExtractTaskFromWS 从一条解密后的 WS 消息中提取系统事件。

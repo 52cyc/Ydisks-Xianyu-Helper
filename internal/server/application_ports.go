@@ -12,6 +12,7 @@ import (
 	cardsapp "xianyu-go/internal/application/cards"
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
+	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	notificationsapp "xianyu-go/internal/application/notifications"
@@ -353,6 +354,23 @@ type AdminPort interface {
 	Stats(context.Context) (adminapp.Stats, error)
 }
 
+// FulfillmentPort 定义多实例卡速售配置、商品和订单 HTTP 用例。
+type FulfillmentPort interface {
+	ListInstances(context.Context, int64) ([]fulfillmentapp.Instance, error)
+	CreateInstance(context.Context, int64, fulfillmentapp.InstanceInput) (fulfillmentapp.Instance, error)
+	UpdateInstance(context.Context, int64, int64, fulfillmentapp.InstanceInput) (fulfillmentapp.Instance, error)
+	DeleteInstance(context.Context, int64, int64) error
+	ListProducts(context.Context, int64, int64) ([]fulfillmentapp.Product, error)
+	GetProduct(context.Context, int64, int64, int64) (fulfillmentapp.Product, error)
+	ListMappings(context.Context, int64) ([]fulfillmentapp.Mapping, error)
+	CreateMapping(context.Context, int64, fulfillmentapp.MappingInput) (fulfillmentapp.Mapping, error)
+	DeleteMapping(context.Context, int64, int64) error
+	Purchase(context.Context, int64, fulfillmentapp.PurchaseRequest) (fulfillmentapp.Order, error)
+	RefreshOrder(context.Context, int64, string) (fulfillmentapp.Order, error)
+	ListOrders(context.Context, int64, int) ([]fulfillmentapp.Order, error)
+	ApplyOrderCallback(context.Context, string, []byte) error
+}
+
 // ApplicationPorts 是构造期注入 HTTP transport 的不可变应用 Port 集合。
 // 它不包含 adapter、数据库、平台 client、账号 Manager 或 worker 生命周期拥有权。
 type ApplicationPorts struct {
@@ -420,6 +438,8 @@ type ApplicationPorts struct {
 	automationRules AutomationRulesPort
 	// cards 是卡券库存用例。
 	cards CardsPort
+	// fulfillment 是外部货源配置和幂等订单用例。
+	fulfillment FulfillmentPort
 	// apiRequestTester 执行临时 API 测试请求并返回非敏感诊断。
 	apiRequestTester APIRequestTesterPort
 	// publishAutomationRules 是发布后自动化规则用例。
@@ -469,6 +489,7 @@ type ApplicationPortsInput struct {
 	AutomationIssues            AutomationIssuesPort
 	AutomationRules             AutomationRulesPort
 	Cards                       CardsPort
+	Fulfillment                 FulfillmentPort
 	APIRequestTester            APIRequestTesterPort
 	PublishAutomationRules      PublishAutomationRulesPort
 	DefaultReplies              DefaultRepliesPort
@@ -492,7 +513,7 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		accountSummaries: input.AccountSummaries, accountTasks: input.AccountTasks, chat: input.Chat,
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
 		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
-		cards: input.Cards, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
+		cards: input.Cards, fulfillment: input.Fulfillment, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
 		keywords: input.Keywords, settings: input.Settings, admin: input.Admin,
 	}
 }
@@ -578,6 +599,11 @@ func (server *Server) itemSyncApplication() ItemSyncPort {
 // cardsApplication 返回卡券库存用例。
 func (server *Server) cardsApplication() CardsPort {
 	return server.applicationServiceSet().cards
+}
+
+// fulfillmentApplication 返回多实例卡速售履约用例。
+func (server *Server) fulfillmentApplication() FulfillmentPort {
+	return server.applicationServiceSet().fulfillment
 }
 
 // accountTaskApplication 返回账号自动化任务用例。

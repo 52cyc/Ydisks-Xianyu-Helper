@@ -110,6 +110,18 @@ describe('useRuleActions', /* 当前回调验证规则页面动作协调器的�
     hook.unmount();
   });
 
+  test('连续更新同一发货内容时保留货源站和商品输入', /* 当前回调验证外部货源表单不会被旧状态覆盖。 */ () => {
+    // hook 是规则动作 Hook 的真实 React 状态实例。
+    const hook = renderHook(() => useRuleActionsHarness());
+    act(/* 当前回调打开新建自动化规则弹窗。 */ () => hook.result.current.openNewAutomationRule());
+    act(/* 当前回调在一次渲染间隔内连续更新实例和商品输入。 */ () => {
+      hook.result.current.updateVariant(0, { source_type: 'external', instance_id: 3 });
+      hook.result.current.updateVariant(0, { goods_ref: '40863', goods_id: 0 });
+    });
+    expect(hook.result.current.editingAutomationRule?.variants?.[0]).toEqual(expect.objectContaining({ source_type: 'external', instance_id: 3, goods_ref: '40863' }));
+    hook.unmount();
+  });
+
   test('拍下改价规则校验目标价格并剔除空提醒动作', /* 当前回调验证拍下改价草稿与保存边界。 */ async () => {
     // hook 是规则动作 Hook 的真实 React 状态实例。
     const hook = renderHook(() => useRuleActionsHarness());

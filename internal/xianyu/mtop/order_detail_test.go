@@ -15,7 +15,7 @@ import (
 func TestFetchOrderDetailSuccessWithSpecAndStatus(t *testing.T) {
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"utArgs":{"orderStatus":"4"},"components":[{"render":"orderInfoVO","data":{"itemInfo":{"buyAmount":"3","specName":"颜色","specValue":"红色"},"priceInfo":{"amount":{"value":"88.00"}}}}]}}`)
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"utArgs":{"orderStatus":"4"},"components":[{"render":"orderInfoVO","data":{"itemInfo":{"buyAmount":"3","specName":"颜色","specValue":"红色"},"priceInfo":{"amount":{"value":"88.00"}},"orderInfoList":[{"title":"充值账号","value":"13800000000"},{"title":"收货地址","value":"张三 13900000000 杭州市"}]}}]}}`)
 	}))
 	defer server.Close()
 
@@ -27,7 +27,7 @@ func TestFetchOrderDetailSuccessWithSpecAndStatus(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	if res.Quantity != "3" || res.SpecName != "颜色" || res.SpecValue != "红色" ||
-		res.OrderStatus != "4" || res.Amount != "88.00" {
+		res.OrderStatus != "4" || res.Amount != "88.00" || res.OrderFields["充值账号"] != "13800000000" || res.ReceiverPhone != "13900000000" {
 		t.Fatalf("res=%+v", res)
 	}
 }

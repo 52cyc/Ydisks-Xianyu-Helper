@@ -137,6 +137,8 @@ type centerDependencies struct {
 	cookieSrc func(context.Context, string) (string, error)
 	// apiFetcher 提供普通 API 卡发货请求能力。
 	apiFetcher APICardFetcher
+	// externalFulfillment 提供外部货源采购和查单能力。
+	externalFulfillment ExternalFulfillment
 }
 
 // New 构造使用默认协议实现的自动化中心。
@@ -172,12 +174,13 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		store:   store,
 		senders: senders,
 		dependencies: centerDependencies{
-			mtop:              client,
-			accountTaskClient: accountTaskClient,
-			fetcher:           dependencies.OrderDetailFetcher,
-			notifier:          dependencies.Notifier,
-			cookieSrc:         dependencies.CookieSource,
-			apiFetcher:        dependencies.APICardFetcher,
+			mtop:                client,
+			accountTaskClient:   accountTaskClient,
+			fetcher:             dependencies.OrderDetailFetcher,
+			notifier:            dependencies.Notifier,
+			cookieSrc:           dependencies.CookieSource,
+			apiFetcher:          dependencies.APICardFetcher,
+			externalFulfillment: dependencies.ExternalFulfillment,
 		},
 		logger: logger.With("subsys", "automation"),
 	}
@@ -203,6 +206,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 			return center.store.Cookies.GetValue(ctx, cookieID)
 		},
 		apiFetcher:            func() APICardFetcher { return center.dependencies.apiFetcher },
+		externalFulfillment:   func() ExternalFulfillment { return center.dependencies.externalFulfillment },
 		wakeCredentialBlocked: center.wakeCredentialBlockedAutomation,
 	}
 	center.notifications = deliveryNotifier{
@@ -228,6 +232,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		accountAutomationAllowed: center.accountAutomationAllowed,
 		accountSenderReady:       center.accountSenderReady,
 		deferTask:                center.deferTask,
+		prepareAction:            center.prepareRechargeChatInput,
 		executeAction:            center.executeAction,
 		hasNotifier:              func() bool { return center.dependencies.notifier != nil },
 		notifyResult:             center.notifyResult,
@@ -449,6 +454,10 @@ func (c *Center) ManualFullDelivery(ctx context.Context, order *db.Order) (int, 
 		Quantity:             order.Quantity,
 		Amount:               order.Amount,
 		OrderStatus:          order.OrderStatus,
+		ReceiverName:         order.ReceiverName,
+		ReceiverPhone:        order.ReceiverPhone,
+		ReceiverAddress:      order.ReceiverAddr,
+		ReceiverCity:         order.ReceiverCity,
 		ForceConfirmShipment: true,
 		Raw:                  map[string]any{"manual": true},
 	}
@@ -668,50 +677,40 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 	if detail.OrderStatus != "" {
 		task.OrderStatus = detail.OrderStatus
 	}
+	if detail.ReceiverName != "" {
+		task.ReceiverName = detail.ReceiverName
+	}
+	if detail.ReceiverPhone != "" {
+		task.ReceiverPhone = detail.ReceiverPhone
+	}
+	if detail.ReceiverAddress != "" {
+		task.ReceiverAddress = detail.ReceiverAddress
+	}
+	if detail.ReceiverCity != "" {
+		task.ReceiverCity = detail.ReceiverCity
+	}
+	if len(detail.OrderFields) > 0 {
+		task.OrderFields = detail.OrderFields
+	}
 	// upsertErr 保存补齐订单详情后的事实写入结果，失败时不允许进入动作执行阶段。
 	if err := c.store.Orders.Upsert(ctx, task.OrderID, db.OrderUpsertOpts{
-		CookieID:    task.AccountID,
-		ItemID:      task.ItemID,
-		BuyerID:     task.BuyerID,
-		ChatID:      task.ChatID,
-		SpecName:    task.SpecName,
-		SpecValue:   task.SpecValue,
-		Quantity:    task.Quantity,
-		Amount:      task.Amount,
-		OrderStatus: task.OrderStatus,
+		CookieID:      task.AccountID,
+		ItemID:        task.ItemID,
+		BuyerID:       task.BuyerID,
+		ChatID:        task.ChatID,
+		SpecName:      task.SpecName,
+		SpecValue:     task.SpecValue,
+		Quantity:      task.Quantity,
+		Amount:        task.Amount,
+		OrderStatus:   task.OrderStatus,
+		ReceiverName:  task.ReceiverName,
+		ReceiverPhone: task.ReceiverPhone,
+		ReceiverAddr:  task.ReceiverAddress,
+		ReceiverCity:  task.ReceiverCity,
 	}); err != nil {
 		return task, fmt.Errorf("保存订单详情事实: %w", err)
 	}
 	return task, nil
-}
-
-// mergeOrderIntoTask 封装merge订单Into任务业务协调。
-func mergeOrderIntoTask(task Task, order *db.Order) Task {
-	if task.ItemID == "" {
-		task.ItemID = order.ItemID
-	}
-	if task.BuyerID == "" {
-		task.BuyerID = order.BuyerID
-	}
-	if task.ChatID == "" {
-		task.ChatID = order.ChatID
-	}
-	if task.SpecName == "" {
-		task.SpecName = order.SpecName
-	}
-	if task.SpecValue == "" {
-		task.SpecValue = order.SpecValue
-	}
-	if task.Quantity == "" {
-		task.Quantity = order.Quantity
-	}
-	if task.Amount == "" {
-		task.Amount = order.Amount
-	}
-	if task.OrderStatus == "" {
-		task.OrderStatus = order.OrderStatus
-	}
-	return task
 }
 
 // executeAction 将具体动作委托给发货动作执行器。

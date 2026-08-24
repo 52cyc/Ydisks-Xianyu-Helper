@@ -306,17 +306,28 @@ func (d *messageDispatcher) scheduleDebouncedReply(chat ChatMessage) {
 			return
 		}
 		defer finish()
+		// handler 是当前聊天持久化和业务状态机处理器。
+		handler := d.currentHandler()
+		if handler != nil {
+			if // err 用于本次流程后续判断的err
+			err := handler.HandleChatMessage(ctx, lastMessage); err != nil {
+				d.logger.Error("处理聊天消息失败", "err", err, "chat_id", chat.ChatID)
+			}
+			// workflow 优先消费直充确认等确定性业务消息，避免敏感账号进入 AI。
+			if workflow, supported := handler.(ChatWorkflowHandler); supported {
+				handled, workflowErr := workflow.HandleChatWorkflow(ctx, lastMessage) // handled、workflowErr 表示业务流程是否截止普通回复及其错误。
+				if workflowErr != nil {
+					d.logger.Error("处理聊天业务流程失败", "err", workflowErr, "chat_id", chat.ChatID)
+				}
+				if handled {
+					return
+				}
+			}
+		}
 		if d.reply != nil {
 			if // err 用于本次流程后续判断的err
 			err := d.reply.Handle(ctx, lastMessage); err != nil {
 				d.logger.Error("处理自动回复失败", "err", err, "chat_id", chat.ChatID)
-			}
-		}
-		if // handler 用于本次流程后续判断的handler
-		handler := d.currentHandler(); handler != nil {
-			if // err 用于本次流程后续判断的err
-			err := handler.HandleChatMessage(ctx, lastMessage); err != nil {
-				d.logger.Error("处理聊天消息失败", "err", err, "chat_id", chat.ChatID)
 			}
 		}
 	})

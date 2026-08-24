@@ -20,6 +20,12 @@ const (
 	encryptedValuePrefix = "enc:v1:"
 	cookieMetadataScope  = "cookie-metadata"
 	cardAPIConfigScope   = "card-api-config"
+	// fulfillmentAPIKeyScope 隔离外部货源实例 API 密钥的加密用途。
+	fulfillmentAPIKeyScope = "fulfillment-api-key"
+	// fulfillmentResultScope 隔离卡密和直充结果的加密用途。
+	fulfillmentResultScope = "fulfillment-result"
+	// rechargeChatInputScope 隔离买家在聊天中提供的直充账号。
+	rechargeChatInputScope = "recharge-chat-input"
 )
 
 // secretCodec 对数据库敏感字段做 AES-256-GCM 信封加密。未配置密钥时保持
@@ -32,6 +38,36 @@ func secretCodecFromEnvironment() *secretCodec {
 	// codec 用于本次流程后续判断的codec
 	codec, _ := newSecretCodec(strings.TrimSpace(os.Getenv("XIANYU_DATA_KEY")))
 	return codec
+}
+
+// EncryptFulfillmentAPIKey 为指定实例加密 API 密钥，owner 必须是稳定公开 ID。
+func (s *Store) EncryptFulfillmentAPIKey(owner, value string) (string, error) {
+	return s.Cookies.codec.encrypt(fulfillmentAPIKeyScope, owner, value)
+}
+
+// DecryptFulfillmentAPIKey 为一次受控外部请求解密实例 API 密钥。
+func (s *Store) DecryptFulfillmentAPIKey(owner, value string) (string, error) {
+	return s.Cookies.codec.decrypt(fulfillmentAPIKeyScope, owner, value)
+}
+
+// EncryptFulfillmentResult 加密卡密或直充结果，owner 必须是稳定外部订单号。
+func (s *Store) EncryptFulfillmentResult(owner, value string) (string, error) {
+	return s.Cookies.codec.encrypt(fulfillmentResultScope, owner, value)
+}
+
+// DecryptFulfillmentResult 解密已通过用户归属校验的卡密或直充结果。
+func (s *Store) DecryptFulfillmentResult(owner, value string) (string, error) {
+	return s.Cookies.codec.decrypt(fulfillmentResultScope, owner, value)
+}
+
+// EncryptRechargeChatInput 使用任务和字段组成的稳定 owner 加密买家直充账号。
+func (s *Store) EncryptRechargeChatInput(owner, value string) (string, error) {
+	return s.Cookies.codec.encrypt(rechargeChatInputScope, owner, value)
+}
+
+// DecryptRechargeChatInput 只在已确认的直充任务执行前解密买家账号。
+func (s *Store) DecryptRechargeChatInput(owner, value string) (string, error) {
+	return s.Cookies.codec.decrypt(rechargeChatInputScope, owner, value)
 }
 
 // newSecretCodec 封装newSecretCodec业务协调。

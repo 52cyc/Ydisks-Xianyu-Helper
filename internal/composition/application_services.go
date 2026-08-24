@@ -22,6 +22,7 @@ import (
 	cardsapp "xianyu-go/internal/application/cards"
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
+	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
@@ -114,6 +115,8 @@ type Services struct {
 	automationRules *automationapp.RuleService
 	// cards 是卡券 CRUD、输入校验和所有权编排应用服务。
 	cards *cardsapp.Service
+	// fulfillment 是卡速售 v2 多实例和订单履约应用服务。
+	fulfillment *fulfillmentapp.Service
 	// apiCardTester 是卡券 API 测试请求端口。
 	apiCardTester cardsapp.APIRequestTester
 	// publishAutomationRules 是批量发布成功后幂等准备自动化规则的应用服务。
@@ -313,6 +316,8 @@ type TransportPorts struct {
 	AutomationIssues            *automationapp.IssueService
 	AutomationRules             *automationapp.RuleService
 	Cards                       *cardsapp.Service
+	// Fulfillment 是外部货源履约用例。
+	Fulfillment *fulfillmentapp.Service
 	// APICardTester 是卡券 API 测试请求应用端口。
 	APICardTester          cardsapp.APIRequestTester
 	PublishAutomationRules *automationapp.PublishRuleService
@@ -339,7 +344,7 @@ func (services *Services) TransportPorts() TransportPorts {
 		AccountSummaries: services.accountSummaries, AccountTasks: services.accountTasks, Chat: services.chat,
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
 		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules,
-		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
+		Cards: services.cards, Fulfillment: services.fulfillment, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
 		Keywords: services.keywords, Settings: services.settings, Admin: services.admin,
 	}
 }
@@ -503,6 +508,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		analytics:              dependencies.TransportApplications.Analytics,
 		automationRules:        dependencies.TransportApplications.AutomationRules,
 		cards:                  dependencies.TransportApplications.Cards,
+		fulfillment:            dependencies.TransportApplications.Fulfillment,
 		apiCardTester:          dependencies.TransportApplications.APICardTester,
 		publishAutomationRules: dependencies.TransportApplications.PublishAutomationRules,
 		automationIssues:       dependencies.TransportApplications.AutomationIssues,

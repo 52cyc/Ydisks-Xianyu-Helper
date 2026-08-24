@@ -104,6 +104,30 @@ func TestRuleServiceRejectsAdjustPriceWhenAIEnabled(t *testing.T) {
 	}
 }
 
+// TestRuleServiceAcceptsExternalFulfillmentWithoutLocalCard 验证外部货源动作不依赖本地卡密组。
+func TestRuleServiceAcceptsExternalFulfillmentWithoutLocalCard(t *testing.T) {
+	// service 是只验证规则输入的应用服务。
+	service := NewRuleService(&ruleRepositoryFake{}, &ruleOwnershipFake{})
+	// draft 是包含外部实例和商品 ID 的付款自动发货规则。
+	draft := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Actions: []ActionDraft{{ActionType: ActionSendCard, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366}`}}}
+	// normalized、err 分别保存规范化规则和校验结果。
+	normalized, err := service.Normalize(context.Background(), 7, draft)
+	if err != nil || len(normalized.Actions) != 1 || normalized.Actions[0].CardID != 0 {
+		t.Fatalf("外部货源规则应允许不选择本地卡密: normalized=%+v err=%v", normalized, err)
+	}
+}
+
+// TestRuleServiceRejectsIncompleteExternalFulfillment 验证外部货源动作必须同时包含实例和商品 ID。
+func TestRuleServiceRejectsIncompleteExternalFulfillment(t *testing.T) {
+	// service 是当前输入错误场景使用的规则应用服务。
+	service := NewRuleService(&ruleRepositoryFake{}, &ruleOwnershipFake{})
+	// draft 是缺少货源商品 ID 的无效规则。
+	draft := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Actions: []ActionDraft{{ActionType: ActionSendCard, ConfigJSON: `{"source_type":"external","instance_id":3}`}}}
+	if _, err := service.Normalize(context.Background(), 7, draft); err == nil || !strings.Contains(err.Error(), "商品") { // err 是不完整外部货源规则的校验错误。
+		t.Fatalf("缺少外部商品 ID 应被拒绝: %v", err)
+	}
+}
+
 // TestRuleServiceNormalizePropagatesOwnershipErrors 验证归属端口的基础设施错误不会伪装成用户输入错误。
 func TestRuleServiceNormalizePropagatesOwnershipErrors(t *testing.T) {
 	// backendErr 是归属查询模拟的底层数据库故障。

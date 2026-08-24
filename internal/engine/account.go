@@ -85,6 +85,11 @@ type Handler interface {
 	OnAccountAlert(ctx context.Context, cookieID, level, title, body string)
 }
 
+// ChatWorkflowHandler 是可选的聊天业务状态机端口；命中时返回 handled 以阻止消息继续进入关键词或 AI 回复。
+type ChatWorkflowHandler interface {
+	HandleChatWorkflow(context.Context, ChatMessage) (handled bool, err error)
+}
+
 // MessageReadHandler 是可选的聊天已读回执端口，旧 Handler 实现不必承担该能力。
 type MessageReadHandler interface {
 	// HandleMessageRead 接收已解析且不包含凭证的平台已读事件。

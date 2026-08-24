@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Bell, Box, ChevronLeft, ChevronRight, CreditCard, LayoutDashboard,
+  Bell, Box, Boxes, ChevronLeft, ChevronRight, CreditCard, LayoutDashboard,
   GitCommitHorizontal, LogOut, MessageCircleMore, Settings, ShoppingBag, Users, Zap,
 } from 'lucide-react';
 import { YdisksBrandIcon } from './YdisksLogo';
@@ -35,6 +35,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: 'accounts', icon: Users, label: '账号管理' },
     { id: 'chat', icon: MessageCircleMore, label: '在线聊天' },
     { id: 'cards', icon: CreditCard, label: '卡密库存' },
+    { id: 'fulfillment', icon: Boxes, label: '货源管理' },
     { id: 'items', icon: Box, label: '商品列表' },
     { id: 'orders', icon: ShoppingBag, label: '订单管理' },
     { id: 'rules', icon: Zap, label: '自动化规则' },

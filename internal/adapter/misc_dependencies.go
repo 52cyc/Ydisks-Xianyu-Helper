@@ -3,10 +3,15 @@ package adapter
 import (
 	"errors"
 	"log/slog"
+	"net/http"
+	"time"
 
 	cardsapp "xianyu-go/internal/application/cards"
+	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/kasushou"
+	"xianyu-go/internal/netguard"
 )
 
 // MiscDependencies 封装通知、订单分析和卡券应用服务所需的数据库适配器构造能力。
@@ -14,6 +19,17 @@ import (
 type MiscDependencies struct {
 	// store 保存通知、分析和卡券适配器共享的数据库入口，不向 HTTP 层或应用服务暴露。
 	store *db.Store
+}
+
+// NewFulfillmentService 创建多实例卡速售履约用例，httpClient 可由组合根注入出站策略。
+func (d *MiscDependencies) NewFulfillmentService(httpClient *http.Client) *fulfillmentapp.Service {
+	if d == nil {
+		return nil
+	}
+	if httpClient == nil {
+		httpClient = netguard.ConfiguredHTTPClient(15 * time.Second)
+	}
+	return fulfillmentapp.NewService(NewFulfillmentRepository(d.store), kasushou.NewClient(httpClient))
 }
 
 // NewMiscDependencies 构造通知、分析和卡券领域专用依赖，并拒绝缺少数据库入口的半初始化实例。

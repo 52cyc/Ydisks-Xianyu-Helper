@@ -141,3 +141,8 @@ func insertReturningID(ctx context.Context, exec DBTX, dialect Dialect, query st
 	}
 	return res.LastInsertId()
 }
+
+// InsertReturningID 为持久化适配器暴露跨方言的自增主键插入能力。
+func InsertReturningID(ctx context.Context, exec DBTX, dialect Dialect, query string, args ...any) (int64, error) {
+	return insertReturningID(ctx, exec, dialect, query, args...)
+}

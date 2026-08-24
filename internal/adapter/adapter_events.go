@@ -444,6 +444,8 @@ func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID
 	return &automation.OrderDetail{
 		Quantity: detail.Quantity, SpecName: detail.SpecName, SpecValue: detail.SpecValue,
 		Amount: detail.Amount, OrderStatus: detail.OrderStatus,
+		ReceiverName: detail.ReceiverName, ReceiverPhone: detail.ReceiverPhone,
+		ReceiverAddress: detail.ReceiverAddr, ReceiverCity: detail.ReceiverCity, OrderFields: detail.OrderFields,
 	}, nil
 }
 

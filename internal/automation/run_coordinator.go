@@ -29,6 +29,8 @@ type automationRunCoordinator struct {
 	accountSenderReady func(string) bool
 	// deferTask 持久化等待延迟后继续执行的任务。
 	deferTask func(context.Context, Task, int64) error
+	// prepareAction 在动作检查点前补齐需要买家确认的输入，waiting 表示应持久化等待。
+	prepareAction func(context.Context, Task, int64, db.AutomationAction) (prepared Task, waiting bool, err error)
 	// executeAction 执行一个已经通过账号门禁的具体外部动作。
 	executeAction func(context.Context, Task, db.AutomationAction) (int, error)
 	// hasNotifier 判断当前是否注入了结果通知器。
@@ -239,6 +241,30 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 				}
 				// deferErr 保存延迟任务写入失败的原因。
 				if deferErr := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil {
+					return sent, false, deferErr
+				}
+				return sent, true, nil
+			}
+		}
+		if r.prepareAction != nil {
+			// preparedTask、waiting、prepareErr 是当前动作的聊天输入准备结果。
+			preparedTask, waiting, prepareErr := r.prepareAction(ctx, task, run.ID, action)
+			if prepareErr != nil {
+				return sent, false, prepareErr
+			}
+			task = preparedTask
+			if waiting {
+				if task.Raw == nil {
+					task.Raw = map[string]any{}
+				}
+				task.Raw["automation_run_id"] = run.ID
+				task.Raw["automation_rule_id"] = ruleID
+				// dueAt 仅作为服务端最长保底期，买家确认时会立即把任务唤醒。
+				dueAt := time.Now().UTC().Add(365 * 24 * time.Hour)
+				if leaseErr /* leaseErr 是等待买家期间的运行续租错误。 */ := r.store.Automation.RenewRunLease(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(5*time.Minute).Unix()); leaseErr != nil {
+					return sent, false, leaseErr
+				}
+				if deferErr /* deferErr 是等待聊天确认任务的持久化错误。 */ := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil {
 					return sent, false, deferErr
 				}
 				return sent, true, nil

@@ -79,6 +79,140 @@ type apiCardFetcherStub struct {
 	requests []APICardRequest
 }
 
+// externalFulfillmentStub 记录自动化中心提交给外部货源的幂等采购请求。
+type externalFulfillmentStub struct {
+	// requests 保存历次采购请求。
+	requests []ExternalFulfillmentRequest
+	// result 是每次采购返回的统一履约结果。
+	result ExternalFulfillmentResult
+}
+
+// Fulfill 记录请求并返回预设卡密结果。
+func (s *externalFulfillmentStub) Fulfill(_ context.Context, request ExternalFulfillmentRequest) (ExternalFulfillmentResult, error) {
+	s.requests = append(s.requests, request)
+	return s.result, nil
+}
+
+// TestSendExternalFulfillmentUsesStableOrderNumber 验证外部采购按闲鱼订单和动作 ID 生成稳定单号并发送卡密。
+func TestSendExternalFulfillmentUsesStableOrderNumber(t *testing.T) {
+	// store、cleanup 保存测试数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是数据库和动作执行器共用的测试上下文。
+	ctx := context.Background()
+	// admin 是测试闲鱼账号的所有者。
+	admin, err := store.Users.GetByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Cookies.CreateOwned(ctx, "external-account", "cookie", admin.ID); err != nil { // err 是测试账号归属写入错误。
+		t.Fatal(err)
+	}
+	// fulfillment 是返回两条卡密的外部履约替身。
+	fulfillment := &externalFulfillmentStub{result: ExternalFulfillmentResult{State: "succeeded", Cards: []string{"CODE-1", "CODE-2"}}}
+	// sender 保存发送给闲鱼买家的外部卡密。
+	sender := &testSender{}
+	// executor 是注入货源适配器与在线发送器的动作执行器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}, externalFulfillment: func() ExternalFulfillment { return fulfillment }}
+	// task 是带购买数量的闲鱼付款订单。
+	task := Task{AccountID: "external-account", OrderID: "XY-ORDER-9", ChatID: "chat", BuyerID: "buyer", Quantity: "2", TriggerType: TriggerOrderPaid}
+	// action 是每件采购一份的外部商品发货动作。
+	action := db.AutomationAction{ID: 17, ActionType: ActionSendCard, DeliveryCount: 1, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"safe_price":"9.90"}`}
+	// sent、sendErr 保存执行结果。
+	sent, sendErr := executor.sendCard(ctx, task, action)
+	if sendErr != nil || sent != 2 || len(sender.texts) != 2 || len(fulfillment.requests) != 1 {
+		t.Fatalf("外部卡密履约失败: sent=%d texts=%v requests=%+v err=%v", sent, sender.texts, fulfillment.requests, sendErr)
+	}
+	// request 是本次提交给供应商的采购参数。
+	request := fulfillment.requests[0]
+	if request.ExternalOrderNo != "xy-XY-ORDER-9-a17" || request.GoodsID != 4366 || request.Quantity != 2 || request.SafePrice != "9.90" {
+		t.Fatalf("外部采购参数错误: %+v", request)
+	}
+}
+
+// TestSendExternalFulfillmentRendersOrderAttach 验证直充字段使用当前闲鱼订单动态字段且缺失时不会采购。
+func TestSendExternalFulfillmentRendersOrderAttach(t *testing.T) {
+	// store、cleanup 保存测试数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是本次直充测试使用的上下文。
+	ctx := context.Background()
+	// admin、err 是测试账号所有者与查询错误。
+	admin, err := store.Users.GetByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err /* err 是创建测试闲鱼账号的错误。 */ := store.Cookies.CreateOwned(ctx, "recharge-account", "cookie", admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	// fulfillment 记录实际提交给货源站的动态直充参数。
+	fulfillment := &externalFulfillmentStub{result: ExternalFulfillmentResult{State: "succeeded", RechargeInfo: "充值成功"}}
+	// executor 是注入测试货源和消息发送器的动作执行器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: &testSender{}}, externalFulfillment: func() ExternalFulfillment { return fulfillment }}
+	// action 把智客字段 1 映射到闲鱼订单的“充值账号”。
+	action := db.AutomationAction{ID: 18, ActionType: ActionSendCard, DeliveryCount: 1, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4994,"attach":{"1":"{order_field:充值账号}"}}`}
+	// task 是已从闲鱼订单详情取得“充值账号”的付款订单。
+	task := Task{AccountID: "recharge-account", OrderID: "XY-RECHARGE-1", ChatID: "chat", BuyerID: "buyer", Quantity: "1", OrderFields: map[string]string{"充值账号": "13800000000"}, TriggerType: TriggerOrderPaid}
+	if _, sendErr /* sendErr 是动态字段采购和发送错误。 */ := executor.sendCard(ctx, task, action); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	if len(fulfillment.requests) != 1 || fulfillment.requests[0].Attach["1"] != "13800000000" {
+		t.Fatalf("直充参数未绑定闲鱼订单字段: %+v", fulfillment.requests)
+	}
+	// missingTask 缺少联系电话，必须在调用供应商前失败。
+	missingTask := task
+	missingTask.OrderID = "XY-RECHARGE-2"
+	missingTask.OrderFields = nil
+	if _, sendErr /* sendErr 是缺少动态字段时的预期错误。 */ := executor.sendCard(ctx, missingTask, action); sendErr == nil || len(fulfillment.requests) != 1 {
+		t.Fatalf("缺少闲鱼联系电话时不应采购: requests=%+v err=%v", fulfillment.requests, sendErr)
+	}
+}
+
+// TestRechargeChatWorkflowRequiresConfirmation 验证直充账号只在买家明确确认后注入采购任务。
+func TestRechargeChatWorkflowRequiresConfirmation(t *testing.T) {
+	// store、cleanup 保存带最新迁移的测试数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// sender 记录索取、确认和开始充值的固定消息。
+	sender := &testSender{}
+	// center 只注入聊天状态机所需的数据库和在线发送器。
+	center := &Center{store: store, actions: automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}}}
+	// task 是已付款但还没有直充账号的闲鱼订单。
+	task := Task{AccountID: "recharge-chat-account", OrderID: "XY-CHAT-1", ChatID: "chat-1", BuyerID: "buyer-1@goofish", TriggerType: TriggerOrderPaid}
+	// action 把货源字段 1 配置为聊天收集。
+	action := db.AutomationAction{ID: 28, ActionType: ActionSendCard, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4994,"attach":{"1":"{chat_input}"}}`}
+	prepared, waiting, err := center.prepareRechargeChatInput(context.Background(), task, 91, action) // prepared、waiting、err 是首次收集前的任务、等待标记和错误。
+	if err != nil || !waiting || len(sender.texts) != 1 || sender.texts[0] != rechargeChatPrompt {
+		t.Fatalf("首次索取状态错误: waiting=%v texts=%v err=%v", waiting, sender.texts, err)
+	}
+	if handled, inputErr /* handled、inputErr 表示账号文本是否被消费及其处理错误。 */ := center.HandleRechargeChat(context.Background(), RechargeChatMessage{AccountID: task.AccountID, ChatID: task.ChatID, BuyerID: "buyer-1", Text: "13800000000"}); inputErr != nil || !handled {
+		t.Fatalf("账号输入未被直充状态机消费: handled=%v err=%v", handled, inputErr)
+	}
+	if len(sender.texts) != 2 || sender.texts[1] != "请确认充值账号：13800000000\n回复“确认”开始充值，回复“重填”重新输入。" {
+		t.Fatalf("原值确认文案错误: %v", sender.texts)
+	}
+	if handled, remindErr /* handled、remindErr 表示待确认阶段的其他文本是否被截止及其错误。 */ := center.HandleRechargeChat(context.Background(), RechargeChatMessage{AccountID: task.AccountID, ChatID: task.ChatID, BuyerID: "buyer-1", Text: "看看"}); remindErr != nil || !handled {
+		t.Fatalf("待确认提醒失败: handled=%v err=%v", handled, remindErr)
+	}
+	if len(sender.texts) != 3 || sender.texts[2] != sender.texts[1] {
+		t.Fatalf("重复确认仍应回显原账号: %v", sender.texts)
+	}
+	if _, waiting, err = center.prepareRechargeChatInput(context.Background(), prepared, 91, action); err != nil || !waiting {
+		t.Fatalf("未确认前不应放行采购: waiting=%v err=%v", waiting, err)
+	}
+	if handled, confirmErr /* handled、confirmErr 表示确认文本是否被消费及其处理错误。 */ := center.HandleRechargeChat(context.Background(), RechargeChatMessage{AccountID: task.AccountID, ChatID: task.ChatID, BuyerID: "buyer-1@goofish", Text: "确认"}); confirmErr != nil || !handled {
+		t.Fatalf("确认消息处理失败: handled=%v err=%v", handled, confirmErr)
+	}
+	prepared, waiting, err = center.prepareRechargeChatInput(context.Background(), prepared, 91, action)
+	if err != nil || waiting || prepared.OrderFields[rechargeChatField("1")] != "13800000000" {
+		t.Fatalf("确认后未注入原始账号: waiting=%v fields=%v err=%v", waiting, prepared.OrderFields, err)
+	}
+	rendered, renderErr := renderExternalAttach(map[string]string{"1": rechargeChatToken}, prepared) // rendered、renderErr 是最终货源字段和渲染错误。
+	if renderErr != nil || rendered["1"] != "13800000000" {
+		t.Fatalf("货源 attach 参数错误: attach=%v err=%v", rendered, renderErr)
+	}
+}
+
 // Fetch 返回按单位序号生成的测试卡密，不执行真实网络请求。
 func (s *apiCardFetcherStub) Fetch(_ context.Context, request APICardRequest) (APICardResult, error) {
 	s.requests = append(s.requests, request)

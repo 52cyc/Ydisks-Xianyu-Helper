@@ -6846,6 +6846,133 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthDegradedResponse'
+  "/api/v1/fulfillment/instances":
+    get:
+      operationId: listFulfillmentInstances
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 货源实例列表, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentInstanceListResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 未登录, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    post:
+      operationId: createFulfillmentInstance
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentInstanceInput'}}}}
+      responses:
+        '201': {description: 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentInstance'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 未登录, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '409': {description: 名称冲突, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/instances/{instance_id}":
+    parameters:
+      - {name: instance_id, in: path, required: true, schema: {type: integer}}
+    put:
+      operationId: updateFulfillmentInstance
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentInstanceInput'}}}}
+      responses:
+        '200': {description: 已更新, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentInstance'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 实例不存在, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    delete:
+      operationId: deleteFulfillmentInstance
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 已删除, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 实例不存在, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '409': {description: 实例正在使用, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/instances/{instance_id}/products":
+    get:
+      operationId: listFulfillmentProducts
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: instance_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: 远程商品列表, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentProductListResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/instances/{instance_id}/products/{goods_id}":
+    get:
+      operationId: getFulfillmentProduct
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: instance_id, in: path, required: true, schema: {type: integer}}
+        - {name: goods_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: 远程商品详情, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentProduct'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/mappings":
+    get:
+      operationId: listFulfillmentMappings
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: 商品映射列表, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentMappingListResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    post:
+      operationId: createFulfillmentMapping
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentMappingInput'}}}}
+      responses:
+        '201': {description: 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentMapping'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '409': {description: 映射冲突, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/mappings/{mapping_id}":
+    delete:
+      operationId: deleteFulfillmentMapping
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: mapping_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: 已删除, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 映射不存在, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/orders":
+    get:
+      operationId: listFulfillmentOrders
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
+      responses:
+        '200': {description: 履约订单列表, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentOrderListResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    post:
+      operationId: purchaseFulfillmentOrder
+      security: [{cookieAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentPurchaseRequest'}}}}
+      responses:
+        '200': {description: 幂等采购单, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentOrder'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/orders/{external_order_no}/refresh":
+    post:
+      operationId: refreshFulfillmentOrder
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: external_order_no, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: 已刷新, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentOrder'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 订单不存在, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/integrations/kasushou-v2/{instance_public_id}/order-callback":
+    post:
+      operationId: receiveKasushouV2OrderCallback
+      security: []
+      parameters:
+        - {name: instance_public_id, in: path, required: true, schema: {type: string}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses:
+        '200': {description: 回调已接受, content: {text/plain: {schema: {type: string, enum: [ok]}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
 components:
   securitySchemes:
     cookieAuth:
@@ -6853,6 +6980,136 @@ components:
       in: cookie
       name: session
   schemas:
+    FulfillmentCapabilities:
+      type: object
+      required: [order_list, order_callback, cancel_callback, cancel_request_mode, card_show_type]
+      properties:
+        order_list: {type: boolean}
+        order_callback: {type: boolean}
+        cancel_callback: {type: boolean}
+        cancel_request_mode: {type: string, enum: [callback_url, card_list, ordersn_only]}
+        card_show_type: {type: boolean}
+    FulfillmentInstanceInput:
+      type: object
+      required: [name, base_url, merchant_user_id, enabled]
+      properties:
+        name: {type: string}
+        provider: {type: string, enum: [kasushou_v2], default: kasushou_v2}
+        base_url: {type: string, format: uri}
+        merchant_user_id: {type: string}
+        api_key: {type: string, format: password, description: 更新时留空表示保留原密钥}
+        capabilities: {$ref: '#/components/schemas/FulfillmentCapabilities'}
+        enabled: {type: boolean}
+    FulfillmentInstance:
+      allOf:
+        - {$ref: '#/components/schemas/FulfillmentInstanceInput'}
+        - type: object
+          required: [id, public_id, has_api_key, created_at, updated_at]
+          properties:
+            id: {type: integer}
+            public_id: {type: string}
+            has_api_key: {type: boolean}
+            api_key: {readOnly: true, type: string, maxLength: 0}
+            created_at: {type: string}
+            updated_at: {type: string}
+    FulfillmentInstanceListResponse:
+      type: object
+      required: [data]
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentInstance'}}}
+    FulfillmentAttachField:
+      type: object
+      required: [type, name, key, vali, tip]
+      properties:
+        type: {type: string}
+        name: {type: string}
+        key: {type: string}
+        vali: {type: string}
+        tip: {type: string}
+        options: {type: array, items: {type: string}}
+    FulfillmentProduct:
+      type: object
+      required: [id, goods_name, goods_type, status, stock_num, can_buy]
+      properties:
+        id: {type: integer}
+        goods_name: {type: string}
+        goods_img: {type: string}
+        goods_type: {type: integer, enum: [1, 2]}
+        face_value: {type: string}
+        goods_price: {type: string}
+        status: {type: integer}
+        stock_num: {type: integer}
+        can_buy: {type: boolean}
+        attach: {type: array, items: {$ref: '#/components/schemas/FulfillmentAttachField'}}
+    FulfillmentProductListResponse:
+      type: object
+      required: [data]
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentProduct'}}}
+    FulfillmentMappingInput:
+      type: object
+      required: [account_id, item_id, instance_id, remote_goods_id, goods_type, enabled]
+      properties:
+        account_id: {type: string}
+        item_id: {type: string}
+        spec_name: {type: string}
+        spec_value: {type: string}
+        instance_id: {type: integer}
+        remote_goods_id: {type: integer}
+        goods_type: {type: integer, enum: [1, 2]}
+        safe_price: {type: string}
+        quantity_mode: {type: string, enum: [order_quantity, fixed]}
+        fixed_quantity: {type: integer, minimum: 1}
+        attach_mapping: {type: object, additionalProperties: {type: string}}
+        enabled: {type: boolean}
+    FulfillmentMapping:
+      allOf:
+        - {$ref: '#/components/schemas/FulfillmentMappingInput'}
+        - type: object
+          required: [id, created_at, updated_at]
+          properties:
+            id: {type: integer}
+            created_at: {type: string}
+            updated_at: {type: string}
+    FulfillmentMappingListResponse:
+      type: object
+      required: [data]
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentMapping'}}}
+    FulfillmentPurchaseRequest:
+      type: object
+      required: [instance_id, external_order_no, remote_goods_id, quantity]
+      properties:
+        instance_id: {type: integer}
+        external_order_no: {type: string}
+        xianyu_order_id: {type: string}
+        remote_goods_id: {type: integer}
+        quantity: {type: integer, minimum: 1}
+        safe_price: {type: string}
+        callback_url: {type: string, format: uri}
+        mark: {type: string}
+        attach: {type: object, additionalProperties: {type: string}}
+    FulfillmentOrder:
+      type: object
+      required: [id, instance_id, external_order_no, remote_order_no, xianyu_order_id, remote_goods_id, quantity, status, state, total_price, created_at, updated_at]
+      properties:
+        id: {type: integer}
+        instance_id: {type: integer}
+        external_order_no: {type: string}
+        remote_order_no: {type: string}
+        xianyu_order_id: {type: string}
+        remote_goods_id: {type: integer}
+        quantity: {type: integer}
+        status: {type: integer, enum: [-1, 0, 1, 2, 3, 4, 5]}
+        state: {type: string, enum: [created, unpaid, waiting, processing, succeeded, cancelled, refunded, unknown]}
+        total_price: {type: string}
+        card_list: {type: array, items: {type: string}}
+        recharge_info: {type: string}
+        recharge_hints: {type: string}
+        error_message: {type: string}
+        created_at: {type: string}
+        updated_at: {type: string}
+    FulfillmentOrderListResponse:
+      type: object
+      required: [data]
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentOrder'}}}
     ApiResponse:
       type: object
       required: [success]

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,13 +15,22 @@ import (
 	"xianyu-go/internal/xianyu/protocol"
 )
 
+// orderPhonePattern 提取闲鱼收货信息或直充字段中的大陆手机号。
+var orderPhonePattern = regexp.MustCompile(`1[3-9][0-9]{9}`)
+
 // OrderDetailResult 是订单详情接口中自动发货需要的字段。
 type OrderDetailResult struct {
-	Quantity       string
-	SpecName       string
-	SpecValue      string
-	OrderStatus    string
-	Amount         string
+	Quantity      string
+	SpecName      string
+	SpecValue     string
+	OrderStatus   string
+	Amount        string
+	ReceiverName  string
+	ReceiverPhone string
+	ReceiverAddr  string
+	ReceiverCity  string
+	// OrderFields 保存订单详情展示的标题和值，包括闲鱼直充商品的动态字段。
+	OrderFields    map[string]string
 	UpdatedCookies string
 }
 
@@ -128,7 +138,7 @@ func (c *ClientImpl) fetchOrderDetailOnce(ctx context.Context, cookiesStr, order
 		return nil, decoded.Ret, updated, nil
 	}
 	// result 用于本次流程后续判断的结果
-	result := &OrderDetailResult{Quantity: "1"}
+	result := &OrderDetailResult{Quantity: "1", OrderFields: map[string]string{}}
 	if // utArgs、ok 用于本次流程后续判断的utArgs、ok
 	utArgs, ok := decoded.Data["utArgs"].(map[string]any); ok {
 		result.OrderStatus = mtopString(utArgs["orderStatus"])
@@ -158,6 +168,24 @@ func (c *ClientImpl) fetchOrderDetailOnce(ctx context.Context, cookiesStr, order
 			if // amount、ok 用于本次流程后续判断的amount、ok
 			amount, ok := priceInfo["amount"].(map[string]any); ok {
 				result.Amount = mtopString(amount["value"])
+			}
+		}
+		// orderInfoList 包含收货地址以及直充商品由买家填写的动态订单字段。
+		if orderInfoList, ok := componentData["orderInfoList"].([]any); ok {
+			for _, rawInfo := range orderInfoList { // rawInfo 是当前订单展示字段。
+				info, _ := rawInfo.(map[string]any)
+				// title 是闲鱼订单展示字段名称。
+				title := strings.TrimSpace(mtopString(info["title"]))
+				// value 是买家在当前订单字段填写的实际值。
+				value := strings.TrimSpace(mtopString(info["value"]))
+				if title == "" || value == "" {
+					continue
+				}
+				result.OrderFields[title] = value
+				if title == "收货地址" {
+					result.ReceiverAddr = value
+					result.ReceiverPhone = orderPhonePattern.FindString(value)
+				}
 			}
 		}
 	}

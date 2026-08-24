@@ -41,6 +41,17 @@ type systemCapturingHandler struct {
 	tasks []automation.Task
 }
 
+// workflowCapturingHandler 模拟命中直充收集流程的可选聊天处理器。
+type workflowCapturingHandler struct {
+	recordingHandler
+	handled bool
+}
+
+// HandleChatWorkflow 返回预设命中结果，用于验证回复链短路。
+func (h *workflowCapturingHandler) HandleChatWorkflow(context.Context, ChatMessage) (bool, error) {
+	return h.handled, nil
+}
+
 // HandleSystemEvent 处理系统Event。
 func (s *systemCapturingHandler) HandleSystemEvent(_ context.Context, task automation.Task) error {
 	s.mu.Lock()
@@ -90,6 +101,30 @@ func TestHandleMessage_PlainChatRoutesToDebounce(t *testing.T) {
 	}
 	if h.chats[0].Text != "你好老板" {
 		t.Errorf("Text=%q want 你好老板", h.chats[0].Text)
+	}
+}
+
+// TestHandleMessage_ChatWorkflowSkipsAI 验证直充账号等业务消息先持久化并截止 AI 回复。
+func TestHandleMessage_ChatWorkflowSkipsAI(t *testing.T) {
+	// acc、store、cleanup 是本次防护顺序测试的账号和数据库。
+	acc, _, store, cleanup := newAccountForTest(t)
+	defer cleanup()
+	defer acc.Stop()
+	// handler 模拟直充状态机已消费当前消息。
+	handler := &workflowCapturingHandler{handled: true}
+	acc.handler = handler
+	// ai 如果被调用会返回明确文本，便于发现敏感消息泄入回复链。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "AI 不应看到这条消息"}}
+	acc.messageDispatcher.reply = NewReplyService("cid", store, &recordingSender{}, nil, ai, nil)
+	acc.handleMessage(plainChatMessage(t, "13800000000", "buyer1", "chat-recharge"))
+	time.Sleep(MessageDebounceDelay + 200*time.Millisecond)
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if len(handler.chats) != 1 {
+		t.Fatalf("业务消息应先进入持久化回调，got %d", len(handler.chats))
+	}
+	if ai.called != 0 {
+		t.Fatalf("命中直充聊天流程后不应调用 AI，called=%d", ai.called)
 	}
 }
 
