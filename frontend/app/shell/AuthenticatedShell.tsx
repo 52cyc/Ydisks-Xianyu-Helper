@@ -55,6 +55,8 @@ const Settings = lazy(/* Settings 页面按路由激活时加载。 */ () => imp
 const Rules = lazy(/* Rules 页面按路由激活时加载。 */ () => import('../features/rules/pages/Rules'));
 // Notifications 是按需加载的通知页面，避免首屏载入通知配置代码。
 const Notifications = lazy(/* Notifications 页面按路由激活时加载。 */ () => import('../features/notifications/pages/Notifications'));
+// DataBackup 是仅管理员可访问的数据备份与恢复页面。
+const DataBackup = lazy(/* DataBackup 页面按路由激活时加载。 */ () => import('../features/data-backup/pages/DataBackup'));
 // Chat 是按需加载的聊天页面，避免未访问时载入聊天历史和 WebSocket 视图。
 const Chat = lazy(/* Chat 页面按路由激活时加载。 */ () => import('../features/chat/pages/Chat'));
 
@@ -111,6 +113,7 @@ export const AppContent: React.FC<AppContentProps> = ({
         onDeliveryTargetHandled={onDeliveryTargetHandled}
       />;
       case 'notifications': return <Notifications isAdmin={isAdmin} />;
+      case 'data-backup': return isAdmin ? <DataBackup /> : <Dashboard />;
       case 'settings': return isAdmin ? <Settings /> : <Dashboard />;
       default: return <Dashboard />;
     }

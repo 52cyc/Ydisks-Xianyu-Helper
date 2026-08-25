@@ -161,3 +161,23 @@ func TestReplaceTerminalOrderCreatesStableRevision(t *testing.T) {
 		t.Fatalf("替代采购错误: order=%+v calls=%d err=%v", replacement, gateway.buyCalls, err)
 	}
 }
+
+// TestValidateInstanceInputAcceptsSupportedProviders 验证卡速售和卡易信均可创建，未知协议仍被拒绝。
+func TestValidateInstanceInputAcceptsSupportedProviders(t *testing.T) {
+	// baseInput 是两个受支持协议共用的完整实例输入。
+	baseInput := InstanceInput{Name: "测试货源", BaseURL: "https://supplier.example", MerchantUserID: "merchant", APIKey: "secret"}
+	for _, provider := range []string{ProviderKasushouV2, ProviderKayixinV3} { // provider 是当前待验证的受支持协议。
+		// input 是写入当前协议后的独立测试输入。
+		input := baseInput
+		input.Provider = provider
+		if validateErr := validateInstanceInput(input, false); validateErr != nil { // validateErr 是受支持协议不应产生的校验错误。
+			t.Fatalf("provider=%s err=%v", provider, validateErr)
+		}
+	}
+	// unknownInput 是应被拒绝的未知协议输入。
+	unknownInput := baseInput
+	unknownInput.Provider = "unknown"
+	if validateErr := validateInstanceInput(unknownInput, false); validateErr == nil { // validateErr 是未知协议的预期校验错误。
+		t.Fatal("未知货源协议不应通过校验")
+	}
+}

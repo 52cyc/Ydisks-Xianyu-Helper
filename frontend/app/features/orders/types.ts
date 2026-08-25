@@ -49,6 +49,12 @@ export interface OrderQueryState {
   setPage: Dispatch<SetStateAction<number>>;
   // totalPages 是服务端返回的总页数。
   totalPages: number;
+  // total 是当前筛选条件下的订单总数。
+  total: number;
+  // pageSize 是用户选择的每页订单数。
+  pageSize: number;
+  // setPageSize 更新每页数并由页面将页码归一。
+  setPageSize: Dispatch<SetStateAction<number>>;
   // loading 表示订单列表或刷新请求是否正在执行。
   loading: boolean;
   // loadOrders 刷新当前筛选条件下的订单列表。

@@ -13,6 +13,7 @@ import (
 
 	"xianyu-go/internal/account"
 	"xianyu-go/internal/adapter"
+	databackupapp "xianyu-go/internal/application/databackup"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
 	orderapp "xianyu-go/internal/application/orders"
 	"xianyu-go/internal/auth"
@@ -354,6 +355,19 @@ func (adapter testSessionRecoveryAdapter) Recover(ctx context.Context, accountID
 	return adapter.handler != nil && adapter.handler(ctx, accountID, err)
 }
 
+// testDataBackupPort 为通用 HTTP 测试提供完整但不触碰文件系统的备份应用端口。
+type testDataBackupPort struct{}
+
+// Export 返回明确不支持错误；备份专用测试会替换为真实或可控端口。
+func (testDataBackupPort) Export(context.Context, int64) (databackupapp.Artifact, error) {
+	return databackupapp.Artifact{}, databackupapp.ErrUnsupported
+}
+
+// Import 返回明确不支持错误；通用路由测试不应暂存恢复文件。
+func (testDataBackupPort) Import(context.Context, int64, io.Reader, string) (databackupapp.RestoreResult, error) {
+	return databackupapp.RestoreResult{}, databackupapp.ErrUnsupported
+}
+
 // testServerDependencies 将组合层服务快照转换为 Server 测试构造所需的依赖。
 func testServerDependencies(authentication *auth.Service, databaseHealth DatabaseHealthPort, services *composition.Services, sessionRecovery adapter.SessionRecoveryHandler) Dependencies {
 	// ports 是测试组合根投影的完整 transport Port 集合。
@@ -371,7 +385,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		UncertainNotifications: ports.UncertainNotifications, NotificationChannels: ports.NotificationChannels, Analytics: ports.Analytics,
 		AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, Cards: ports.Cards, Fulfillment: ports.Fulfillment,
 		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, Keywords: ports.Keywords,
-		Settings: ports.Settings, Admin: ports.Admin,
+		Settings: ports.Settings, Admin: ports.Admin, DataBackup: testDataBackupPort{},
 	})}
 }
 

@@ -652,6 +652,8 @@ type validOrderResponse struct {
 	ItemID string `json:"item_id"`
 	// BuyerID 是买家平台标识。
 	BuyerID string `json:"buyer_id"`
+	// BuyerName 是买家昵称；统计查询未关联会话时返回空字符串。
+	BuyerName string `json:"buyer_name"`
 	// ItemTitle 是商品标题。
 	ItemTitle string `json:"item_title"`
 	// ItemImage 是商品图片地址。

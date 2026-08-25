@@ -16,6 +16,8 @@ type OrderRow struct {
 	ItemDetail string
 	// BuyerID 是买家标识。
 	BuyerID string
+	// BuyerName 是从已有聊天会话补全的买家昵称，缺失时为空。
+	BuyerName string
 	// SpecName 是规格名称。
 	SpecName string
 	// SpecValue 是规格值。

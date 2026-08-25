@@ -224,8 +224,11 @@ func (repository *FulfillmentRepository) ApplyRemoteOrder(ctx context.Context, u
 	if err != nil {
 		return fulfillmentapp.Order{}, err
 	}
-	// state 是卡速售数字状态对应的本地稳定状态。
-	state := orderState(remote.Status)
+	// state 优先使用协议适配器给出的统一状态，并兼容旧卡速售数字状态。
+	state := strings.TrimSpace(remote.State)
+	if state == "" {
+		state = orderState(remote.Status)
+	}
 	// result 是带归属限制的订单更新结果。
 	result, err := repository.store.DB.ExecContext(ctx, `UPDATE fulfillment_orders SET remote_order_no=?,status=?,state=?,total_price=?,result_secret=?,error_message='',updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND instance_id=? AND external_order_no=?`, remote.RemoteOrderNo, remote.Status, state, remote.TotalPrice, encryptedResult, userID, instanceID, externalOrderNo)
 	if err != nil {

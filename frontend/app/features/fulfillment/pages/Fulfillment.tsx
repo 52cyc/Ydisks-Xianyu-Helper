@@ -22,6 +22,13 @@ import {
   type FulfillmentInstanceInput,
   type FulfillmentOrder,
 } from "../api";
+import {
+  merchantCredentialLabel,
+  providerCapabilities,
+  providerLabel,
+  secretCredentialLabel,
+  type FulfillmentProvider,
+} from "../provider";
 
 /** emptyInstance 是新货源实例表单的默认值。 */
 const emptyInstance: FulfillmentInstanceInput = {
@@ -61,7 +68,7 @@ const stateClass = (state: string): string =>
       ? "bg-red-50 text-red-700"
       : "bg-amber-50 text-amber-700";
 
-/** Fulfillment 渲染通用卡速售货源实例和履约订单页面。 */
+/** Fulfillment 渲染多协议货源实例和履约订单页面。 */
 const Fulfillment: React.FC = () => {
   // instances 是当前用户配置的货源站列表。
   const [instances, setInstances] = useState<FulfillmentInstance[]>([]);
@@ -211,7 +218,7 @@ const Fulfillment: React.FC = () => {
             货源管理
           </h2>
           <p className="mt-2 text-slate-500">
-            一次对接卡速售 v2 协议，可添加智客或其他兼容站。
+            支持卡速售 v2 兼容站和卡易信 API 3.0，规则仍按商品 ID 精确采购。
           </p>
         </div>
         <button
@@ -246,7 +253,7 @@ const Fulfillment: React.FC = () => {
                 新货源实例
               </h3>
               <p className="text-sm text-slate-500">
-                API Key 保存后只显示“已配置”，不会再返回明文。
+                密钥保存后只显示“已配置”，不会再返回明文。
               </p>
             </div>
             <button
@@ -262,6 +269,33 @@ const Fulfillment: React.FC = () => {
             </button>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
+            <label className="space-y-1.5 text-sm font-bold text-slate-700">
+              货源协议 *
+              <select
+                required
+                value={instanceForm.provider}
+                onChange={
+                  /* providerChangeHandler 切换协议并设置对应的回调能力默认值。 */ (
+                    event,
+                  ) => {
+                    // provider 是用户选择的协议标识。
+                    const provider = event.target.value as FulfillmentProvider;
+                    setInstanceForm({
+                      ...instanceForm,
+                      provider,
+                      capabilities: providerCapabilities(
+                        provider,
+                        instanceForm.capabilities,
+                      ),
+                    });
+                  }
+                }
+                className="ios-input w-full rounded-xl"
+              >
+                <option value="kasushou_v2">卡速售 v2（智客等兼容站）</option>
+                <option value="kayixin_v3">卡易信 API 3.0</option>
+              </select>
+            </label>
             <label className="space-y-1.5 text-sm font-bold text-slate-700">
               实例名称 *
               <input
@@ -296,12 +330,14 @@ const Fulfillment: React.FC = () => {
               />
             </label>
             <label className="space-y-1.5 text-sm font-bold text-slate-700">
-              UserId *
+              {merchantCredentialLabel(instanceForm.provider)} *
               <input
                 required
                 value={instanceForm.merchant_user_id}
                 onChange={
-                  /* merchantUserChangeHandler 更新货源 UserId。 */ (event) =>
+                  /* merchantUserChangeHandler 更新当前协议的商户身份。 */ (
+                    event,
+                  ) =>
                     setInstanceForm({
                       ...instanceForm,
                       merchant_user_id: event.target.value,
@@ -311,14 +347,14 @@ const Fulfillment: React.FC = () => {
               />
             </label>
             <label className="space-y-1.5 text-sm font-bold text-slate-700">
-              API Key *
+              {secretCredentialLabel(instanceForm.provider)} *
               <input
                 required
                 type="password"
                 autoComplete="new-password"
                 value={instanceForm.api_key ?? ""}
                 onChange={
-                  /* apiKeyChangeHandler 更新待加密 API Key。 */ (event) =>
+                  /* apiKeyChangeHandler 更新待加密的协议密钥。 */ (event) =>
                     setInstanceForm({
                       ...instanceForm,
                       api_key: event.target.value,
@@ -348,7 +384,7 @@ const Fulfillment: React.FC = () => {
         <div className="grid gap-4 p-5 lg:grid-cols-2">
           {instances.length === 0 && (
             <div className="col-span-full rounded-xl border border-dashed border-slate-200 p-8 text-center text-slate-500">
-              还没有货源实例，先添加一个卡速售兼容站。
+              还没有货源实例，先选择协议并添加一个货源站。
             </div>
           )}
           {instances.map(
@@ -368,6 +404,9 @@ const Fulfillment: React.FC = () => {
                       >
                         {instance.enabled ? "已启用" : "已停用"}
                       </span>
+                      <span className="rounded-full bg-sky-50 px-2 py-1 text-xs font-bold text-sky-700">
+                        {providerLabel(instance.provider)}
+                      </span>
                     </div>
                     <p className="mt-2 truncate text-sm text-slate-500">
                       {instance.base_url}
@@ -375,8 +414,8 @@ const Fulfillment: React.FC = () => {
                     <div className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-500">
                       <KeyRound className="h-4 w-4" />{" "}
                       {instance.has_api_key
-                        ? "API Key 已加密配置"
-                        : "未配置 API Key"}
+                        ? `${secretCredentialLabel(instance.provider)} 已加密配置`
+                        : `未配置 ${secretCredentialLabel(instance.provider)}`}
                     </div>
                   </div>
                   <button
@@ -393,7 +432,8 @@ const Fulfillment: React.FC = () => {
                   </button>
                 </div>
                 <div className="mt-4 rounded-xl bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500">
-                  UserId: {instance.merchant_user_id}
+                  {merchantCredentialLabel(instance.provider)}:{" "}
+                  {instance.merchant_user_id}
                 </div>
               </article>
             ),
@@ -563,7 +603,9 @@ const Fulfillment: React.FC = () => {
                         {stateLabel(order.state)}
                       </span>
                     </td>
-                    <td className={`max-w-xs px-5 py-4 ${order.error_message ? "text-red-600" : "text-slate-600"}`}>
+                    <td
+                      className={`max-w-xs px-5 py-4 ${order.error_message ? "text-red-600" : "text-slate-600"}`}
+                    >
                       {order.error_message ||
                         (order.card_list?.length
                           ? `${order.card_list.length} 条卡密`
@@ -571,29 +613,35 @@ const Fulfillment: React.FC = () => {
                     </td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
-                      {(order.error_message || order.state === "cancelled" || order.state === "refunded") && (
+                        {(order.error_message ||
+                          order.state === "cancelled" ||
+                          order.state === "refunded") && (
+                          <button
+                            type="button"
+                            onClick={
+                              /* retryAutomationHandler 前往保留完整规则参数的安全重试入口。 */ () => {
+                                window.location.href = "/app/rules";
+                              }
+                            }
+                            className="min-h-11 rounded-xl bg-amber-50 px-3 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                          >
+                            处理重试
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={/* retryAutomationHandler 前往保留完整规则参数的安全重试入口。 */ () => { window.location.href = "/app/rules"; }}
-                          className="min-h-11 rounded-xl bg-amber-50 px-3 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                          disabled={busy === `order-${order.external_order_no}`}
+                          onClick={
+                            /* refreshOrderHandler 查询当前订单远程状态。 */ () =>
+                              void refreshOrder(order.external_order_no)
+                          }
+                          className="min-h-11 rounded-xl px-3 text-xs font-bold text-sky-700 hover:bg-sky-50"
                         >
-                          处理重试
+                          <RefreshCw
+                            className={`mr-1 inline h-4 w-4 ${busy === `order-${order.external_order_no}` ? "animate-spin" : ""}`}
+                          />{" "}
+                          查询状态
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        disabled={busy === `order-${order.external_order_no}`}
-                        onClick={
-                          /* refreshOrderHandler 查询当前订单远程状态。 */ () =>
-                            void refreshOrder(order.external_order_no)
-                        }
-                        className="min-h-11 rounded-xl px-3 text-xs font-bold text-sky-700 hover:bg-sky-50"
-                      >
-                        <RefreshCw
-                          className={`mr-1 inline h-4 w-4 ${busy === `order-${order.external_order_no}` ? "animate-spin" : ""}`}
-                        />{" "}
-                        查询状态
-                      </button>
                       </div>
                     </td>
                   </tr>

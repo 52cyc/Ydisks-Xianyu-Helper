@@ -9,6 +9,7 @@ OrderDTOResponse,
 OrderRefreshJobCancelResponse,OrderRefreshJobStatusResponse,
 OrderRefreshResponse,
 OrderSingleRefreshResponse,
+OrderBuyerNote,
 PaginatedResponse
 } from './models';
 import { contractClient, contractMultipartBody, runContractRequest } from '../../../shared/api-contract/client';
@@ -164,6 +165,21 @@ export const getOrderDetail = async (orderId: string): Promise<{ /** success 表
     data
   };
 };
+
+/** getOrderBuyerNote 读取当前订单账号下指定买家的共享运营备注。 */
+export const getOrderBuyerNote = async (accountId: string, buyerId: string, options?: RequestControlOptions): Promise<OrderBuyerNote> =>
+  runContractRequest(/* signal 在备注弹窗关闭或切换订单时取消旧请求。 */ signal => contractClient.GET('/api/v1/chat/buyer-notes/{buyer_id}', {
+    params: { path: { buyer_id: buyerId }, query: { account_id: accountId } },
+    signal,
+  }), options);
+
+/** saveOrderBuyerNote 保存或清空按账号和买家隔离的运营备注。 */
+export const saveOrderBuyerNote = async (accountId: string, buyerId: string, content: string, options?: RequestControlOptions): Promise<OrderBuyerNote> =>
+  runContractRequest(/* signal 允许关闭备注弹窗时中止尚未完成的保存请求。 */ signal => contractClient.PUT('/api/v1/chat/buyer-notes/{buyer_id}', {
+    params: { path: { buyer_id: buyerId } },
+    body: { account_id: accountId, content },
+    signal,
+  }), options);
 
 // updateOrder 更新订单。
 export const updateOrder = async (orderId: string, data: Partial<Order>): Promise<OperationResponse> => {

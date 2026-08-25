@@ -21,6 +21,8 @@ func (s *Server) mountVersionedSettingsCardNotificationRoutes(r chi.Router) {
 		r.Put("/api/v1/settings/system/{key}", s.setSetting)
 		r.Post("/api/v1/settings/ai-models", s.listAIModels)
 		r.Get("/api/v1/admin/notifications/outbox/uncertain", s.listAdminUncertainNotifications)
+		r.Get("/api/v1/admin/data-backup", s.downloadDataBackup)
+		r.Post("/api/v1/admin/data-restore", s.importDataBackup)
 	})
 
 	// 普通登录用户可访问账号 AI 设置、用户设置、卡券和通知资源。

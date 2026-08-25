@@ -19,6 +19,9 @@ type externalActionConfig struct {
 	Attach     map[string]string `json:"attach"`
 }
 
+// errExternalFulfillmentPending 表示货源站已经受理订单但尚未产出结果；协调器会把它交给独立长轮询策略，而不是普通三次失败重试。
+var errExternalFulfillmentPending = errors.New("外部货源订单等待处理")
+
 // parseExternalActionConfig 解析外部货源配置，旧规则统一视为本地卡密。
 func parseExternalActionConfig(raw string) (externalActionConfig, error) {
 	// config 是动作配置的结构化结果。
@@ -67,6 +70,9 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	result, fulfillErr := e.externalFulfillment().Fulfill(ctx, ExternalFulfillmentRequest{UserID: userID, InstanceID: config.InstanceID, ExternalOrderNo: externalOrderNo, XianyuOrderID: task.OrderID, GoodsID: config.GoodsID, Quantity: count, SafePrice: config.SafePrice, Attach: attach})
 	if fulfillErr != nil {
 		return 0, fmt.Errorf("%w: 外部货源履约失败: %v", errActionNotPerformed, fulfillErr)
+	}
+	if result.State == "unpaid" || result.State == "waiting" || result.State == "processing" {
+		return 0, fmt.Errorf("%w: %w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, errExternalFulfillmentPending, result.State)
 	}
 	if result.State != "succeeded" {
 		return 0, fmt.Errorf("%w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, result.State)

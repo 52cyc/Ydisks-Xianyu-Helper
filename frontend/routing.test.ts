@@ -87,10 +87,12 @@ describe('frontend navigation routing', () => {
 
     expect(app).toContain('const { isLoggedIn, isAdmin, signOut } = useSession();');
     expect(sessionProvider).toContain('setIsAdmin(response.is_admin === true)');
-    expect(app).toContain("activeRoute === 'settings'");
+    expect(app).toContain("activeRoute === 'settings' || activeRoute === 'data-backup'");
     expect(shell).toContain('isAdmin ? <Settings /> : <Dashboard />');
     expect(sidebar).toContain('isAdmin = false');
-    expect(sidebar).toContain("...(isAdmin ? [{ id: 'settings'");
+    expect(sidebar).toContain("...(isAdmin ? [");
+    expect(sidebar).toContain("{ id: 'data-backup', icon: DatabaseBackup, label: '数据备份' }");
+    expect(sidebar).toContain("{ id: 'settings', icon: Settings, label: '系统与AI' }");
     expect(settingsHook).toContain('setLoadError');
   } /* 测试回调断言已登录应用的路由、访问控制或延迟加载契约。 */);
 

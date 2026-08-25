@@ -127,7 +127,9 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			return fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 		}
 		status, errMsg = "failed", actionErr.Error()
-		if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
+		if errors.Is(actionErr, errExternalFulfillmentPending) {
+			errMsg = db.ExternalWaitErrorPrefix + errMsg
+		} else if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
 			errMsg = db.SafeRetryErrorPrefix + errMsg
 		}
 		return actionErr

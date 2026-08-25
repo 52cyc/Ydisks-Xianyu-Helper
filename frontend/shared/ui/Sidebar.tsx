@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Bell, Box, Boxes, ChevronLeft, ChevronRight, CreditCard, LayoutDashboard,
+  Bell, Box, Boxes, ChevronLeft, ChevronRight, CreditCard, DatabaseBackup, LayoutDashboard,
   GitCommitHorizontal, LogOut, MessageCircleMore, Settings, ShoppingBag, Users, Zap,
 } from 'lucide-react';
 import { YdisksBrandIcon } from './YdisksLogo';
@@ -40,7 +40,10 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: 'orders', icon: ShoppingBag, label: '订单管理' },
     { id: 'rules', icon: Zap, label: '自动化规则' },
     { id: 'notifications', icon: Bell, label: '通知设置' },
-    ...(isAdmin ? [{ id: 'settings', icon: Settings, label: '系统与AI' }] : []),
+    ...(isAdmin ? [
+      { id: 'data-backup', icon: DatabaseBackup, label: '数据备份' },
+      { id: 'settings', icon: Settings, label: '系统与AI' },
+    ] : []),
   ];
   // displayVersion 显示版本号。
   const displayVersion = /^\d+\.\d+\.\d+$/.test(buildInfo.version)

@@ -30,6 +30,10 @@ export const useOrderQuery = (options: OrderQueryOptions = { pageSize: 20 }): Or
   const [page, setPage] = useState(1);
   // totalPages 保存服务端返回的总页数。
   const [totalPages, setTotalPages] = useState(1);
+  // total 保存当前账号、状态和搜索条件下的订单总数。
+  const [total, setTotal] = useState(0);
+  // pageSize 保存用户选择的每页行数，初始值由 Hook 选项提供。
+  const [pageSize, setPageSize] = useState(options.pageSize);
   // loading 表示当前订单查询是否正在执行。
   const [loading, setLoading] = useState(false);
   // orderGeneration 隔离筛选变化和手动刷新的旧订单响应。
@@ -52,10 +56,11 @@ export const useOrderQuery = (options: OrderQueryOptions = { pageSize: 20 }): Or
     setLoading(true);
     try {
       // result 是当前筛选条件下的分页订单结果。
-      const result = await getOrders(accountFilter || undefined, filter, page, options.pageSize, debouncedSearch, { signal: controller.signal });
+      const result = await getOrders(accountFilter || undefined, filter, page, pageSize, debouncedSearch, { signal: controller.signal });
       if (!isCurrentOrderRequest(generation, orderGeneration.current)) return;
       setOrders(result.data);
       setTotalPages(result.total_pages);
+      setTotal(result.total);
     } catch (error /* 订单查询异常 */) {
       if (isCurrentOrderRequest(generation, orderGeneration.current) && !controller.signal.aborted) {
         console.error('加载订单失败:', error);
@@ -64,7 +69,7 @@ export const useOrderQuery = (options: OrderQueryOptions = { pageSize: 20 }): Or
       if (isCurrentOrderRequest(generation, orderGeneration.current)) setLoading(false);
     }
     },
-    [accountFilter, debouncedSearch, filter, options.pageSize, page],
+    [accountFilter, debouncedSearch, filter, page, pageSize],
   );
 
   // useEffect 防抖搜索输入，避免每次键入都立即请求服务端。
@@ -224,6 +229,9 @@ export const useOrderQuery = (options: OrderQueryOptions = { pageSize: 20 }): Or
     page,
     setPage,
     totalPages,
+    total,
+    pageSize,
+    setPageSize,
     loading,
     loadOrders,
     accountName,

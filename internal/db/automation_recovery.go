@@ -27,6 +27,25 @@ func (a *AutomationRules) RecoverDefinitelyUnsentReviewRuns(ctx context.Context)
 	return res.RowsAffected()
 }
 
+// RecoverLegacyExternalWaitRuns 把旧版本已标为安全重试的处理中货源订单迁入长轮询策略，并让已耗尽三次的订单立即恢复查单。
+func (a *AutomationRules) RecoverLegacyExternalWaitRuns(ctx context.Context) (int64, error) {
+	// now 是升级兼容记录下一次可被调度器领取的 Unix 秒时间。
+	now := time.Now().UTC().Unix()
+	// result、updateErr 是兼容更新结果及数据库错误；替换只作用于明确的三个非终态，取消和退款仍进入人工处理。
+	result, updateErr := a.DB.ExecContext(ctx, `UPDATE automation_runs
+		SET error_message=REPLACE(error_message,?,?),
+		    next_retry_at=CASE WHEN next_retry_at=0 THEN ? ELSE next_retry_at END,
+		    updated_at=CURRENT_TIMESTAMP
+		WHERE status='failed' AND action_started=0 AND error_message LIKE '[safe_retry]%'
+		  AND (error_message LIKE '%外部货源订单当前状态为 unpaid%'
+		       OR error_message LIKE '%外部货源订单当前状态为 waiting%'
+		       OR error_message LIKE '%外部货源订单当前状态为 processing%')`, SafeRetryErrorPrefix, ExternalWaitErrorPrefix, now)
+	if updateErr != nil {
+		return 0, updateErr
+	}
+	return result.RowsAffected()
+}
+
 // DeferTask 封装Defer任务业务协调。
 func (a *AutomationRules) DeferTask(ctx context.Context, task DeferredAutomationTask) error {
 	// err 用于本次流程后续判断的err
@@ -52,9 +71,11 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 		ar.action_cursor,ar.sent_count,ar.updated_at,ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0)
 		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
 		LEFT JOIN automation_rules r ON r.id=ar.rule_id
-		WHERE c.user_id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.sent_count=0 AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
-		AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%')))
-		AND r.deleted_at IS NULL ORDER BY ar.updated_at DESC,ar.id DESC`, userID)
+		WHERE c.user_id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
+		AND ((ar.sent_count=0 AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%'))
+		     OR (ar.attempt_count>=? AND ar.error_message LIKE '[external_wait]%'))
+		AND NOT (ar.attempt_count<? AND ar.error_message LIKE '[external_wait]%')))
+		AND r.deleted_at IS NULL ORDER BY ar.updated_at DESC,ar.id DESC`, userID, externalWaitMaxAttempts, externalWaitMaxAttempts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -116,9 +137,11 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	err := a.DB.QueryRowContext(ctx, `SELECT ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0),ar.sent_count,ar.error_message
 		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
 		LEFT JOIN automation_rules r ON r.id=ar.rule_id
-		WHERE ar.id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.sent_count=0 AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
-		AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%')))
-		AND c.user_id=? AND r.deleted_at IS NULL`, runID, userID).
+		WHERE ar.id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
+		AND ((ar.sent_count=0 AND (ar.attempt_count>=3 OR ar.error_message LIKE '%状态为 cancelled%' OR ar.error_message LIKE '%状态为 refunded%'))
+		     OR (ar.attempt_count>=? AND ar.error_message LIKE '[external_wait]%'))
+		AND NOT (ar.attempt_count<? AND ar.error_message LIKE '[external_wait]%')))
+		AND c.user_id=? AND r.deleted_at IS NULL`, runID, externalWaitMaxAttempts, externalWaitMaxAttempts, userID).
 		Scan(&rawEventJSON, &actionStarted, &ruleEnabled, &sentCount, &errorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -145,9 +168,11 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	}
 	// res、err 用于本次流程后续判断的res、err
 	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs SET `+set+`,updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND (status='needs_review' OR (status='failed' AND sent_count=0 AND action_started=0 AND error_message NOT LIKE '[no_retry]%'
-		AND (attempt_count>=3 OR error_message LIKE '%状态为 cancelled%' OR error_message LIKE '%状态为 refunded%')))
-		AND cookie_id IN (SELECT id FROM cookies WHERE user_id=?)`, runID, userID)
+		WHERE id=? AND (status='needs_review' OR (status='failed' AND action_started=0 AND error_message NOT LIKE '[no_retry]%'
+		AND ((sent_count=0 AND (attempt_count>=3 OR error_message LIKE '%状态为 cancelled%' OR error_message LIKE '%状态为 refunded%'))
+		     OR (attempt_count>=? AND error_message LIKE '[external_wait]%'))
+		AND NOT (attempt_count<? AND error_message LIKE '[external_wait]%')))
+		AND cookie_id IN (SELECT id FROM cookies WHERE user_id=?)`, runID, externalWaitMaxAttempts, externalWaitMaxAttempts, userID)
 	if err != nil {
 		return err
 	}

@@ -11,6 +11,8 @@ import (
 const (
 	// ProviderKasushouV2 表示兼容卡速售 v2 协议的货源实例。
 	ProviderKasushouV2 = "kasushou_v2"
+	// ProviderKayixinV3 表示使用卡易信商家客户 API 3.0 协议的货源实例。
+	ProviderKayixinV3 = "kayixin_v3"
 	// GoodsTypeCard 表示履约成功后返回卡密。
 	GoodsTypeCard = 1
 	// GoodsTypeRecharge 表示需要提交账号、手机号等附加字段的直充商品。
@@ -24,7 +26,7 @@ var (
 	ErrConflict = errors.New("外部履约资源冲突")
 )
 
-// Capabilities 记录一个卡速售兼容站实际支持的可选能力。
+// Capabilities 记录一个外部货源实例实际支持的可选能力。
 type Capabilities struct {
 	// OrderList 表示站点开放订单列表接口。
 	OrderList bool `json:"order_list"`
@@ -38,7 +40,7 @@ type Capabilities struct {
 	CardShowType bool `json:"card_show_type"`
 }
 
-// Instance 是一个可独立配置的卡速售兼容货源站。
+// Instance 是一个可独立配置并按 provider 路由的外部货源站。
 type Instance struct {
 	ID             int64        `json:"id"`
 	PublicID       string       `json:"public_id"`
@@ -102,7 +104,7 @@ type MappingInput struct {
 	Enabled       bool              `json:"enabled"`
 }
 
-// Product 是卡速售兼容站返回的商品摘要。
+// Product 是不同货源协议归一化后的商品摘要。
 type Product struct {
 	ID        int64         `json:"id"`
 	Name      string        `json:"goods_name"`
@@ -204,6 +206,8 @@ type RemoteOrder struct {
 	CardList        []string
 	RechargeInfo    string
 	RechargeHints   string
+	// State 是协议适配器给出的统一状态；为空时兼容旧卡速售数字状态映射。
+	State string
 }
 
 // Repository 是履约应用服务消费的持久化窄端口。
@@ -224,7 +228,7 @@ type Repository interface {
 	ListOrders(context.Context, int64, int) ([]Order, error)
 }
 
-// Gateway 定义应用层需要的卡速售兼容协议能力。
+// Gateway 定义应用层需要的通用外部货源协议能力。
 type Gateway interface {
 	ListProducts(context.Context, Instance) ([]Product, error)
 	GetProduct(context.Context, Instance, int64) (Product, error)

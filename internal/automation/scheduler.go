@@ -116,6 +116,12 @@ func (s *Scheduler) scan(ctx context.Context) {
 	} else if recovered > 0 {
 		s.center.logger.Info("已恢复历史求评价未发送任务，等待安全重试", "count", recovered)
 	}
+	if // recoveredExternal、recoverExternalErr 是升级前已耗尽普通重试的货源等待记录数量和兼容更新错误。
+	recoveredExternal, recoverExternalErr := s.center.store.Automation.RecoverLegacyExternalWaitRuns(ctx); recoverExternalErr != nil {
+		s.center.logger.Warn("恢复历史外部货源等待任务失败", "err", recoverExternalErr)
+	} else if recoveredExternal > 0 {
+		s.center.logger.Info("已恢复历史外部货源等待任务，继续按原单号轮询", "count", recoveredExternal)
+	}
 	// recoveryErr 汇总恢复运行状态收口失败，避免数据库写错误只记录日志后丢失。
 	recoveryErr := s.runRecoveryTasks(ctx)
 	if recoveryErr != nil {
@@ -274,10 +280,12 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 		}
 		task.Raw["automation_run_id"] = run.ID
 		task.Raw["automation_rule_id"] = run.RuleID
-		if // err 用于本次流程后续判断的err
-		err := s.center.executeRule(ctx, task, *rule); err != nil && !errors.Is(err, errAutomationDeferred) {
-			s.center.logger.Warn("重试自动化运行失败", "run_id", run.ID, "err", err)
-			resultErr = errors.Join(resultErr, err)
+		if // runErr 是恢复动作的业务结果；供应站仍在处理属于正常轮询状态，不应上报为状态收口失败。
+		runErr := s.center.executeRule(ctx, task, *rule); errors.Is(runErr, errExternalFulfillmentPending) {
+			s.center.logger.Info("外部货源订单仍在处理，已按退避策略安排下次查询", "run_id", run.ID)
+		} else if runErr != nil && !errors.Is(runErr, errAutomationDeferred) {
+			s.center.logger.Warn("重试自动化运行失败", "run_id", run.ID, "err", runErr)
+			resultErr = errors.Join(resultErr, runErr)
 		}
 	}
 	return resultErr

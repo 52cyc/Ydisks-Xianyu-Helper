@@ -56,7 +56,7 @@ type ExternalFulfillmentResult struct {
 	RechargeHints string
 }
 
-// ExternalFulfillment 屏蔽卡速售应用模型，只向自动化暴露幂等履约结果。
+// ExternalFulfillment 屏蔽具体供应商协议，只向自动化暴露幂等履约结果。
 type ExternalFulfillment interface {
 	Fulfill(context.Context, ExternalFulfillmentRequest) (ExternalFulfillmentResult, error)
 }

@@ -181,7 +181,7 @@ func orderDTOFromRow(row orderapp.OrderRow) orderDTO {
 	status := orderapp.NormalizeOrderStatus(row.OrderStatus)
 	return orderDTO{
 		OrderID: row.OrderID, ItemID: row.ItemID, ItemTitle: row.ItemTitle,
-		ItemImage: itemImageFromDetail(row.ItemDetail), BuyerID: row.BuyerID,
+		ItemImage: itemImageFromDetail(row.ItemDetail), BuyerID: row.BuyerID, BuyerName: row.BuyerName,
 		SpecName: row.SpecName, SpecValue: row.SpecValue, Quantity: row.Quantity,
 		Amount: row.Amount, OrderStatus: status, Status: status, CookieID: row.CookieID,
 		IsBargain: row.IsBargain, SystemShipped: row.SystemShipped,

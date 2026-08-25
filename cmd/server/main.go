@@ -232,7 +232,7 @@ func runServer(parent context.Context, opts serverOptions) error {
 		return nil
 	}
 	// runtime 保存已完成依赖注入但尚未启动的 HTTP 服务和生命周期协调器。
-	runtime, err := buildServerRuntime(opts, infrastructure)
+	runtime, err := buildServerRuntime(opts, infrastructure, startup.resolvedDBURL)
 	if err != nil {
 		return err
 	}
@@ -338,11 +338,30 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 	// logger 是当前进程的初始结构化日志器；后续数据库日志格式变更会替换默认 logger。
 	logger := logging.NewLogger(logWriter, startup.resolvedLogFormat)
 	slog.SetDefault(logger)
+	// sqlitePath、isSQLite 表示当前地址是否可映射到本地 SQLite 主文件。
+	sqlitePath, isSQLite := db.SQLitePathFromURL(startup.resolvedDBURL)
+	// pendingRestore 是启动前已应用的恢复切换；后续数据库打开失败时必须回滚原文件。
+	var pendingRestore *db.PendingSQLiteRestore
+	if isSQLite {
+		// restoreErr 表示检查或应用已校验待恢复数据库失败。
+		var restoreErr error
+		pendingRestore, restoreErr = db.ApplyPendingSQLiteRestore(sqlitePath, time.Now())
+		if restoreErr != nil {
+			closeLog()
+			return serverInfrastructure{}, fmt.Errorf("应用待恢复数据库失败: %w", restoreErr)
+		}
+	}
 	// database 和 dialect 表示已打开数据库及其 SQL 方言；database 的关闭责任转移给返回值。
 	database, dialect, err := db.Open(ctx, startup.resolvedDBURL)
 	if err != nil {
+		if pendingRestore != nil {
+			_ = pendingRestore.Rollback()
+		}
 		closeLog()
 		return serverInfrastructure{}, fmt.Errorf("打开数据库失败: %w", err)
+	}
+	if pendingRestore != nil {
+		logger.Info("数据库恢复已应用", "safety_backup", pendingRestore.SafetyPath())
 	}
 	logger.Info("数据库已就绪", "dialect", dialect)
 	// store 是绑定数据库方言的仓储集合。
@@ -350,6 +369,9 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 	// err 表示历史敏感字段加密校验或升级失败，失败时不能继续运行。
 	if err := store.EncryptLegacySecrets(ctx); err != nil {
 		_ = database.Close()
+		if pendingRestore != nil {
+			_ = pendingRestore.Rollback()
+		}
 		closeLog()
 		return serverInfrastructure{}, fmt.Errorf("校验或升级数据库敏感字段失败: %w", err)
 	}
@@ -410,10 +432,11 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 }
 
 // buildServerRuntime 构造浏览器、账号、自动化、通知、应用服务和 HTTP 服务依赖，并登记全部生命周期组件但不启动它们。
-func buildServerRuntime(opts serverOptions, infrastructure serverInfrastructure) (serverRuntime, error) {
+func buildServerRuntime(opts serverOptions, infrastructure serverInfrastructure, databaseURL string) (serverRuntime, error) {
 	// runtime、buildErr 分别是组合层返回的完整运行时快照及其装配失败原因。
 	runtime, buildErr := compositionruntime.BuildRuntime(compositionruntime.RuntimeOptions{
 		NoBrowser: opts.noBrowser, SecureCookie: opts.secure, WebDir: opts.webDir, Addr: opts.addr,
+		DatabaseURL: databaseURL,
 	}, compositionruntime.RuntimeInfrastructure{Store: infrastructure.store, Logger: infrastructure.logger})
 	if buildErr != nil {
 		return serverRuntime{}, buildErr

@@ -264,14 +264,23 @@ func (service *Service) ListOrders(ctx context.Context, userID int64, limit int)
 
 // validateInstanceInput 校验站点协议、地址和身份字段。
 func validateInstanceInput(input InstanceInput, allowEmptyKey bool) error {
-	if input.Name == "" || input.BaseURL == "" || input.MerchantUserID == "" {
-		return errors.New("货源实例缺少名称、站点地址或 UserId")
-	}
-	if input.Provider != ProviderKasushouV2 {
+	if input.Provider != ProviderKasushouV2 && input.Provider != ProviderKayixinV3 {
 		return fmt.Errorf("不支持的货源协议: %s", input.Provider)
 	}
+	if input.Name == "" || input.BaseURL == "" {
+		return errors.New("货源实例缺少名称或站点地址")
+	}
+	if input.MerchantUserID == "" {
+		if input.Provider == ProviderKayixinV3 {
+			return errors.New("卡易信货源实例缺少 APP ID")
+		}
+		return errors.New("卡速售货源实例缺少 UserId")
+	}
 	if !allowEmptyKey && input.APIKey == "" {
-		return errors.New("货源实例缺少 API Key")
+		if input.Provider == ProviderKayixinV3 {
+			return errors.New("卡易信货源实例缺少 AppSecret")
+		}
+		return errors.New("卡速售货源实例缺少 API Key")
 	}
 	// parsedURL 是经过标准库校验的站点根地址。
 	parsedURL, err := url.Parse(input.BaseURL)

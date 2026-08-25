@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"xianyu-go/internal/adapter"
+	databackupapp "xianyu-go/internal/application/databackup"
 	"xianyu-go/internal/application/lifecycle"
 	orderapp "xianyu-go/internal/application/orders"
 	"xianyu-go/internal/auth"
@@ -28,6 +29,8 @@ type RuntimeOptions struct {
 	WebDir string
 	// Addr 是 HTTP 监听地址。
 	Addr string
+	// DatabaseURL 是已完成优先级解析的数据库地址，仅用于确定内置 SQLite 备份文件位置。
+	DatabaseURL string
 }
 
 // RuntimeInfrastructure 是 cmd 打开后交给组合根的基础设施资源。
@@ -129,6 +132,13 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	if databaseHealth == nil {
 		return Runtime{}, fmt.Errorf("构造数据库健康检查端口失败")
 	}
+	// sqlitePath 是本地 SQLite 主文件路径；外置数据库保持空值并由备份服务返回明确不支持错误。
+	sqlitePath, _ := db.SQLitePathFromURL(options.DatabaseURL)
+	// dataBackupService、backupErr 分别是管理员备份恢复用例及其构造失败原因。
+	dataBackupService, backupErr := databackupapp.NewService(adapter.NewDataBackupStorage(infrastructure.Store, sqlitePath))
+	if backupErr != nil {
+		return Runtime{}, fmt.Errorf("构造数据备份服务失败: %w", backupErr)
+	}
 	// platformDependencies、platformErr 分别是平台协议适配器集合及其构造错误，仅组合层可持有。
 	platformDependencies, platformErr := adapter.NewDefaultPlatformDependencies(infrastructure.Logger)
 	if platformErr != nil {
@@ -184,7 +194,7 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	// serverDependencies、dependenciesErr 分别是投影给 HTTP transport 的依赖快照及其构造错误。
 	serverDependencies, dependenciesErr := ServerDependencies(services, HTTPDependencies{
 		Auth: &auth.Service{Store: infrastructure.Store, Logger: infrastructure.Logger, Secure: options.SecureCookie}, WebDir: options.WebDir, Addr: options.Addr,
-		Logger: infrastructure.Logger, DatabaseHealth: databaseHealth,
+		Logger: infrastructure.Logger, DatabaseHealth: databaseHealth, DataBackup: dataBackupService,
 	}, sessionRecovery)
 	if dependenciesErr != nil {
 		return Runtime{}, dependenciesErr

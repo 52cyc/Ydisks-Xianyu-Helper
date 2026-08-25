@@ -11,6 +11,7 @@ const orderListMocks = vi.hoisted(/* orderListMockFactory 创建订单页面共�
   setAccountFilter: vi.fn(),
   setSearchText: vi.fn(),
   setPage: vi.fn(),
+  setPageSize: vi.fn(),
   loadOrders: vi.fn(),
   openImportModal: vi.fn(),
   closeImportModal: vi.fn(),
@@ -36,7 +37,10 @@ vi.mock('../hooks', /* ordersHooksMockFactory 提供订单查询与导入 Hook �
     setSearchText: orderListMocks.setSearchText,
     page: 2,
     setPage: orderListMocks.setPage,
+    total: 272,
     totalPages: 3,
+    pageSize: 15,
+    setPageSize: orderListMocks.setPageSize,
     loading: false,
     loadOrders: orderListMocks.loadOrders,
     accountName: /* accountNameMock 返回订单筛选账号名称。 */ () => '主账号 · account',
@@ -63,6 +67,8 @@ vi.mock('../api', /* ordersApiMockFactory 提供订单页面动作 API 替身。
   manualShipOrder: orderListMocks.manualShipOrder,
   updateOrder: orderListMocks.updateOrder,
   deleteOrder: orderListMocks.deleteOrder,
+  getOrderBuyerNote: vi.fn(),
+  saveOrderBuyerNote: vi.fn(),
 }));
 
 vi.mock('../components/OrderFilterBar', /* filterBarMockFactory 提供订单筛选栏替身。 */ () => {
@@ -82,6 +88,10 @@ vi.mock('../components/OrderFilterBar', /* filterBarMockFactory 提供订单筛�
 
 vi.mock('../components/OrderImportModal', /* importModalMockFactory 提供订单导入弹窗替身。 */ () => ({
   OrderImportModal: /* OrderImportModalMock 表示订单导入弹窗替身。 */ (props: any) => props.showImportModal ? <div data-testid="import-modal">订单导入弹窗</div> : null,
+}));
+
+vi.mock('../components/OrderBuyerNoteDialog', /* buyerNoteDialogMockFactory 让页面组合测试只验证备注入口与关闭动作。 */ () => ({
+  OrderBuyerNoteDialog: /* OrderBuyerNoteDialogMock 展示当前订单的备注弹窗替身。 */ (props: any) => <div data-testid="buyer-note-dialog"><span>{props.order.order_id}</span><button onClick={props.onClose}>关闭备注</button></div>,
 }));
 
 import OrderList from './OrderList';
@@ -190,5 +200,19 @@ describe('OrderList 页面组合行为', /* 当前回调验证订单筛选、编
     expect(pageUpdaters).toHaveLength(2);
     expect(pageUpdaters[0][0](2)).toBe(1);
     expect(pageUpdaters[1][0](2)).toBe(3);
+    expect(screen.getByText('共 272 条')).toBeTruthy();
+    fireEvent.change(screen.getByDisplayValue('15 条'), { target: { value: '30' } });
+    expect(orderListMocks.setPageSize).toHaveBeenCalledWith(30);
+    fireEvent.change(screen.getByLabelText('前往页码'), { target: { value: '99' } });
+    fireEvent.click(screen.getByText('跳转'));
+    expect(orderListMocks.setPage).toHaveBeenCalledWith(3);
+  });
+
+  test('订单备注入口打开并关闭买家备注弹窗', /* 当前回调验证订单页复用买家备注的交互入口。 */ () => {
+    render(<OrderList />);
+    fireEvent.click(screen.getByTitle('订单备注'));
+    expect(screen.getByTestId('buyer-note-dialog')).toBeTruthy();
+    fireEvent.click(screen.getByText('关闭备注'));
+    expect(screen.queryByTestId('buyer-note-dialog')).toBeNull();
   });
 });

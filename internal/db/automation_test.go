@@ -581,6 +581,87 @@ func TestAutomation_NoRetryFailureIsNotRecovered(t *testing.T) {
 	}
 }
 
+// TestAutomationExternalWaitUsesLongBackoff 验证旧等待记录可跨过普通三次上限恢复，并按长退避策略持续到约两小时后转人工处理。
+func TestAutomationExternalWaitUsesLongBackoff(t *testing.T) {
+	// store、cleanup 是本测试隔离使用的 SQLite 数据库及释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是测试数据库操作使用的上下文。
+	ctx := context.Background()
+	// userID、cookieID 是测试规则所属用户和闲鱼账号。
+	userID, cookieID := seedAccount(t, store)
+	// ruleID 是用于承载外部履约动作的自动化规则。
+	ruleID, createErr := store.Automation.Create(ctx, makeAutomationRule(cookieID, userID, "external-wait-item", "paid", true, 100))
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// runID、started、startErr 是首次自动化运行的标识、启动结果和错误。
+	runID, started, startErr := store.Automation.TryStartRun(ctx, AutomationRun{RuleID: ruleID, CookieID: cookieID, OrderID: "external-wait-order", TriggerType: "paid", TriggerKey: "paid:external-wait-order", RawEventJSON: `{"AccountID":"` + cookieID + `"}`})
+	if startErr != nil || !started {
+		t.Fatalf("启动外部等待运行失败: started=%v err=%v", started, startErr)
+	}
+	// legacyMessage 模拟升级前已经耗尽三次普通安全重试的 waiting 记录。
+	legacyMessage := SafeRetryErrorPrefix + "自动化外部动作明确未执行: 外部货源订单当前状态为 waiting，稍后使用原单号查询"
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET status='failed',attempt_count=3,next_retry_at=0,error_message=? WHERE id=?`, legacyMessage, runID); updateErr != nil { // updateErr 是旧记录造数错误。
+		t.Fatal(updateErr)
+	}
+	// recovered、recoverErr 是升级兼容转换的记录数和错误。
+	recovered, recoverErr := store.Automation.RecoverLegacyExternalWaitRuns(ctx)
+	if recoverErr != nil || recovered != 1 {
+		t.Fatalf("恢复旧外部等待记录失败: recovered=%d err=%v", recovered, recoverErr)
+	}
+	// due、dueErr 是跨过普通三次上限后仍应到期的长轮询任务。
+	due, dueErr := store.Automation.DueRecoveryRuns(ctx, 10)
+	if dueErr != nil || len(due) != 1 || !strings.HasPrefix(due[0].ErrorMessage, ExternalWaitErrorPrefix) {
+		t.Fatalf("外部等待记录未进入长轮询: due=%+v err=%v", due, dueErr)
+	}
+	// claimed、claimErr 是第四次原单查单的领取结果。
+	claimed, claimErr := store.Automation.ClaimRecoveryRun(ctx, runID, time.Now().UTC().Add(time.Minute).Unix())
+	if claimErr != nil || !claimed {
+		t.Fatalf("领取第四次外部查单失败: claimed=%v err=%v", claimed, claimErr)
+	}
+	// run、getErr 是第四次运行的持久化尝试版本。
+	run, getErr := store.Automation.GetRun(ctx, runID)
+	if getErr != nil || run.AttemptCount != 4 {
+		t.Fatalf("外部查单尝试版本错误: run=%+v err=%v", run, getErr)
+	}
+	// beforeFinish 用来验证第四次等待后的五分钟退避窗口。
+	beforeFinish := time.Now().UTC()
+	if finishErr := store.Automation.FinishRun(ctx, runID, run.AttemptCount, "failed", 0, ExternalWaitErrorPrefix+"waiting"); finishErr != nil { // finishErr 是第四次等待状态收口错误。
+		t.Fatal(finishErr)
+	}
+	run, getErr = store.Automation.GetRun(ctx, runID)
+	if getErr != nil || run.NextRetryAt < beforeFinish.Add(5*time.Minute).Unix() || run.NextRetryAt > beforeFinish.Add(5*time.Minute+5*time.Second).Unix() {
+		t.Fatalf("外部等待退避时间错误: run=%+v err=%v", run, getErr)
+	}
+	// maxMessage 是达到约两小时上限后的最终等待原因。
+	maxMessage := ExternalWaitErrorPrefix + "外部货源订单当前状态为 processing"
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET status='running',attempt_count=?,next_retry_at=0,error_message='' WHERE id=?`, externalWaitMaxAttempts, runID); updateErr != nil { // updateErr 是最大尝试次数造数错误。
+		t.Fatal(updateErr)
+	}
+	if finishErr := store.Automation.FinishRun(ctx, runID, externalWaitMaxAttempts, "failed", 0, maxMessage); finishErr != nil { // finishErr 是长轮询耗尽后的状态收口错误。
+		t.Fatal(finishErr)
+	}
+	// issues、deferred、issueErr 是达到长轮询上限后的人工作业列表和无关延迟任务。
+	issues, deferred, issueErr := store.Automation.ListIssues(ctx, userID)
+	if issueErr != nil || len(issues) != 1 || len(deferred) != 0 {
+		t.Fatalf("长轮询耗尽后未进入人工处理: issues=%+v deferred=%+v err=%v", issues, deferred, issueErr)
+	}
+}
+
+// TestExternalWaitRetryDelay 验证供应站轮询退避序列为一、二、三、五、十分钟并在后续保持十分钟。
+func TestExternalWaitRetryDelay(t *testing.T) {
+	// attempts 是依次完成的供应站查单次数。
+	attempts := []int{1, 2, 3, 4, 5, 16}
+	// expected 是每个查单次数对应的下一次等待时间。
+	expected := []time.Duration{time.Minute, 2 * time.Minute, 3 * time.Minute, 5 * time.Minute, 10 * time.Minute, 10 * time.Minute}
+	for index, attempt := range attempts { // index、attempt 是当前退避样例下标和已完成查单次数。
+		if delay := externalWaitRetryDelay(attempt); delay != expected[index] { // delay 是生产退避函数返回的时间间隔。
+			t.Fatalf("attempt=%d delay=%s want=%s", attempt, delay, expected[index])
+		}
+	}
+}
+
 // TestAutomationRunAttemptFencesStaleWorker 封装Test自动化运行尝试次数FencesStale工作器业务协调。
 func TestAutomationRunAttemptFencesStaleWorker(t *testing.T) {
 	// s、cleanup 用于本次流程后续判断的s、cleanup

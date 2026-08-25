@@ -1128,8 +1128,8 @@ test('updateShippingRule posts every matching card action before confirm shipmen
       sort_order: 3,
     }),
   ]);
-  expect(JSON.parse(body.actions[0].config_json)).toEqual({ spec_name: '套餐', spec_value: '30天', delay_override: false });
-  expect(JSON.parse(body.actions[1].config_json)).toEqual({ spec_name: '套餐', spec_value: '30天', delay_override: true });
+  expect(JSON.parse(body.actions[0].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: false });
+  expect(JSON.parse(body.actions[1].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: true });
   expect(body.actions[1].delay_seconds).toBe(0);
 } /* 测试回调验证：updateShippingRule posts every matching card action before confirm shipment。 */);
 

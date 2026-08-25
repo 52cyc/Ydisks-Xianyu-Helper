@@ -130,6 +130,36 @@ func TestSendExternalFulfillmentUsesStableOrderNumber(t *testing.T) {
 	}
 }
 
+// TestSendExternalFulfillmentMarksPendingState 验证供应站处理中状态会进入长轮询分类，同时保留动作明确未执行语义。
+func TestSendExternalFulfillmentMarksPendingState(t *testing.T) {
+	// store、cleanup 是包含账号归属关系的测试数据库及释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是本测试数据库和履约动作共享的上下文。
+	ctx := context.Background()
+	// admin、ownerErr 是测试账号所有者及查询错误。
+	admin, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	if createErr := store.Cookies.CreateOwned(ctx, "pending-account", "cookie", admin.ID); createErr != nil { // createErr 是测试账号写入错误。
+		t.Fatal(createErr)
+	}
+	// fulfillment 模拟已经受理但仍在处理的供应站订单。
+	fulfillment := &externalFulfillmentStub{result: ExternalFulfillmentResult{State: "waiting"}}
+	// executor 只需注入货源能力；等待状态不会调用闲鱼消息发送器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: &testSender{}}, externalFulfillment: func() ExternalFulfillment { return fulfillment }}
+	// task 是用于生成幂等外部单号的稳定闲鱼订单事实。
+	task := Task{AccountID: "pending-account", OrderID: "XY-PENDING-1", Quantity: "1", TriggerType: TriggerOrderPaid}
+	// action 是指向测试货源商品的外部采购动作配置。
+	action := db.AutomationAction{ID: 19, ActionType: ActionSendCard, DeliveryCount: 1, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":5419}`}
+	// sent、sendErr 是动作返回的确认发送数和等待错误。
+	sent, sendErr := executor.sendCard(ctx, task, action)
+	if sent != 0 || !errors.Is(sendErr, errExternalFulfillmentPending) || !errors.Is(sendErr, errActionNotPerformed) {
+		t.Fatalf("等待状态分类错误: sent=%d err=%v", sent, sendErr)
+	}
+}
+
 // TestSendExternalFulfillmentRendersOrderAttach 验证直充字段使用当前闲鱼订单动态字段且缺失时不会采购。
 func TestSendExternalFulfillmentRendersOrderAttach(t *testing.T) {
 	// store、cleanup 保存测试数据库和清理函数。

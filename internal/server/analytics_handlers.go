@@ -136,7 +136,7 @@ func validOrdersResponseFromApplication(result analyticsapp.ValidOrders) validOr
 	// item 是当前有效订单应用模型。
 	for _, item := range result.Orders {
 		orders = append(orders, validOrderResponse{
-			OrderID: item.OrderID, ItemID: item.ItemID, BuyerID: item.BuyerID, ItemTitle: item.ItemTitle,
+			OrderID: item.OrderID, ItemID: item.ItemID, BuyerID: item.BuyerID, BuyerName: "", ItemTitle: item.ItemTitle,
 			ItemImage: item.ItemImage, Quantity: item.Quantity, Amount: item.Amount, OrderStatus: item.OrderStatus,
 			Status: item.Status, CookieID: item.CookieID, CreatedAt: item.CreatedAt,
 		})

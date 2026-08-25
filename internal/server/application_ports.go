@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	accountapp "xianyu-go/internal/application/account"
@@ -11,6 +12,7 @@ import (
 	automationapp "xianyu-go/internal/application/automation"
 	cardsapp "xianyu-go/internal/application/cards"
 	chatapp "xianyu-go/internal/application/chat"
+	databackupapp "xianyu-go/internal/application/databackup"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 	itemapp "xianyu-go/internal/application/items"
@@ -354,6 +356,14 @@ type AdminPort interface {
 	Stats(context.Context) (adminapp.Stats, error)
 }
 
+// DataBackupPort 定义管理员数据库快照下载和恢复暂存能力。
+type DataBackupPort interface {
+	// Export 创建一次性一致性数据库快照，调用方必须关闭返回的 Reader。
+	Export(context.Context, int64) (databackupapp.Artifact, error)
+	// Import 校验并暂存数据库恢复文件，实际替换只在服务重启时发生。
+	Import(context.Context, int64, io.Reader, string) (databackupapp.RestoreResult, error)
+}
+
 // FulfillmentPort 定义多实例卡速售配置、商品和订单 HTTP 用例。
 type FulfillmentPort interface {
 	ListInstances(context.Context, int64) ([]fulfillmentapp.Instance, error)
@@ -452,6 +462,8 @@ type ApplicationPorts struct {
 	settings SettingsPort
 	// admin 是管理员用户与统计用例。
 	admin AdminPort
+	// dataBackup 是管理员数据库备份与恢复用例。
+	dataBackup DataBackupPort
 }
 
 // ApplicationPortsInput 是组合根向 HTTP transport 交付的完整应用 Port 快照。
@@ -496,6 +508,7 @@ type ApplicationPortsInput struct {
 	Keywords                    KeywordsPort
 	Settings                    SettingsPort
 	Admin                       AdminPort
+	DataBackup                  DataBackupPort
 }
 
 // NewApplicationPorts 将组合根已经验证的用例依赖冻结为 Server 私有快照。
@@ -514,7 +527,7 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
 		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
 		cards: input.Cards, fulfillment: input.Fulfillment, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
-		keywords: input.Keywords, settings: input.Settings, admin: input.Admin,
+		keywords: input.Keywords, settings: input.Settings, admin: input.Admin, dataBackup: input.DataBackup,
 	}
 }
 
@@ -542,7 +555,7 @@ func (ports *ApplicationPorts) validate() error {
 		{"account_tasks", ports.accountTasks}, {"chat", ports.chat}, {"uncertain_notifications", ports.uncertainNotifications},
 		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues},
 		{"automation_rules", ports.automationRules}, {"cards", ports.cards}, {"publish_automation_rules", ports.publishAutomationRules},
-		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
+		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin}, {"data_backup", ports.dataBackup},
 	}
 	// requiredPort 是当前必须在 Server 构造前绑定的应用 Port 名称。
 	for _, requiredPort := range required {
@@ -684,6 +697,11 @@ func (server *Server) loginAuditApplication() LoginAuditPort {
 // settingsApplication 返回系统设置用例。
 func (server *Server) settingsApplication() SettingsPort {
 	return server.applicationServiceSet().settings
+}
+
+// dataBackupApplication 返回管理员数据库备份与恢复用例。
+func (server *Server) dataBackupApplication() DataBackupPort {
+	return server.applicationServiceSet().dataBackup
 }
 
 // applicationServiceSet 返回构造期注入的不可变 Port 快照；零值 Server 不会隐式装配业务服务。

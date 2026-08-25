@@ -5,7 +5,7 @@ import type { components } from './generated/schema';
 export type FulfillmentInstance = components['schemas']['FulfillmentInstance'];
 /** FulfillmentInstanceInput 是货源实例表单输入。 */
 export type FulfillmentInstanceInput = components['schemas']['FulfillmentInstanceInput'];
-/** FulfillmentProduct 是卡速售兼容站返回的商品。 */
+/** FulfillmentProduct 是不同货源协议归一化后的商品。 */
 export type FulfillmentProduct = components['schemas']['FulfillmentProduct'];
 /** FulfillmentMapping 是闲鱼规格和货源商品的映射。 */
 export type FulfillmentMapping = components['schemas']['FulfillmentMapping'];
@@ -23,7 +23,7 @@ export async function listFulfillmentInstances(): Promise<FulfillmentInstance[]>
   return response.data;
 }
 
-/** createFulfillmentInstance 创建一个卡速售 v2 兼容实例。 */
+/** createFulfillmentInstance 创建一个受支持协议的货源实例。 */
 export function createFulfillmentInstance(input: FulfillmentInstanceInput): Promise<FulfillmentInstance> {
   return runContractRequest(/* signal 控制货源实例创建请求。 */ signal => contractClient.POST('/api/v1/fulfillment/instances', { body: input, signal }));
 }

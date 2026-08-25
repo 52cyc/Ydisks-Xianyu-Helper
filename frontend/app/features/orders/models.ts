@@ -113,6 +113,12 @@ export interface Order {
   item_price?: string;
   /** 买家平台标识。 */
   buyer_id: string;
+  /** 从已有聊天会话补全的买家昵称。 */
+  buyer_name?: string;
+  /** 订单商品规格的字段名称。 */
+  spec_name?: string;
+  /** 买家实际购买的规格值。 */
+  spec_value?: string;
   /** 购买数量。 */
   quantity: number;
   /** 订单金额文本。 */
@@ -174,6 +180,8 @@ export interface OrderDTOResponse {
   item_image: string;
   /** 买家平台标识。 */
   buyer_id: string;
+  /** 从已有聊天会话补全的买家昵称。 */
+  buyer_name?: string;
   /** 商品规格名称。 */
   spec_name: string;
   /** 商品规格值。 */
@@ -204,6 +212,18 @@ export interface OrderDTOResponse {
   created_at: string;
   /** 更新时间。 */
   updated_at: string;
+}
+
+/** OrderBuyerNote 是订单页按账号和买家复用的完整运营备注。 */
+export interface OrderBuyerNote {
+  /** account_id 是备注所属的闲鱼账号。 */
+  account_id: string;
+  /** buyer_id 是备注对应的买家标识。 */
+  buyer_id: string;
+  /** content 是最多两千字的运营备注。 */
+  content: string;
+  /** updated_at 是服务端记录的更新时间。 */
+  updated_at: number;
 }
 
 /** 订单详情接口的具名响应。 */

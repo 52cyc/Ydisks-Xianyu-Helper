@@ -17,6 +17,7 @@ type OrderRow struct {
 	ItemTitle     string
 	ItemDetail    string
 	BuyerID       string
+	BuyerName     string
 	SpecName      string
 	SpecValue     string
 	Quantity      string
@@ -73,9 +74,11 @@ func (o *Orders) ListForUser(ctx context.Context, f OrderListFilter) ([]OrderRow
 		pattern := "%" + search + "%"
 		where = append(where, `(LOWER(o.order_id) LIKE ? OR LOWER(COALESCE(o.item_id,'')) LIKE ?
 			OR LOWER(COALESCE(o.buyer_id,'')) LIKE ? OR LOWER(COALESCE(i.item_title,'')) LIKE ?
-			OR LOWER(COALESCE(o.receiver_name,'')) LIKE ? OR LOWER(COALESCE(o.receiver_phone,'')) LIKE ?)`)
+			OR LOWER(COALESCE(o.receiver_name,'')) LIKE ? OR LOWER(COALESCE(o.receiver_phone,'')) LIKE ?
+			OR EXISTS (SELECT 1 FROM chat_sessions search_cs WHERE search_cs.cookie_id=o.cookie_id
+			  AND (search_cs.chat_id=o.chat_id OR search_cs.buyer_id=o.buyer_id) AND LOWER(COALESCE(search_cs.buyer_name,'')) LIKE ?))`)
 		for // i 用于本次流程后续判断的i
-		i := 0; i < 6; i++ {
+		i := 0; i < 7; i++ {
 			args = append(args, pattern)
 		}
 	}
@@ -100,7 +103,9 @@ func (o *Orders) ListForUser(ctx context.Context, f OrderListFilter) ([]OrderRow
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := o.DB.QueryContext(ctx,
 		`SELECT o.order_id, o.item_id, COALESCE(i.item_title,''), COALESCE(i.item_detail,''),
-		        o.buyer_id, o.spec_name, o.spec_value, o.quantity, o.amount,
+		        o.buyer_id, COALESCE((SELECT MAX(cs.buyer_name) FROM chat_sessions cs
+		          WHERE cs.cookie_id=o.cookie_id AND (cs.chat_id=o.chat_id OR cs.buyer_id=o.buyer_id)),''),
+		        o.spec_name, o.spec_value, o.quantity, o.amount,
 		        o.order_status, o.cookie_id, o.is_bargain, o.system_shipped,
 		        o.receiver_name, o.receiver_phone, o.receiver_address, o.receiver_city,
 		        o.created_at, o.updated_at
@@ -120,11 +125,11 @@ func (o *Orders) ListForUser(ctx context.Context, f OrderListFilter) ([]OrderRow
 		// r 用于本次流程后续判断的r
 		var r OrderRow
 		// itemID、itemTitle、itemDetail、buyerID、specName、specValue、qty、amount、receiverName、receiverPhone、receiverAddr、receiverCity 保存商品ID、itemTitle、itemDetail、buyerID、specName、specValue、qty、amount、receiverName、receiverPhone、receiverAddr、receiverCity，供当前处理流程使用
-		var itemID, itemTitle, itemDetail, buyerID, specName, specValue, qty, amount, receiverName, receiverPhone, receiverAddr, receiverCity sql.NullString
+		var itemID, itemTitle, itemDetail, buyerID, buyerName, specName, specValue, qty, amount, receiverName, receiverPhone, receiverAddr, receiverCity sql.NullString
 		// isBargain、sysShipped 用于本次流程后续判断的isBargain、sysShipped
 		var isBargain, sysShipped int
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&r.OrderID, &itemID, &itemTitle, &itemDetail, &buyerID, &specName, &specValue, &qty, &amount,
+		err := rows.Scan(&r.OrderID, &itemID, &itemTitle, &itemDetail, &buyerID, &buyerName, &specName, &specValue, &qty, &amount,
 			&r.OrderStatus, &r.CookieID, &isBargain, &sysShipped, &receiverName, &receiverPhone, &receiverAddr,
 			&receiverCity, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, 0, err
@@ -133,6 +138,7 @@ func (o *Orders) ListForUser(ctx context.Context, f OrderListFilter) ([]OrderRow
 		r.ItemTitle = itemTitle.String
 		r.ItemDetail = itemDetail.String
 		r.BuyerID = buyerID.String
+		r.BuyerName = buyerName.String
 		r.SpecName = specName.String
 		r.SpecValue = specValue.String
 		r.Quantity = qty.String

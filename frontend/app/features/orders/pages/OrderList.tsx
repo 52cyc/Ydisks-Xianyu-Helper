@@ -1,9 +1,10 @@
-import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,PackageCheck,Plus,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
+import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,FilePenLine,PackageCheck,Plus,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { formatLocalDateTime } from '../../../../dateTime';
 import type { OrderStatus } from '../api';
 import { OrderFilterBar } from '../components/OrderFilterBar';
+import { OrderBuyerNoteDialog } from '../components/OrderBuyerNoteDialog';
 import { OrderImportModal } from '../components/OrderImportModal';
 import { useOrderImport,useOrderQuery } from '../hooks';
 import { useOrderActions } from '../orderActions';
@@ -42,11 +43,16 @@ const StatusBadge: React.FC<{ /** status 表示状态。 */ status: OrderStatus 
 // OrderList 渲染订单列表组件。
 const OrderList: React.FC = () => {
   // orderQuery 负责订单查询、筛选、分页和展示辅助数据。
-  const orderQuery = useOrderQuery();
+  const orderQuery = useOrderQuery({ pageSize: 15 });
   // importState 负责订单导入弹窗、上传取消和失败重试。
   const importState = useOrderImport(orderQuery.loadOrders);
   // { 解构得到当前 Hook 返回的状态和操作函数。
-  const { orders, accounts, filter, setFilter, accountFilter, setAccountFilter, searchText, setSearchText, page, setPage, totalPages, loading, loadOrders, accountName, accountNickname, getItemNameById } = orderQuery;
+  const { orders, accounts, filter, setFilter, accountFilter, setAccountFilter, searchText, setSearchText, page, setPage, total, totalPages, pageSize, setPageSize, loading, loadOrders, accountName, accountNickname, getItemNameById } = orderQuery;
+  // noteOrder 是当前打开买家共享备注的订单；空值表示弹窗关闭。
+  const [noteOrder,setNoteOrder] = React.useState<(typeof orders)[number] | null>(null);
+  // pageDraft 保存“前往页”输入框的短暂文本，仅在提交时更新真实页码。
+  const [pageDraft,setPageDraft] = React.useState('1');
+  React.useEffect(/* 筛选或翻页改变真实页码时，同步“前往页”输入框的显示值。 */ () => setPageDraft(String(page)),[page]);
   // orderActions 集中管理订单动作、弹窗状态和异步结果。
   const orderActions = useOrderActions({ orders, page, accountFilter, filter, setPage, loadOrders });
   // actionState 解构得到页面动作协调器的状态和操作函数。
@@ -90,6 +96,21 @@ const OrderList: React.FC = () => {
     setSearchText(value);
     setPage(1);
   };
+  // handlePageSizeChange 切换每页数并回到第一页，避免旧页码超出新总页数。
+  const handlePageSizeChange = (value: number): void => {
+    setPageSize(value);
+    setPage(1);
+    setPageDraft('1');
+  };
+  // submitPageJump 将用户输入限制在当前有效页码范围内。
+  const submitPageJump = (): void => {
+    // requestedPage 是用户输入解析后的目标页码。
+    const requestedPage = Number.parseInt(pageDraft,10);
+    // nextPage 是经过非数值和边界保护后的最终页码。
+    const nextPage = Number.isFinite(requestedPage) ? Math.min(Math.max(requestedPage,1),Math.max(totalPages,1)) : page;
+    setPage(nextPage);
+    setPageDraft(String(nextPage));
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -99,7 +120,7 @@ const OrderList: React.FC = () => {
           <p className="text-gray-500 mt-2 font-medium">查看所有闲鱼交易记录与状态。</p>
         </div>
         <div className="flex items-center gap-3">
-            <button onClick={loadOrders} className="p-3 rounded-2xl bg-white border border-gray-100 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shadow-sm">
+            <button onClick={loadOrders} aria-label="刷新当前订单列表" className="p-3 rounded-2xl bg-white border border-gray-100 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shadow-sm">
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
             </button>
             <button
@@ -160,6 +181,7 @@ const OrderList: React.FC = () => {
                           <UserIcon className="h-3 w-3 shrink-0" />
                           <span className="min-w-0 truncate whitespace-nowrap">{accountNickname(order.cookie_id)}</span>
                         </div>
+                        {(order.spec_value || order.spec_name) && <div className="mt-1 w-fit max-w-full truncate rounded-md bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700" title={[order.spec_name,order.spec_value].filter(Boolean).join('：')}>{order.spec_value || order.spec_name}</div>}
                         <div className="text-xs text-gray-500 mt-1 font-medium">订单ID: {order.order_id}</div>
                         <div className="text-xs text-gray-400 mt-0.5">数量: {order.quantity} • {formatLocalDateTime(order.created_at)}</div>
                       </div>
@@ -167,8 +189,9 @@ const OrderList: React.FC = () => {
                   </td>
                   <td className="px-6 py-5">
                       <div className="flex flex-col gap-1">
-                          <div className="text-xs text-gray-500">买家ID</div>
-                          <div className="text-sm font-bold text-gray-800">{order.buyer_id}</div>
+                          <div className="text-xs text-gray-500">买家</div>
+                          <div className="text-sm font-bold text-gray-800">{order.buyer_name || order.buyer_id}</div>
+                          {order.buyer_name && <div className="text-xs text-gray-400">ID: {order.buyer_id}</div>}
                           {order.receiver_name && (
                               <>
                                   <div className="text-xs text-gray-500">收货人</div>
@@ -221,6 +244,13 @@ const OrderList: React.FC = () => {
                       <Eye className="w-4 h-4" />
                     </button>
                     <button
+                      onClick={/* 当前回调打开该订单买家的共享备注。 */ () => setNoteOrder(order)}
+                      className="mr-2 inline-flex items-center gap-1 rounded-xl px-2.5 py-2 text-xs font-bold text-gray-500 transition-colors hover:bg-amber-50 hover:text-amber-700"
+                      title="订单备注"
+                    >
+                      <FilePenLine className="w-4 h-4" /><span className="hidden xl:inline">备注</span>
+                    </button>
+                    <button
                       onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleEdit(order)}
                       className="mr-2 text-gray-400 hover:text-black p-2 rounded-xl hover:bg-gray-100 transition-colors"
                       title="编辑订单"
@@ -251,11 +281,16 @@ const OrderList: React.FC = () => {
         </div>
 
         {/* Pagination */}
-        <div className="p-4 border-t border-gray-50 flex items-center justify-between bg-white">
-            <div className="text-sm text-gray-500 font-medium pl-2">
-                第 {page} 页 / 共 {totalPages} 页
+        <div className="flex flex-col gap-3 border-t border-gray-100 bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-3 pl-2 text-sm font-medium text-gray-500">
+                <span>共 {total} 条</span><span>第 {page} / {Math.max(totalPages,1)} 页</span>
+                <label className="flex items-center gap-2">每页
+                  <select value={pageSize} onChange={/* 当前回调切换订单分页大小。 */ event => handlePageSizeChange(Number(event.target.value))} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700">
+                    {[15,30,50,100].map(/* size 是订单列表允许的单页行数。 */ size => <option key={size} value={size}>{size} 条</option>)}
+                  </select>
+                </label>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
                 <button
                     disabled={page <= 1}
                     onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setPage(/* 当前回调处理用户交互或异步状态变化。 */ p => p - 1)}
@@ -272,6 +307,10 @@ const OrderList: React.FC = () => {
                 >
                     <ChevronRight className="w-5 h-5" />
                 </button>
+                <label htmlFor="order-page-jump" className="ml-1 text-sm text-gray-500">前往</label>
+                <input id="order-page-jump" inputMode="numeric" value={pageDraft} onChange={/* 当前回调更新尚未提交的页码文本。 */ event => setPageDraft(event.target.value.replace(/\D/g,''))} onKeyDown={/* 按回车时立即提交页码跳转。 */ event => { if (event.key === 'Enter') submitPageJump(); }} className="w-16 rounded-lg border border-gray-200 px-2 py-2 text-center text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" aria-label="前往页码" />
+                <span className="text-sm text-gray-500">页</span>
+                <button type="button" onClick={submitPageJump} className="min-h-10 rounded-lg bg-gray-100 px-3 text-sm font-bold text-gray-700 transition hover:bg-gray-200">跳转</button>
             </div>
         </div>
       </div>
@@ -317,6 +356,10 @@ const OrderList: React.FC = () => {
                     <div className="text-xs text-gray-500 mb-1">数量</div>
                     <div className="font-bold text-gray-900">{selectedOrder.quantity}</div>
                   </div>
+                  {(selectedOrder.spec_name || selectedOrder.spec_value) && <div>
+                    <div className="text-xs text-gray-500 mb-1">规格</div>
+                    <div className="font-bold text-gray-900">{[selectedOrder.spec_name,selectedOrder.spec_value].filter(Boolean).join('：')}</div>
+                  </div>}
                   <div className="col-span-2">
                     <div className="text-xs text-gray-500 mb-1">创建时间</div>
                     <div className="text-sm font-medium text-gray-700">{formatLocalDateTime(selectedOrder.created_at)}</div>
@@ -348,8 +391,9 @@ const OrderList: React.FC = () => {
                 <h4 className="text-lg font-bold text-gray-800">买家信息</h4>
                 <div className="p-4 bg-gray-50 rounded-xl space-y-3">
                   <div>
-                    <div className="text-xs text-gray-500 mb-1">买家ID</div>
-                    <div className="font-bold text-gray-900">{selectedOrder.buyer_id}</div>
+                    <div className="text-xs text-gray-500 mb-1">买家</div>
+                    <div className="font-bold text-gray-900">{selectedOrder.buyer_name || selectedOrder.buyer_id}</div>
+                    {selectedOrder.buyer_name && <div className="mt-1 text-xs text-gray-400">ID: {selectedOrder.buyer_id}</div>}
                   </div>
                   {selectedOrder.receiver_name && (
                     <div>
@@ -400,6 +444,8 @@ const OrderList: React.FC = () => {
       )}
 
       <OrderImportModal {...importState} />
+
+      {noteOrder && <OrderBuyerNoteDialog order={noteOrder} onClose={/* 当前回调关闭订单买家备注弹窗。 */ () => setNoteOrder(null)} />}
 
       {/* Ship Modal - 发货方式选择 */}
       {showShipModal && createPortal(

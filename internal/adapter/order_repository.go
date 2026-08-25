@@ -43,7 +43,7 @@ func orderRowsFromDB(rows []db.OrderRow) []orderapp.OrderRow {
 	for _, row := range rows { // row 是待转换的数据库订单列表行。
 		converted = append(converted, orderapp.OrderRow{
 			OrderID: row.OrderID, ItemID: row.ItemID, ItemTitle: row.ItemTitle,
-			ItemDetail: row.ItemDetail, BuyerID: row.BuyerID, SpecName: row.SpecName,
+			ItemDetail: row.ItemDetail, BuyerID: row.BuyerID, BuyerName: row.BuyerName, SpecName: row.SpecName,
 			SpecValue: row.SpecValue, Quantity: row.Quantity, Amount: row.Amount,
 			OrderStatus: row.OrderStatus, CookieID: row.CookieID, IsBargain: row.IsBargain,
 			SystemShipped: row.SystemShipped, ReceiverName: row.ReceiverName,

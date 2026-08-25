@@ -11,6 +11,7 @@ import (
 	notificationsapp "xianyu-go/internal/application/notifications"
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/kasushou"
+	"xianyu-go/internal/kayixin"
 	"xianyu-go/internal/netguard"
 )
 
@@ -21,7 +22,7 @@ type MiscDependencies struct {
 	store *db.Store
 }
 
-// NewFulfillmentService 创建多实例卡速售履约用例，httpClient 可由组合根注入出站策略。
+// NewFulfillmentService 创建多实例、多协议货源履约用例，httpClient 可由组合根注入出站策略。
 func (d *MiscDependencies) NewFulfillmentService(httpClient *http.Client) *fulfillmentapp.Service {
 	if d == nil {
 		return nil
@@ -29,7 +30,12 @@ func (d *MiscDependencies) NewFulfillmentService(httpClient *http.Client) *fulfi
 	if httpClient == nil {
 		httpClient = netguard.ConfiguredHTTPClient(15 * time.Second)
 	}
-	return fulfillmentapp.NewService(NewFulfillmentRepository(d.store), kasushou.NewClient(httpClient))
+	// gateway 是按实例 provider 路由到卡速售或卡易信的固定协议表。
+	gateway := newFulfillmentGateway(map[string]fulfillmentapp.Gateway{
+		fulfillmentapp.ProviderKasushouV2: kasushou.NewClient(httpClient),
+		fulfillmentapp.ProviderKayixinV3:  kayixin.NewClient(httpClient),
+	})
+	return fulfillmentapp.NewService(NewFulfillmentRepository(d.store), gateway)
 }
 
 // NewMiscDependencies 构造通知、分析和卡券领域专用依赖，并拒绝缺少数据库入口的半初始化实例。

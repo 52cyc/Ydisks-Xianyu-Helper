@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"xianyu-go/internal/adapter"
+	databackupapp "xianyu-go/internal/application/databackup"
 	orderapp "xianyu-go/internal/application/orders"
 	"xianyu-go/internal/auth"
 	composition "xianyu-go/internal/composition"
@@ -187,6 +188,8 @@ type HTTPDependencies struct {
 	Logger *slog.Logger
 	// DatabaseHealth 是健康检查使用的窄数据库探测 Port。
 	DatabaseHealth server.DatabaseHealthPort
+	// DataBackup 是管理员下载快照和暂存恢复文件的应用服务。
+	DataBackup *databackupapp.Service
 }
 
 // ServerDependencies 将组合层服务投影为 HTTP Server 需要的不可变最小 Port 快照。
@@ -217,7 +220,7 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 			UncertainNotifications: ports.UncertainNotifications, NotificationChannels: ports.NotificationChannels,
 			Analytics: ports.Analytics, AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules,
 			Cards: ports.Cards, Fulfillment: ports.Fulfillment, APIRequestTester: ports.APICardTester, PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies,
-			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin,
+			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin, DataBackup: base.DataBackup,
 		}),
 	}, nil
 }

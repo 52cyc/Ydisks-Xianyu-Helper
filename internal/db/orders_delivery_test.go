@@ -368,12 +368,19 @@ func TestOrders_ListForUserSearchesAcrossJoinedFields(t *testing.T) {
 	err := s.Items.Upsert(ctx, &ItemInfoRow{CookieID: cid, ItemID: "item-1", ItemTitle: "Special Product"}); err != nil {
 		t.Fatal(err)
 	}
+	if // err 是买家昵称补全和搜索所需的聊天会话写入结果。
+	err := s.Chats.UpsertSession(ctx, ChatSession{CookieID: cid, ChatID: "chat-search", BuyerID: "Buyer-ABC", BuyerName: "昵称买家"}); err != nil {
+		t.Fatal(err)
+	}
 	// search 表示当前遍历过程中的搜索
-	for _, search := range []string{"special", "buyer-abc", "张三", "search-order"} {
+	for _, search := range []string{"special", "buyer-abc", "昵称买家", "张三", "search-order"} {
 		// rows、total、err 用于本次流程后续判断的rows、total、err
 		rows, total, err := s.Orders.ListForUser(ctx, OrderListFilter{UserID: uid, Search: search, Limit: 20})
 		if err != nil || total != 1 || len(rows) != 1 || rows[0].OrderID != "search-order" {
 			t.Fatalf("search %q: rows=%+v total=%d err=%v", search, rows, total, err)
+		}
+		if rows[0].BuyerName != "昵称买家" {
+			t.Fatalf("search %q buyer_name=%q", search, rows[0].BuyerName)
 		}
 	}
 }
