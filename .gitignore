@@ -14,6 +14,7 @@
 /.env
 /.env.*
 !/.env.example
+!/.env.sqlite.example
 
 # Runtime data
 /data/

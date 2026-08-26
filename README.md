@@ -472,6 +472,10 @@ ARM64 Linux 拉取 arm64，不需要手动设置 `platform`。
 docker compose up -d
 ```
 
+从 GitHub 拉取源码并使用单机 SQLite 时，使用 [`compose.sqlite.yml`](compose.sqlite.yml) 和
+[`.env.sqlite.example`](.env.sqlite.example)。它会从当前源码构建包含 Chromium 的完整镜像，
+不启动 PostgreSQL；完整步骤见[部署与数据库](docs/wiki/部署与数据库.md#docker--sqlite单机源码部署)。
+
 它包含两个服务：
 
 | 服务 | 用途 |
