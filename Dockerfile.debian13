@@ -37,11 +37,23 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/browser-install-ho
 # .docker/playwright-runtime，构建时直接复制，不在 Dockerfile 内重复下载浏览器。
 FROM --platform=$BUILDPLATFORM node:24-trixie-slim AS playwright-runtime
 ARG TARGETARCH
+ARG PLAYWRIGHT_GO_NPM_REGISTRY=https://registry.npmjs.org
 ENV PLAYWRIGHT_DRIVER_PATH=/ms-playwright-go
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node
+ENV PLAYWRIGHT_GO_NPM_REGISTRY=$PLAYWRIGHT_GO_NPM_REGISTRY
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 COPY --from=browser-install-builder /out/browser-install-host /usr/local/bin/browser-install
 COPY .docker/playwright-runtime /prebuilt-playwright-runtime
+# 本地源码构建可能没有 CI 预热的 runtime；在发起 HTTPS 下载前先刷新系统 CA。
+# 企业代理使用自签根证书时仍应把根证书安装到 Docker，而不是关闭 TLS 校验。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install --reinstall -y --no-install-recommends ca-certificates; \
+    update-ca-certificates --fresh; \
+    test -s "$SSL_CERT_FILE"; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 RUN set -eux; \
     mkdir -p /ms-playwright-go /ms-playwright; \
     case "$TARGETARCH" in \

@@ -710,6 +710,10 @@ go run ./cmd/server -init-admin -db data/xianyu_data.db -admin-password '新密�
 - 独立安装包在 CI 构建阶段下载对应架构的 Playwright driver 和 Chromium；Linux 安装时只
   安装系统库，不需要再次下载浏览器。
 - 源码运行时确认系统允许下载 Playwright 驱动和 Chromium。
+- 源码镜像构建访问 npm 出现 `x509: certificate signed by unknown authority` 时，先检查 Docker
+  代理和系统时间；SQLite Compose 可在 `.env` 设置
+  `PLAYWRIGHT_GO_NPM_REGISTRY=https://registry.npmmirror.com` 后使用 `build --no-cache` 重试。
+  若镜像源仍报同样错误，应把网络代理根证书加入 Docker 信任链，不要关闭 TLS 校验。
 - 自带 Chromium 时设置 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`，并按需设置
   `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`。
 - 容器内需要足够的共享内存与可写的 `browser_data` 卷。

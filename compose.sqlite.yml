@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.debian13
+      args:
+        PLAYWRIGHT_GO_NPM_REGISTRY: ${PLAYWRIGHT_GO_NPM_REGISTRY:-https://registry.npmjs.org}
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite://data/xianyu_data.db
