@@ -15,7 +15,7 @@ var ErrRuleNotFound = errors.New("自动化规则不存在")
 // ErrRuleActive 表示规则仍有待处理运行，不能直接删除。
 var ErrRuleActive = errors.New("规则仍有待处理的自动化运行")
 
-// ErrPricingModeConflict 表示启用的 AI 议价账号不能再启用固定规则改价。
+// ErrPricingModeConflict 表示启用的 AI 议价账号不能再启用其他自动改价规则。
 var ErrPricingModeConflict = errors.New("该账号已启用 AI 议价，不能同时启用自动化规则改价")
 
 // TriggerOrderCreated 表示买家拍下未付款触发器。
@@ -326,7 +326,10 @@ func (s *RuleService) Normalize(ctx context.Context, userID int64, draft RuleDra
 	if combinationErr := validateTriggerActionCombination(draft.TriggerType, flags); combinationErr != nil {
 		return RuleInput{}, combinationErr
 	}
-	if draft.Enabled && flags.hasAdjustPrice {
+	if messageErr := validateExternalPriceMessageConfig(draft.ConfigJSON, draft.TriggerType, draft.ItemID, flags.hasDynamicPrice); messageErr != nil { // messageErr 是咨询引导与改价通知的适用范围或长度错误。
+		return RuleInput{}, messageErr
+	}
+	if draft.Enabled && (flags.hasAdjustPrice || flags.hasDynamicPrice) {
 		// aiEnabled 表示账号是否已经采用 AI 议价；aiErr 是非敏感设置读取错误。
 		aiEnabled, aiErr := s.ownership.AIReplyEnabled(ctx, draft.CookieID)
 		if aiErr != nil {
@@ -351,6 +354,8 @@ type ruleActionFlags struct {
 	hasConfirmShipment bool
 	// hasAdjustPrice 表示是否存在启用的订单改价动作。
 	hasAdjustPrice bool
+	// hasDynamicPrice 表示付款发货动作是否启用外部货源待付款实时跟价。
+	hasDynamicPrice bool
 }
 
 // normalizeDraftActions 逐个校验并规范化规则草稿中的动作，同时汇总启用动作类型标志。
@@ -376,6 +381,12 @@ func (s *RuleService) normalizeDraftActions(ctx context.Context, userID int64, d
 				return nil, flags, cardErr
 			}
 			flags.hasSendCard = flags.hasSendCard || enabled
+			// dynamicPriceEnabled 表示该外部发货动作要求接管待付款改价。
+			dynamicPriceEnabled, dynamicPriceErr := validateExternalPendingPriceConfig(draftAction.ConfigJSON)
+			if dynamicPriceErr != nil {
+				return nil, flags, dynamicPriceErr
+			}
+			flags.hasDynamicPrice = flags.hasDynamicPrice || (enabled && dynamicPriceEnabled)
 		case ActionSendText:
 			if strings.TrimSpace(draftAction.MessageTemplate) == "" {
 				return nil, flags, errors.New("发送文本动作必须填写文案")
@@ -464,11 +475,85 @@ func externalFulfillmentConfig(raw string) (string, int64, int64, error) {
 	return config.SourceType, config.InstanceID, config.GoodsID, nil
 }
 
+// validateExternalPendingPriceConfig 校验外部货源动作中的固定加价和最低利润，返回是否启用待付款跟价。
+func validateExternalPendingPriceConfig(raw string) (bool, error) {
+	// config 只读取待付款跟价开关和两个精确金额字段。
+	var config struct {
+		SourceType          string `json:"source_type"`
+		PendingPriceEnabled bool   `json:"pending_price_enabled"`
+		FixedMarkup         string `json:"fixed_markup"`
+		MinimumProfit       string `json:"minimum_profit"`
+	}
+	if strings.TrimSpace(raw) == "" {
+		return false, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil { // err 是待付款跟价动作 JSON 的解析结果。
+		return false, errors.New("动作配置必须是 JSON 对象")
+	}
+	if !config.PendingPriceEnabled {
+		return false, nil
+	}
+	if strings.TrimSpace(config.SourceType) != "external" {
+		return false, errors.New("待付款跟价只能用于外部货源")
+	}
+	// markupCents、markupErr 是每件固定加价的整数分值和格式错误。
+	markupCents, markupErr := parseRuleMoneyCents(config.FixedMarkup, false)
+	if markupErr != nil {
+		return false, errors.New("固定加价必须是 0.01 到 1000000 元、最多两位小数")
+	}
+	// profitCents、profitErr 是允许为零的每件最低保留利润和格式错误。
+	profitCents, profitErr := parseRuleMoneyCents(config.MinimumProfit, true)
+	if profitErr != nil {
+		return false, errors.New("最低保留利润必须是 0 到 1000000 元、最多两位小数")
+	}
+	if profitCents > markupCents {
+		return false, errors.New("最低保留利润不能大于固定加价")
+	}
+	return true, nil
+}
+
+// parseRuleMoneyCents 把规则金额解析为整数分；allowZero 控制零金额是否允许。
+func parseRuleMoneyCents(raw string, allowZero bool) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	// wholeText、fracText 分别是金额整数和小数部分。
+	wholeText, fracText := raw, ""
+	if dot := strings.IndexByte(raw, '.'); dot >= 0 { // dot 是十进制小数点位置。
+		wholeText, fracText = raw[:dot], raw[dot+1:]
+	}
+	if wholeText == "" || len(fracText) > 2 {
+		return 0, errors.New("金额格式无效")
+	}
+	// whole、wholeErr 是整数元部分及其十进制解析结果。
+	whole, wholeErr := strconv.ParseInt(wholeText, 10, 64)
+	if wholeErr != nil || whole < 0 {
+		return 0, errors.New("金额格式无效")
+	}
+	// fraction 是小数部分折算后的分值。
+	var fraction int64
+	if fracText != "" {
+		// parsedFraction、fractionErr 是小数文本和解析结果。
+		parsedFraction, fractionErr := strconv.ParseInt(fracText, 10, 64)
+		if fractionErr != nil || parsedFraction < 0 {
+			return 0, errors.New("金额格式无效")
+		}
+		fraction = parsedFraction
+		if len(fracText) == 1 {
+			fraction *= 10
+		}
+	}
+	// cents 是最终整数分金额。
+	cents := whole*100 + fraction
+	if cents > 100000000 || (!allowZero && cents == 0) {
+		return 0, errors.New("金额超出范围")
+	}
+	return cents, nil
+}
+
 // validateTriggerActionCombination 校验触发类型允许的动作组合和必需动作。
 func validateTriggerActionCombination(triggerType string, flags ruleActionFlags) error {
 	switch triggerType {
 	case TriggerOrderCreated:
-		if flags.hasConfirmShipment || flags.hasSendCard {
+		if flags.hasConfirmShipment || flags.hasSendCard || flags.hasDynamicPrice {
 			return errors.New("拍下未付款规则只能包含改价和文本动作")
 		}
 		if !flags.hasAdjustPrice {
@@ -485,14 +570,14 @@ func validateTriggerActionCombination(triggerType string, flags ruleActionFlags)
 		if flags.hasConfirmShipment {
 			return errors.New("评价后规则不能包含确认发货动作")
 		}
-		if flags.hasAdjustPrice {
+		if flags.hasAdjustPrice || flags.hasDynamicPrice {
 			return errors.New("改价动作只能用于拍下未付款规则")
 		}
 		if !flags.hasSendCard && !flags.hasSendText {
 			return errors.New("评价后规则至少需要一个已启用的发送动作")
 		}
 	case TriggerReviewMissingTimeout:
-		if flags.hasConfirmShipment || flags.hasSendCard || flags.hasAdjustPrice {
+		if flags.hasConfirmShipment || flags.hasSendCard || flags.hasAdjustPrice || flags.hasDynamicPrice {
 			return errors.New("求评价规则只能发送文本")
 		}
 		if !flags.hasSendText {

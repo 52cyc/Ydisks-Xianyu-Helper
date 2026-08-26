@@ -47,6 +47,7 @@ import {
   defaultRuleName,
   emptyVariant,
   isValidAdjustPrice,
+  isValidNonNegativeMoney,
   parseJSONObject,
   shouldReplaceGeneratedName,
   triggerMeta,
@@ -637,6 +638,23 @@ export const useRuleActions = ({
           return alert("请先完成每条外部货源商品的校验");
         for (const variant /* variant 是当前待校验直充 JSON 的发货内容。 */ of variants) {
           if (variant.source_type !== "external") continue;
+          if (variant.pending_price_enabled) {
+            // fixedMarkup 是待付款跟价使用的每件固定加价。
+            const fixedMarkup = String(variant.fixed_markup || "");
+            // minimumProfit 是付款采购时每件必须保留的最低利润。
+            const minimumProfit = String(variant.minimum_profit || "");
+            if (
+              !isValidNonNegativeMoney(fixedMarkup) ||
+              Number(fixedMarkup) <= 0
+            )
+              return alert("固定加价必须是大于 0、最多两位小数的金额");
+            if (!isValidNonNegativeMoney(minimumProfit))
+              return alert("最低保留利润必须是大于或等于 0、最多两位小数的金额");
+            if (Number(minimumProfit) > Number(fixedMarkup))
+              return alert("最低保留利润不能大于固定加价");
+            if (!String(variant.goods_price || "").trim())
+              return alert("货源未返回实时采购价，不能开启待付款自动改价");
+          }
           try {
             // attach 是当前规则将提交给货源站的直充字段模板。
             const attach = JSON.parse(variant.attach_json || "{}");

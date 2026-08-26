@@ -74,6 +74,9 @@ export const emptyVariant = (): ShippingVariant => ({
   goods_type: 0,
   goods_price: "",
   safe_price: "",
+  pending_price_enabled: false,
+  fixed_markup: "0.50",
+  minimum_profit: "0.20",
   attach_json: "{}",
   attach_fields: [],
   product_verified: false,
@@ -126,6 +129,12 @@ export const buildReviewConfig = (
   });
 };
 
+// buildExternalPriceMessageConfig 保留规则其他扩展字段并合并咨询引导或改价通知的局部修改。
+export const buildExternalPriceMessageConfig = (
+  raw: string | undefined,
+  patch: Record<string, boolean | string>,
+) => JSON.stringify({ ...parseJSONObject(raw), ...patch });
+
 // defaultRuleName 根据触发类型和商品标签生成规则默认名称。
 export const defaultRuleName = (
   trigger: AutomationTriggerType,
@@ -169,6 +178,16 @@ export const isValidAdjustPrice = (raw: string): boolean => {
   // cents 是金额折算出的整数分。
   const cents = Math.round(Number(trimmed) * 100);
   return cents >= 1 && cents <= 100000000;
+};
+
+// isValidNonNegativeMoney 校验可为零的规则金额，最多两位小数且不超过系统金额上限。
+export const isValidNonNegativeMoney = (raw: string): boolean => {
+  // trimmed 是去掉首尾空白后的金额文本。
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return false;
+  // cents 是金额折算出的整数分，用于避免直接比较小数字符串。
+  const cents = Math.round(Number(trimmed) * 100);
+  return cents >= 0 && cents <= 100000000;
 };
 
 // cardActionsForTrigger 根据触发类型创建默认动作链。

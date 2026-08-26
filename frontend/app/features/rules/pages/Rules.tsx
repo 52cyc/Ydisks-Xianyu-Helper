@@ -22,6 +22,7 @@ import {
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AutomationIssuePanel } from "../components/AutomationIssuePanel";
+import ExternalPriceMessageEditor from "../components/ExternalPriceMessageEditor";
 import {
   getFulfillmentProduct,
   listFulfillmentInstances,
@@ -36,6 +37,7 @@ import {
   accountLabel,
   actionSummary,
   adjustPriceTarget,
+  buildExternalPriceMessageConfig,
   buildReviewConfig,
   cardActionsForTrigger,
   fulfillmentGoodsID,
@@ -185,6 +187,32 @@ const Rules: React.FC<RulesProps> = ({
     handleDeleteDefaultReply,
     handleClearDefaultReplyRecords,
   } = ruleActions;
+
+  // externalPriceMessageConfig 是当前付款规则的咨询引导和改价成功通知配置。
+  const externalPriceMessageConfig = parseJSONObject(
+    editingAutomationRule?.config_json,
+  );
+  // hasExternalPendingPrice 表示至少一条外部货源内容已经开启待付款实时跟价。
+  const hasExternalPendingPrice = displayVariants.some(
+    /* pendingPriceVariantMatcher 查找会接管待付款订单价格的外部发货内容。 */ (
+      variant,
+    ) =>
+      variant.source_type === "external" &&
+      variant.pending_price_enabled === true,
+  );
+  /** updateExternalPriceMessageConfig 合并规则级聊天文案配置且不覆盖其他规则字段。 */
+  const updateExternalPriceMessageConfig = (
+    patch: Record<string, boolean | string>,
+  ): void => {
+    if (!editingAutomationRule) return;
+    setEditingAutomationRule({
+      ...editingAutomationRule,
+      config_json: buildExternalPriceMessageConfig(
+        editingAutomationRule.config_json,
+        patch,
+      ),
+    });
+  };
 
   /** validateFulfillmentVariant 按货源实例和商品 ID 校验单个商品，不做全量同步。 */
   const validateFulfillmentVariant = async (index: number): Promise<void> => {
@@ -1470,7 +1498,82 @@ const Rules: React.FC<RulesProps> = ({
                                         className="mt-2 w-full ios-input px-3 py-2.5 rounded-lg"
                                         placeholder="例如：9.90"
                                       />
+                                      <span className="mt-1 block text-[11px] font-normal leading-5 text-gray-500">
+                                        买家直接付款、未完成自动改价时继续使用此保护价。
+                                      </span>
                                     </label>
+                                    <div className="space-y-3 rounded-xl border border-violet-100 bg-white p-3 md:col-span-2">
+                                      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-gray-800">
+                                        <span>
+                                          开启待付款自动改价
+                                          <span className="mt-1 block text-xs font-normal leading-5 text-gray-500">
+                                            按货源实时采购价和固定加价修改闲鱼订单总价。
+                                          </span>
+                                        </span>
+                                        <input
+                                          type="checkbox"
+                                          checked={
+                                            variant.pending_price_enabled ===
+                                            true
+                                          }
+                                          onChange={
+                                            /* pendingPriceToggleHandler 切换当前外部发货内容的待付款实时跟价。 */ (
+                                              event,
+                                            ) =>
+                                              updateVariant(index, {
+                                                pending_price_enabled:
+                                                  event.target.checked,
+                                              })
+                                          }
+                                          className="h-4 w-4 accent-violet-600"
+                                        />
+                                      </label>
+                                      {variant.pending_price_enabled && (
+                                        <div className="grid gap-3 md:grid-cols-2">
+                                          <label className="text-xs font-bold text-gray-600">
+                                            每件固定加价
+                                            <input
+                                              value={
+                                                variant.fixed_markup || ""
+                                              }
+                                              onChange={
+                                                /* fixedMarkupChangeHandler 更新每个实际采购单位增加的固定金额。 */ (
+                                                  event,
+                                                ) =>
+                                                  updateVariant(index, {
+                                                    fixed_markup:
+                                                      event.target.value,
+                                                  })
+                                              }
+                                              className="mt-2 w-full ios-input rounded-lg px-3 py-2.5"
+                                              placeholder="例如：0.50"
+                                            />
+                                          </label>
+                                          <label className="text-xs font-bold text-gray-600">
+                                            每件最低保留利润
+                                            <input
+                                              value={
+                                                variant.minimum_profit || ""
+                                              }
+                                              onChange={
+                                                /* minimumProfitChangeHandler 更新付款采购时必须保留的每件利润。 */ (
+                                                  event,
+                                                ) =>
+                                                  updateVariant(index, {
+                                                    minimum_profit:
+                                                      event.target.value,
+                                                  })
+                                              }
+                                              className="mt-2 w-full ios-input rounded-lg px-3 py-2.5"
+                                              placeholder="例如：0.20"
+                                            />
+                                          </label>
+                                          <p className="text-[11px] font-normal leading-5 text-violet-700 md:col-span-2">
+                                            自动改价后，付款采购保护价会按本笔订单单独计算；货源上涨导致利润低于此值时停止采购。
+                                          </p>
+                                        </div>
+                                      )}
+                                    </div>
                                     {variant.goods_type === 2 && (
                                       <div className="space-y-3 md:col-span-2">
                                         <div className="text-xs font-bold text-gray-600">
@@ -1748,6 +1851,18 @@ const Rules: React.FC<RulesProps> = ({
                               </div>
                             </div>
                           ))}
+                          {currentTrigger === "order_paid" &&
+                            (hasExternalPendingPrice ||
+                              externalPriceMessageConfig.price_guidance_enabled ===
+                                true ||
+                              externalPriceMessageConfig.price_adjusted_notice_enabled ===
+                                true) && (
+                              <ExternalPriceMessageEditor
+                                config={externalPriceMessageConfig}
+                                hasPendingPrice={hasExternalPendingPrice}
+                                onChange={updateExternalPriceMessageConfig}
+                              />
+                            )}
                         </div>
                       </section>
                     ) : (

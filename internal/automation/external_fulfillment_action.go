@@ -12,11 +12,28 @@ import (
 
 // externalActionConfig 是自动发货动作中的外部货源最小配置。
 type externalActionConfig struct {
-	SourceType string            `json:"source_type"`
-	InstanceID int64             `json:"instance_id"`
-	GoodsID    int64             `json:"goods_id"`
-	SafePrice  string            `json:"safe_price"`
-	Attach     map[string]string `json:"attach"`
+	// SourceType 区分本地库存和外部货源。
+	SourceType string `json:"source_type"`
+	// InstanceID 是已配置货源实例主键。
+	InstanceID int64 `json:"instance_id"`
+	// GoodsID 是货源站商品主键。
+	GoodsID int64 `json:"goods_id"`
+	// GoodsName 是规则保存的货源商品名称，用于无规格商品的报价展示。
+	GoodsName string `json:"goods_name"`
+	// SpecName 是闲鱼商品规格名称，用于区分多规格报价分组。
+	SpecName string `json:"spec_name"`
+	// SpecValue 是闲鱼商品规格值，优先作为买家可见的报价标签。
+	SpecValue string `json:"spec_value"`
+	// SafePrice 是买家直接付款时继续使用的固定采购保护价。
+	SafePrice string `json:"safe_price"`
+	// Attach 保存直充商品字段与闲鱼订单数据的映射。
+	Attach map[string]string `json:"attach"`
+	// PendingPriceEnabled 表示买家拍下未付款时是否按实时货源价修改订单总价。
+	PendingPriceEnabled bool `json:"pending_price_enabled"`
+	// FixedMarkup 是每个实际采购单位增加的固定金额，使用十进制元字符串。
+	FixedMarkup string `json:"fixed_markup"`
+	// MinimumProfit 是付款采购时每个实际采购单位必须保留的最低利润。
+	MinimumProfit string `json:"minimum_profit"`
 }
 
 // errExternalFulfillmentPending 表示货源站已经受理订单但尚未产出结果；协调器会把它交给独立长轮询策略，而不是普通三次失败重试。
@@ -66,8 +83,18 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	if attachErr != nil {
 		return 0, fmt.Errorf("%w: %v", errActionNotPerformed, attachErr)
 	}
+	// safePrice 默认使用规则固定保护价；只有该订单改价明确成功时才读取订单级动态保护价。
+	safePrice := config.SafePrice
+	// quotedSafePrice、quoted、quoteErr 分别是该动作订单级动态保护价、命中标记和读取失败原因。
+	quotedSafePrice, quoted, quoteErr := e.store.Automation.AdjustedExternalSafePrice(ctx, task.OrderID, action.ID)
+	if quoteErr != nil {
+		return 0, fmt.Errorf("%w: 读取订单动态采购保护价: %v", errActionNotPerformed, quoteErr)
+	}
+	if quoted {
+		safePrice = quotedSafePrice
+	}
 	// result、fulfillErr 是采购或使用原单号查询后的统一结果与错误。
-	result, fulfillErr := e.externalFulfillment().Fulfill(ctx, ExternalFulfillmentRequest{UserID: userID, InstanceID: config.InstanceID, ExternalOrderNo: externalOrderNo, XianyuOrderID: task.OrderID, GoodsID: config.GoodsID, Quantity: count, SafePrice: config.SafePrice, Attach: attach})
+	result, fulfillErr := e.externalFulfillment().Fulfill(ctx, ExternalFulfillmentRequest{UserID: userID, InstanceID: config.InstanceID, ExternalOrderNo: externalOrderNo, XianyuOrderID: task.OrderID, GoodsID: config.GoodsID, Quantity: count, SafePrice: safePrice, Attach: attach})
 	if fulfillErr != nil {
 		return 0, fmt.Errorf("%w: 外部货源履约失败: %v", errActionNotPerformed, fulfillErr)
 	}

@@ -7,12 +7,14 @@ actionSummary,
 adjustPriceTarget,
 boolFlag,
 buildAdjustPriceConfig,
+buildExternalPriceMessageConfig,
 buildReviewConfig,
 cardActionsForTrigger,
 defaultRuleName,
 emptyVariant,
 fulfillmentGoodsID,
 isValidAdjustPrice,
+isValidNonNegativeMoney,
 parseJSONObject,
 shouldReplaceGeneratedName,
 statusPill,
@@ -40,6 +42,13 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(parseJSONObject('{"max_attempts": 3}')).toEqual({ max_attempts: 3 });
     expect(buildReviewConfig('{"after_shipped_hours": 48}')).toBe('{"after_shipped_hours":48,"repeat_interval_hours":24,"max_attempts":1}');
     expect(buildReviewConfig(undefined, { max_attempts: 4 })).toBe('{"after_shipped_hours":72,"repeat_interval_hours":24,"max_attempts":4}');
+  });
+
+  test('合并实时跟价消息配置时保留规则其他字段', /* 当前回调验证聊天话术开关不会覆盖已有规则扩展配置。 */ () => {
+    expect(buildExternalPriceMessageConfig('{"existing":1}', {
+      price_guidance_enabled: true,
+      price_guidance_text: '请先拍下不要付款',
+    })).toBe('{"existing":1,"price_guidance_enabled":true,"price_guidance_text":"请先拍下不要付款"}');
   });
 
   test('生成规则名称并识别可替换的系统名称', /* 当前回调处理规则配置和展示状态。 */ () => {
@@ -86,6 +95,15 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(actionSummary(rule({ trigger_type: 'order_created', actions: [] }))).toBe('未配置目标价格');
   });
 
+  test('校验外部货源固定加价和最低利润金额', /* 当前回调验证跟价金额允许零利润但拒绝负数和多位小数。 */ () => {
+    expect(isValidNonNegativeMoney('0')).toBe(true);
+    expect(isValidNonNegativeMoney('0.20')).toBe(true);
+    expect(isValidNonNegativeMoney('0.5')).toBe(true);
+    expect(isValidNonNegativeMoney('-0.1')).toBe(false);
+    expect(isValidNonNegativeMoney('0.123')).toBe(false);
+    expect(isValidNonNegativeMoney('')).toBe(false);
+  });
+
   test('汇总动作、主题样式和布尔标志', /* 当前回调处理规则配置和展示状态。 */ () => {
     expect(actionSummary(rule({ trigger_type: 'review_missing_timeout', actions: [{ action_type: 'send_text', message_template: '请评价', enabled: true }] }))).toBe('请评价');
     expect(actionSummary(rule({ trigger_type: 'review_missing_timeout', actions: [] }))).toBe('发送求评价文案');
@@ -108,7 +126,7 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
   });
 
   test('创建空规格并选择账号展示名称', /* 当前回调处理规则配置和展示状态。 */ () => {
-    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0 }));
+    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0, pending_price_enabled: false, fixed_markup: '0.50', minimum_profit: '0.20' }));
     // idOnly 是仅包含平台账号标识的最小账号对象。
     const idOnly = { id: 'account-1' } as AccountDetail;
     expect(accountLabel({ id: 'a', nickname: '昵称' } as AccountDetail)).toBe('昵称');

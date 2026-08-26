@@ -142,6 +142,9 @@ const normalizeShippingRules = (rules: any[]): ShippingRule[] =>
               goods_type: Number(cfg.goods_type || 0),
               goods_price: cfg.goods_price || "",
               safe_price: cfg.safe_price || "",
+              pending_price_enabled: cfg.pending_price_enabled === true,
+              fixed_markup: cfg.fixed_markup || "0.50",
+              minimum_profit: cfg.minimum_profit ?? "0.20",
               attach_json: JSON.stringify(cfg.attach || {}, null, 2),
               attach_fields: Array.isArray(cfg.attach_fields)
                 ? cfg.attach_fields
@@ -351,6 +354,18 @@ export const updateShippingRule = async (
                 safe_price:
                   variant.source_type === "external"
                     ? variant.safe_price || ""
+                    : "",
+                pending_price_enabled:
+                  variant.source_type === "external"
+                    ? variant.pending_price_enabled === true
+                    : false,
+                fixed_markup:
+                  variant.source_type === "external"
+                    ? variant.fixed_markup || ""
+                    : "",
+                minimum_profit:
+                  variant.source_type === "external"
+                    ? variant.minimum_profit || ""
                     : "",
                 attach:
                   variant.source_type === "external"

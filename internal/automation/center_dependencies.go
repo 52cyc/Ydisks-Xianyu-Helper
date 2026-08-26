@@ -56,7 +56,18 @@ type ExternalFulfillmentResult struct {
 	RechargeHints string
 }
 
-// ExternalFulfillment 屏蔽具体供应商协议，只向自动化暴露幂等履约结果。
+// ExternalProductQuote 是待付款跟价所需的非敏感货源商品快照。
+type ExternalProductQuote struct {
+	// Price 是货源返回的当前单件采购价，使用十进制元字符串。
+	Price string
+	// CanBuy 表示货源商品当前允许采购；停用或无库存时不得修改闲鱼价格。
+	CanBuy bool
+}
+
+// ExternalFulfillment 屏蔽具体供应商协议，只向自动化暴露实时商品报价和幂等履约结果。
 type ExternalFulfillment interface {
+	// QuoteProduct 查询当前货源商品价格，不创建远程订单或修改本地履约状态。
+	QuoteProduct(context.Context, int64, int64, int64) (ExternalProductQuote, error)
+	// Fulfill 使用稳定外部单号采购或查询既有订单，调用方通过 SafePrice 限制最高采购成本。
 	Fulfill(context.Context, ExternalFulfillmentRequest) (ExternalFulfillmentResult, error)
 }

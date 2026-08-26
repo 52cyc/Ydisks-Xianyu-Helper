@@ -117,6 +117,37 @@ func TestRuleServiceAcceptsExternalFulfillmentWithoutLocalCard(t *testing.T) {
 	}
 }
 
+// TestRuleServiceValidatesExternalPendingPrice 验证外部货源待付款跟价允许独立固定加价，并拒绝利润下限高于加价。
+func TestRuleServiceValidatesExternalPendingPrice(t *testing.T) {
+	// service 是只验证动态跟价规则输入的应用服务。
+	service := NewRuleService(&ruleRepositoryFake{}, &ruleOwnershipFake{})
+	// valid 是固定加价 0.50、最低利润 0.20 的有效付款发货规则。
+	valid := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Enabled: true, Actions: []ActionDraft{{ActionType: ActionSendCard,
+		ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"pending_price_enabled":true,"fixed_markup":"0.50","minimum_profit":"0.20"}`}}}
+	if _, err := service.Normalize(context.Background(), 7, valid); err != nil { // err 是有效动态跟价配置不应产生的校验错误。
+		t.Fatalf("有效外部跟价规则被拒绝: %v", err)
+	}
+	// invalid 把每件最低利润设为高于固定加价，必须在保存前拒绝。
+	invalid := valid
+	invalid.Actions = []ActionDraft{{ActionType: ActionSendCard,
+		ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"pending_price_enabled":true,"fixed_markup":"0.40","minimum_profit":"0.50"}`}}
+	if _, err := service.Normalize(context.Background(), 7, invalid); err == nil || !strings.Contains(err.Error(), "不能大于固定加价") { // err 是利润关系校验结果。
+		t.Fatalf("最低利润高于固定加价应被拒绝: %v", err)
+	}
+}
+
+// TestRuleServiceRejectsDynamicPriceWhenAIEnabled 验证外部实时跟价与 AI 议价保持互斥，避免同一订单被两种模式改价。
+func TestRuleServiceRejectsDynamicPriceWhenAIEnabled(t *testing.T) {
+	// service 注入已开启 AI 议价的账号状态。
+	service := NewRuleService(&ruleRepositoryFake{}, &ruleOwnershipFake{aiEnabled: true})
+	// draft 是启用外部货源待付款跟价的付款发货规则。
+	draft := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Enabled: true, Actions: []ActionDraft{{ActionType: ActionSendCard,
+		ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"pending_price_enabled":true,"fixed_markup":"0.50","minimum_profit":"0.20"}`}}}
+	if _, err := service.Normalize(context.Background(), 7, draft); !errors.Is(err, ErrPricingModeConflict) { // err 应保持统一改价模式冲突类型。
+		t.Fatalf("AI 议价与外部跟价冲突应被拒绝: %v", err)
+	}
+}
+
 // TestRuleServiceRejectsIncompleteExternalFulfillment 验证外部货源动作必须同时包含实例和商品 ID。
 func TestRuleServiceRejectsIncompleteExternalFulfillment(t *testing.T) {
 	// service 是当前输入错误场景使用的规则应用服务。

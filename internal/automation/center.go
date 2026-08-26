@@ -305,9 +305,11 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		c.logger.Info("账号已停用，记录事件事实但不执行自动化", "account", task.AccountID, "trigger", task.TriggerType)
 		return false, nil
 	}
-	// aiPricingActive 表示订单创建事件已由互斥的 AI 议价模式接管；aiPricingErr 是报价执行或状态收口错误。
-	if aiPricingActive, aiPricingErr := c.handleAIPricingMode(ctx, task); aiPricingActive || aiPricingErr != nil {
-		return false, aiPricingErr
+	// pricingHandled 表示互斥的 AI 报价或外部货源跟价已接管订单；preparedTask 带回外部跟价读取的规格和数量。
+	if pricingHandled, preparedTask, pricingErr := c.handleOrderCreatedPricing(ctx, task); pricingHandled || pricingErr != nil {
+		return pricingHandled, pricingErr
+	} else {
+		task = preparedTask
 	}
 	// rules、err 用于本次流程后续判断的rules、err
 	rules, err := c.rules.match(ctx, task)
@@ -625,8 +627,8 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 	}); err != nil {
 		return task, fmt.Errorf("保存自动化准备阶段订单事实: %w", err)
 	}
-	// needsDetail 用于本次流程后续判断的needsDetail
-	needsDetail := task.TriggerType == TriggerOrderPaid
+	// needsDetail 表示付款发货或显式待付款货源跟价需要读取真实规格、数量和订单金额。
+	needsDetail := task.TriggerType == TriggerOrderPaid || task.RequireOrderDetail
 	if // existing、err 用于本次流程后续判断的existing、err
 	existing, err := c.store.Orders.Get(ctx, task.OrderID); err == nil && existing != nil {
 		task = mergeOrderIntoTask(task, existing)

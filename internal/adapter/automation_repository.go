@@ -100,7 +100,7 @@ func (r *AutomationRepository) CountByTriggerForUser(ctx context.Context, filter
 
 // Create 将应用层规则输入转换为数据库模型并创建规则。
 func (r *AutomationRepository) Create(ctx context.Context, input automationapp.RuleInput) (int64, error) {
-	// unlock 串行化固定改价规则与 AI 议价设置的最终冲突检查和写入。
+	// unlock 串行化自动改价规则与 AI 议价设置的最终冲突检查和写入。
 	unlock := r.store.LockPricingMode()
 	defer unlock()
 	if automationInputEnablesAdjustPrice(input) {
@@ -135,7 +135,7 @@ func (r *AutomationRepository) EnsurePublishRule(ctx context.Context, input auto
 
 // Update 将应用层规则输入转换为数据库模型并更新规则。
 func (r *AutomationRepository) Update(ctx context.Context, userID, ruleID int64, input automationapp.RuleInput) error {
-	// unlock 串行化固定改价规则与 AI 议价设置的最终冲突检查和写入。
+	// unlock 串行化自动改价规则与 AI 议价设置的最终冲突检查和写入。
 	unlock := r.store.LockPricingMode()
 	defer unlock()
 	if automationInputEnablesAdjustPrice(input) {
@@ -153,7 +153,7 @@ func (r *AutomationRepository) Update(ctx context.Context, userID, ruleID int64,
 	return mapAutomationRuleError(err)
 }
 
-// automationInputEnablesAdjustPrice 判断规则输入是否会实际启用固定订单改价动作。
+// automationInputEnablesAdjustPrice 判断规则输入是否会实际启用固定订单改价或外部货源动态跟价。
 func automationInputEnablesAdjustPrice(input automationapp.RuleInput) bool {
 	if !input.Enabled {
 		return false

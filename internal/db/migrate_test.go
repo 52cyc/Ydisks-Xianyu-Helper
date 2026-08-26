@@ -74,6 +74,12 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 			t.Errorf("列缺失: %s.%s（应为收敛后的最终 schema）", c.table, c.col)
 		}
 	}
+	if !tableExists(t, db, "external_price_quotes") {
+		t.Fatal("external_price_quotes 应由最新迁移创建，用于隔离每笔订单的货源跟价快照")
+	}
+	if !tableExists(t, db, "external_price_message_records") {
+		t.Fatal("external_price_message_records 应由最新迁移创建，用于防止咨询引导和改价通知重复发送")
+	}
 
 	// 默认系统设置应就位（qq_reply_secret_key 应为空，遵循无默认口令安全基线）。
 	var val string
@@ -146,13 +152,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !tableExists(t, rawDB, "chat_quick_replies") || !tableExists(t, rawDB, "chat_buyer_notes") {
 		t.Fatal("chat quick reply and buyer note tables should be created by the latest migration")
 	}
-	// finalVersion 验证迁移账本已推进到包含 API 发货策略的最新 dev schema 版本。
+	// finalVersion 验证迁移账本已推进到包含外部货源订单级跟价快照的最新版本。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 39 {
-		t.Fatalf("final migration version=%d, want 39", finalVersion)
+	if finalVersion != 41 {
+		t.Fatalf("final migration version=%d, want 41", finalVersion)
 	}
 }
 

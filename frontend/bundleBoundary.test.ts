@@ -14,7 +14,8 @@ const PAGE_CHUNK_BUDGETS: Record<string, number> = {
   CardList: 45 * 1024,
   ItemList: 65 * 1024,
   Settings: 30 * 1024,
-  Rules: 75 * 1024,
+  // Rules 包含外部货源实时跟价、咨询引导和订单通知编辑器，独立预算保留约 3KB 后续修复空间。
+  Rules: 80 * 1024,
   Notifications: 45 * 1024,
   Chat: 50 * 1024,
   Fulfillment: 20 * 1024,

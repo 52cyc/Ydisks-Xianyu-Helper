@@ -11,6 +11,29 @@ import (
 
 // --- automation.go ---
 
+// TestHasEnabledAdjustPriceRuleIncludesExternalDynamicPrice 验证 AI 议价互斥查询能够识别付款规则 JSON 中的外部货源跟价开关。
+func TestHasEnabledAdjustPriceRuleIncludesExternalDynamicPrice(t *testing.T) {
+	// store、cleanup 是隔离数据库及其清理函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是规则创建和互斥查询共用的测试上下文。
+	ctx := context.Background()
+	// userID、cookieID 是当前测试账号的本地用户和闲鱼账号标识。
+	userID, cookieID := seedAccount(t, store)
+	// config 是启用待付款实时跟价的外部货源动作配置。
+	config := `{"source_type":"external","instance_id":8,"goods_id":40863,"pending_price_enabled":true,"fixed_markup":"0.50","minimum_profit":"0.20"}`
+	// createErr 是动态跟价测试规则的写入结果。
+	if _, createErr := store.Automation.Create(ctx, makeAutomationRule(cookieID, userID, "item", "order_paid", true, 100,
+		AutomationActionInput{ActionType: "send_card", ConfigJSON: config, Enabled: true})); createErr != nil {
+		t.Fatal(createErr)
+	}
+	// enabled、queryErr 是账号是否存在真实改价能力和查询失败原因。
+	enabled, queryErr := store.Automation.HasEnabledAdjustPriceRule(ctx, cookieID)
+	if queryErr != nil || !enabled {
+		t.Fatalf("外部动态跟价应被识别为改价模式: enabled=%v err=%v", enabled, queryErr)
+	}
+}
+
 // makeAutomationRule 帮助构造一条规则输入。
 func makeAutomationRule(cid string, uid int64, itemID, trigger string, enabled bool, priority int, actions ...AutomationActionInput) AutomationRuleInput {
 	return AutomationRuleInput{

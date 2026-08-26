@@ -212,11 +212,11 @@ func (r *SettingsRepository) UpsertAIReply(ctx context.Context, cookieID string,
 	if err := r.validate(); err != nil {
 		return err
 	}
-	// unlock 串行化 AI 议价与固定规则改价的最终冲突检查和写入。
+	// unlock 串行化 AI 议价与其他自动改价规则的最终冲突检查和写入。
 	unlock := r.store.LockPricingMode()
 	defer unlock()
 	if settings.AIEnabled {
-		// conflict 表示最终写入时账号是否已有启用的固定改价规则；conflictErr 是查询错误。
+		// conflict 表示最终写入时账号是否已有启用的固定或外部货源动态改价规则；conflictErr 是查询错误。
 		conflict, conflictErr := r.store.Automation.HasEnabledAdjustPriceRule(ctx, cookieID)
 		if conflictErr != nil {
 			return conflictErr
@@ -232,7 +232,7 @@ func (r *SettingsRepository) UpsertAIReply(ctx context.Context, cookieID string,
 	})
 }
 
-// HasEnabledAdjustPriceRule 判断账号是否存在启用的固定自动改价规则。
+// HasEnabledAdjustPriceRule 判断账号是否存在启用的固定或外部货源动态改价规则。
 func (r *SettingsRepository) HasEnabledAdjustPriceRule(ctx context.Context, cookieID string) (bool, error) {
 	// err 表示设置数据库适配器未装配。
 	if err := r.validate(); err != nil {

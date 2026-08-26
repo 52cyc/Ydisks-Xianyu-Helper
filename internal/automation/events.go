@@ -55,6 +55,8 @@ type Task struct {
 	UpdateKey   string
 	// ForceConfirmShipment 仅供明确的人工“完整发货”使用；自动事件仍遵循账号自动确认开关。
 	ForceConfirmShipment bool
+	// RequireOrderDetail 仅供待付款货源跟价在规则匹配前补齐规格和数量；普通固定改价不依赖订单详情。
+	RequireOrderDetail bool
 	// ActionPlan 是运行创建时冻结的动作计划。延迟恢复和失败重试必须使用该快照，
 	// 不能把数字游标应用到管理员后来修改过的规则上。
 	ActionPlan []db.AutomationAction

@@ -46,7 +46,7 @@ type Store struct {
 
 	credentialMu    sync.Mutex
 	credentialLocks map[string]*credentialLockEntry
-	// pricingModeMu 串行化 AI 议价与固定规则改价的互斥配置写入；锁内只允许短数据库事务，禁止外部 I/O。
+	// pricingModeMu 串行化 AI 议价与其他自动改价规则的互斥配置写入；锁内只允许短数据库事务，禁止外部 I/O。
 	pricingModeMu sync.Mutex
 }
 

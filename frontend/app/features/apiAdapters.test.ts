@@ -840,6 +840,33 @@ test('getShippingRules exposes buyer reviewed gift rules as automation rules', a
   });
 } /* 测试回调验证：getShippingRules exposes buyer reviewed gift rules as automation rules。 */);
 
+test('getShippingRules restores external pending price configuration', async () => {
+  // config 是后端动作 JSON 中保存的外部货源跟价配置。
+  const config = JSON.stringify({ source_type: 'external', instance_id: 8, goods_id: 40863, goods_price: '2.80', safe_price: '2.80', pending_price_enabled: true, fixed_markup: '0.40', minimum_profit: '0.15' });
+  stubContractFetch(vi.fn().mockResolvedValue(jsonResponse([{
+    id: 13,
+    cookie_id: 'cookie-1',
+    item_id: 'item-1',
+    name: '付款后自动发货',
+    trigger_type: 'order_paid',
+    enabled: true,
+    priority: 100,
+    config_json: '{}',
+    actions: [{ id: 34, action_type: 'send_card', card_id: 0, delivery_count: 1, config_json: config, enabled: true, sort_order: 1 }],
+  }])));
+
+  // rules 是适配器恢复后的 UI 规则，跟价字段必须留在对应外部发货内容中。
+  const rules = await getShippingRules();
+  expect(rules[0].variants[0]).toMatchObject({
+    source_type: 'external',
+    instance_id: 8,
+    goods_id: 40863,
+    pending_price_enabled: true,
+    fixed_markup: '0.40',
+    minimum_profit: '0.15',
+  });
+} /* 测试回调验证外部货源跟价配置可以从规则动作恢复到编辑器。 */);
+
 test('getReplyRules labels keyword matching according to engine contains behavior', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{
     id: 42,
@@ -1132,6 +1159,48 @@ test('updateShippingRule posts every matching card action before confirm shipmen
   expect(JSON.parse(body.actions[1].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: true });
   expect(body.actions[1].delay_seconds).toBe(0);
 } /* 测试回调验证：updateShippingRule posts every matching card action before confirm shipment。 */);
+
+test('updateShippingRule serializes configurable external pending price fields', async () => {
+  // fetchMock 捕获外部货源付款规则请求体，验证动态跟价字段保存在对应发货动作中。
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 31 }));
+  stubContractFetch(fetchMock);
+
+  await updateShippingRule({
+    cookie_id: 'cookie-1',
+    item_id: 'item-1',
+    trigger_type: 'order_paid',
+    enabled: true,
+    variants: [{
+      spec_name: '',
+      spec_value: '',
+      card_id: 0,
+      delivery_count: 1,
+      enabled: true,
+      source_type: 'external',
+      instance_id: 8,
+      goods_id: 40863,
+      safe_price: '2.80',
+      pending_price_enabled: true,
+      fixed_markup: '0.40',
+      minimum_profit: '0.15',
+      attach_json: '{}',
+    }],
+  });
+
+  // body 是适配器提交的付款后自动化规则。
+  const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+  // actionConfig 是第一条外部货源动作配置。
+  const actionConfig = JSON.parse(body.actions[0].config_json);
+  expect(actionConfig).toMatchObject({
+    source_type: 'external',
+    instance_id: 8,
+    goods_id: 40863,
+    safe_price: '2.80',
+    pending_price_enabled: true,
+    fixed_markup: '0.40',
+    minimum_profit: '0.15',
+  });
+} /* 测试回调验证外部货源固定加价和最低利润按发货动作独立序列化。 */);
 
 test('updateShippingRule preserves text actions while editing card variants', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 4 })); /* fetchMock 表示fetchMock。 */

@@ -24,6 +24,18 @@ func newAutomationExternalFulfillmentAdapter(service *fulfillmentapp.Service) au
 	return &automationExternalFulfillmentAdapter{service: service}
 }
 
+// QuoteProduct 读取指定用户货源实例中的实时商品价；该调用只查询商品，不创建采购订单。
+func (adapter *automationExternalFulfillmentAdapter) QuoteProduct(ctx context.Context, userID, instanceID, goodsID int64) (automation.ExternalProductQuote, error) {
+	// product 是货源应用层归一化后的实时商品详情。
+	product, productErr := adapter.service.GetProduct(ctx, userID, instanceID, goodsID)
+	if productErr != nil {
+		return automation.ExternalProductQuote{}, productErr
+	}
+	// canBuy 兼容部分卡速售站点不返回 can_buy、但用 status=1 表示商品正常销售的响应。
+	canBuy := product.CanBuy || product.Status == 1
+	return automation.ExternalProductQuote{Price: strings.TrimSpace(product.Price), CanBuy: canBuy}, nil
+}
+
 // Fulfill 先幂等建单，对已有或处理中订单只使用原外部单号查询。
 func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context, request automation.ExternalFulfillmentRequest) (automation.ExternalFulfillmentResult, error) {
 	// purchaseRequest 是通用货源应用层的采购输入。

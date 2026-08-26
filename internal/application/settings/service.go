@@ -21,7 +21,7 @@ var ErrForbidden = errors.New("无权操作该账号设置")
 // ErrConfigNotFound 表示账号存在但尚未保存 AI 回复设置。
 var ErrConfigNotFound = errors.New("AI 回复设置不存在")
 
-// ErrPricingModeConflict 表示 AI 议价与固定自动改价规则不能同时启用。
+// ErrPricingModeConflict 表示 AI 议价与其他自动改价规则不能同时启用。
 var ErrPricingModeConflict = errors.New("AI 议价与自动化规则改价不能同时启用，请先关闭另一种改价方式")
 
 // SecretChange 描述敏感系统设置的显式三态变更命令。
@@ -98,7 +98,7 @@ type Repository interface {
 	GetAIReply(ctx context.Context, userID int64, cookieID string) (AIReplySettings, error)
 	// UpsertAIReply 保存指定账号的 AI 设置摘要。
 	UpsertAIReply(ctx context.Context, cookieID string, settings AIReplySettings) error
-	// HasEnabledAdjustPriceRule 判断账号是否已有启用的固定自动改价规则。
+	// HasEnabledAdjustPriceRule 判断账号是否已有启用的固定或外部货源动态改价规则。
 	HasEnabledAdjustPriceRule(ctx context.Context, cookieID string) (bool, error)
 }
 

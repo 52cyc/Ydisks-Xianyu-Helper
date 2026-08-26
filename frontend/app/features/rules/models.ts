@@ -279,6 +279,12 @@ export interface ShippingVariant {
   goods_price?: string;
   /** 管理员设定的采购保护价。 */
   safe_price?: string;
+  /** 是否在买家拍下未付款时按货源实时价修改闲鱼订单价格。 */
+  pending_price_enabled?: boolean;
+  /** 每个实际采购单位增加的固定金额。 */
+  fixed_markup?: string;
+  /** 付款采购时每个实际采购单位必须保留的最低利润。 */
+  minimum_profit?: string;
   /** 直充附加字段的 JSON 编辑文本。 */
   attach_json?: string;
   /** 货源商品校验返回的直充字段定义，用于生成订单字段映射。 */

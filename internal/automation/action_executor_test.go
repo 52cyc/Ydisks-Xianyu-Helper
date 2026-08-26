@@ -85,6 +85,20 @@ type externalFulfillmentStub struct {
 	requests []ExternalFulfillmentRequest
 	// result 是每次采购返回的统一履约结果。
 	result ExternalFulfillmentResult
+	// product 是待付款跟价查询返回的实时商品摘要。
+	product ExternalProductQuote
+	// products 是按货源商品 ID 返回不同报价的多规格测试数据。
+	products map[int64]ExternalProductQuote
+	// quoteErr 是实时商品查询预设的失败原因。
+	quoteErr error
+}
+
+// QuoteProduct 返回测试预置的实时商品价格，不创建采购请求。
+func (s *externalFulfillmentStub) QuoteProduct(_ context.Context, _ int64, _ int64, goodsID int64) (ExternalProductQuote, error) {
+	if product, exists := s.products[goodsID]; exists { // product 和 exists 是当前商品是否配置独立测试报价。
+		return product, s.quoteErr
+	}
+	return s.product, s.quoteErr
 }
 
 // Fulfill 记录请求并返回预设卡密结果。
