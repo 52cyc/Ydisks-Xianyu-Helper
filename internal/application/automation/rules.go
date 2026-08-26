@@ -326,7 +326,7 @@ func (s *RuleService) Normalize(ctx context.Context, userID int64, draft RuleDra
 	if combinationErr := validateTriggerActionCombination(draft.TriggerType, flags); combinationErr != nil {
 		return RuleInput{}, combinationErr
 	}
-	if messageErr := validateExternalPriceMessageConfig(draft.ConfigJSON, draft.TriggerType, draft.ItemID, flags.hasDynamicPrice); messageErr != nil { // messageErr 是咨询引导与改价通知的适用范围或长度错误。
+	if messageErr := validateExternalPriceMessageConfig(draft.ConfigJSON, draft.TriggerType, draft.ItemID, flags.hasDynamicPrice, flags.hasExternalFulfillment); messageErr != nil { // messageErr 是外部货源买家消息的适用范围或长度错误。
 		return RuleInput{}, messageErr
 	}
 	if draft.Enabled && (flags.hasAdjustPrice || flags.hasDynamicPrice) {
@@ -356,6 +356,8 @@ type ruleActionFlags struct {
 	hasAdjustPrice bool
 	// hasDynamicPrice 表示付款发货动作是否启用外部货源待付款实时跟价。
 	hasDynamicPrice bool
+	// hasExternalFulfillment 表示付款发货动作至少包含一条已启用的外部货源内容。
+	hasExternalFulfillment bool
 }
 
 // normalizeDraftActions 逐个校验并规范化规则草稿中的动作，同时汇总启用动作类型标志。
@@ -381,6 +383,12 @@ func (s *RuleService) normalizeDraftActions(ctx context.Context, userID int64, d
 				return nil, flags, cardErr
 			}
 			flags.hasSendCard = flags.hasSendCard || enabled
+			// sourceType 是当前发货动作的本地或外部来源；实例和商品 ID 已由前置校验验证。
+			sourceType, _, _, sourceErr := externalFulfillmentConfig(draftAction.ConfigJSON)
+			if sourceErr != nil {
+				return nil, flags, sourceErr
+			}
+			flags.hasExternalFulfillment = flags.hasExternalFulfillment || (enabled && sourceType == "external")
 			// dynamicPriceEnabled 表示该外部发货动作要求接管待付款改价。
 			dynamicPriceEnabled, dynamicPriceErr := validateExternalPendingPriceConfig(draftAction.ConfigJSON)
 			if dynamicPriceErr != nil {

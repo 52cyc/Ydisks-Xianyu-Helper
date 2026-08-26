@@ -19,6 +19,8 @@ const (
 	defaultExternalPriceGuidance = "当前最新报价：\n{price_list}\n如果需要，请先拍下但不要付款。系统会按您下单时的最新价格自动改价，确认金额后再付款。"
 	// defaultExternalPriceAdjustedNotice 是订单按实时货源成本改价成功后的默认付款提示。
 	defaultExternalPriceAdjustedNotice = "已按最新价格为您改价为 ¥{price}，请核对订单金额，确认无误后再付款。"
+	// defaultExternalFulfillmentFailureNotice 是外部采购全部自动重试耗尽后发送的默认人工处理提示。
+	defaultExternalFulfillmentFailureNotice = "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理；如不愿等待，也可以申请退款。"
 )
 
 // externalPriceMessageConfig 保存付款规则级咨询引导和改价成功通知；金额参数仍由各货源动作独立配置。
@@ -33,6 +35,10 @@ type externalPriceMessageConfig struct {
 	AdjustedNoticeEnabled bool `json:"price_adjusted_notice_enabled"`
 	// AdjustedNoticeText 是改价成功文案，支持最终订单价格等占位符。
 	AdjustedNoticeText string `json:"price_adjusted_notice_text"`
+	// FailureNoticeEnabled 表示外部采购全部自动重试耗尽后是否提示买家人工处理。
+	FailureNoticeEnabled bool `json:"fulfillment_failure_notice_enabled"`
+	// FailureNoticeText 是最终失败提示，不允许自动拼入保护价、成本或利润。
+	FailureNoticeText string `json:"fulfillment_failure_notice_text"`
 }
 
 // parseExternalPriceMessageConfig 解析规则扩展配置并为已开启但留空的文案应用安全默认值。
@@ -54,7 +60,42 @@ func parseExternalPriceMessageConfig(raw string) (externalPriceMessageConfig, er
 	if config.AdjustedNoticeEnabled && strings.TrimSpace(config.AdjustedNoticeText) == "" {
 		config.AdjustedNoticeText = defaultExternalPriceAdjustedNotice
 	}
+	if config.FailureNoticeEnabled && strings.TrimSpace(config.FailureNoticeText) == "" {
+		config.FailureNoticeText = defaultExternalFulfillmentFailureNotice
+	}
 	return config, nil
+}
+
+// sendExternalFulfillmentFailureNotice 在外部采购全部自动重试耗尽后向买家发送一次人工处理提示。
+func (c *Center) sendExternalFulfillmentFailureNotice(ctx context.Context, task Task, rule db.AutomationRule) error {
+	// config 和 configErr 是规则级最终失败通知开关、文案及解析错误。
+	config, configErr := parseExternalPriceMessageConfig(rule.ConfigJSON)
+	if configErr != nil || !config.FailureNoticeEnabled {
+		return configErr
+	}
+	if strings.TrimSpace(task.OrderID) == "" || strings.TrimSpace(task.ChatID) == "" || strings.TrimSpace(task.BuyerID) == "" {
+		return errors.New("外部采购最终失败通知缺少订单或会话信息")
+	}
+	// dedupeKey 以规则和订单为边界，保证跨重启、重复卡片和恢复扫描最多成功发送一次。
+	dedupeKey := fmt.Sprintf("external-fulfillment-failed:%d:%s", rule.ID, strings.TrimSpace(task.OrderID))
+	// claimed 和 claimErr 表示当前收口流程是否取得最终失败通知的发送租约。
+	claimed, claimErr := c.store.Automation.ClaimExternalPriceMessage(ctx, db.ExternalPriceMessageRecord{
+		DedupeKey: dedupeKey, CookieID: task.AccountID, ChatID: task.ChatID, ItemID: task.ItemID, RuleID: rule.ID,
+		OrderID: task.OrderID, MessageKind: "fulfillment_failure",
+	})
+	if claimErr != nil || !claimed {
+		return claimErr
+	}
+	// text 只替换订单和商品事实，不接收保护价、成本或利润参数。
+	text := renderExternalPriceMessage(config.FailureNoticeText, task, "", "", rule.ItemTitle)
+	if sendErr := c.actions.sendText(ctx, task, text); sendErr != nil { // sendErr 是最终失败提示明确未发送或结果不确定的原因。
+		finishErr := c.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "failed", sendErr.Error()) // finishErr 是通知失败状态落库错误。
+		return errors.Join(sendErr, finishErr)
+	}
+	if finishErr := c.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "sent", ""); finishErr != nil { // finishErr 是已发送后防重终态保存错误。
+		return uncertainAction(fmt.Errorf("采购失败提示已发送但状态保存失败: %w", finishErr))
+	}
+	return nil
 }
 
 // HandleExternalPriceGuidanceChat 在买家首次咨询已开启跟价的商品时查询货源并发送一次报价；handled 为真时阻止普通回复重复响应。

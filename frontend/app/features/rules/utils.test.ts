@@ -48,7 +48,9 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(buildExternalPriceMessageConfig('{"existing":1}', {
       price_guidance_enabled: true,
       price_guidance_text: '请先拍下不要付款',
-    })).toBe('{"existing":1,"price_guidance_enabled":true,"price_guidance_text":"请先拍下不要付款"}');
+      fulfillment_failure_notice_enabled: true,
+      fulfillment_failure_notice_text: '订单正在人工核实',
+    })).toBe('{"existing":1,"price_guidance_enabled":true,"price_guidance_text":"请先拍下不要付款","fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"订单正在人工核实"}');
   });
 
   test('生成规则名称并识别可替换的系统名称', /* 当前回调处理规则配置和展示状态。 */ () => {

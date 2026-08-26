@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ExternalPriceMessageRecord 描述一条咨询引导或改价通知的幂等投递身份。
+// ExternalPriceMessageRecord 描述一条外部货源买家消息的幂等投递身份。
 type ExternalPriceMessageRecord struct {
 	// DedupeKey 是跨重启保持稳定的业务防重键，不包含聊天正文。
 	DedupeKey string
@@ -19,13 +19,13 @@ type ExternalPriceMessageRecord struct {
 	ItemID string
 	// RuleID 是产生消息配置的付款后自动化规则主键。
 	RuleID int64
-	// OrderID 仅在改价成功通知中保存对应闲鱼订单号。
+	// OrderID 在订单相关通知中保存对应闲鱼订单号。
 	OrderID string
-	// MessageKind 区分首次咨询引导和改价成功通知。
+	// MessageKind 区分首次咨询引导、改价成功通知和采购最终失败通知。
 	MessageKind string
 }
 
-// ClaimExternalPriceMessage 原子领取一条跟价消息的五分钟发送租约；已发送或未过期的任务不会重复领取。
+// ClaimExternalPriceMessage 原子领取一条外部货源买家消息的五分钟发送租约；已发送或未过期的任务不会重复领取。
 func (a *AutomationRules) ClaimExternalPriceMessage(ctx context.Context, record ExternalPriceMessageRecord) (bool, error) {
 	if a == nil || a.DB == nil {
 		return false, errors.New("自动化规则仓储未初始化")

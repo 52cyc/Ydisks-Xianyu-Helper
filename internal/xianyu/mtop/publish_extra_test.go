@@ -860,6 +860,16 @@ func TestPublishLabelsEmpty(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("got=%v", out)
 	}
+	// missingValues 模拟闲鱼只返回属性卡片但省略 valuesList 的线上响应。
+	missingValues := publishLabels(map[string]any{"cardList": []any{map[string]any{"cardData": map[string]any{"propertyId": "p1"}}}})
+	if len(missingValues) != 0 {
+		t.Fatalf("缺少 valuesList 时应安全跳过，got=%v", missingValues)
+	}
+	// nullValues 模拟闲鱼明确返回 valuesList:null 的线上响应，不应触发类型断言 panic。
+	nullValues := publishLabels(map[string]any{"cardList": []any{map[string]any{"cardData": map[string]any{"valuesList": nil}}}})
+	if len(nullValues) != 0 {
+		t.Fatalf("valuesList 为 null 时应安全跳过，got=%v", nullValues)
+	}
 }
 
 // TestPublishErrorError 封装Test发布错误错误业务协调。

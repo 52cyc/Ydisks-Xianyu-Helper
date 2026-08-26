@@ -10,8 +10,19 @@ import (
 	"xianyu-go/internal/db"
 )
 
+// useFastAdjustPriceInitialDelay 缩短订单创建测试的首次改价等待，并在用例结束后恢复生产值。
+func useFastAdjustPriceInitialDelay(t *testing.T) {
+	// previousDelay 保存生产环境的首次改价等待时间。
+	previousDelay := adjustPriceOrderCreatedInitialDelay
+	adjustPriceOrderCreatedInitialDelay = time.Millisecond
+	t.Cleanup(func() {
+		adjustPriceOrderCreatedInitialDelay = previousDelay
+	})
+}
+
 // TestAIBargainQuoteAutomaticallyAdjustsCreatedOrder 验证订单创建事件会消费四维匹配的 AI 报价并复用真实改价能力。
 func TestAIBargainQuoteAutomaticallyAdjustsCreatedOrder(t *testing.T) {
+	useFastAdjustPriceInitialDelay(t)
 	// store、cleanup 保存自动改价测试数据库及清理函数。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
@@ -50,6 +61,7 @@ func TestAIBargainQuoteAutomaticallyAdjustsCreatedOrder(t *testing.T) {
 
 // TestAIBargainQuoteRetriesTransientBusy 验证 AI 自动改价会等待订单状态同步，并复用规则改价的暂时性失败重试能力。
 func TestAIBargainQuoteRetriesTransientBusy(t *testing.T) {
+	useFastAdjustPriceInitialDelay(t)
 	// previousGap 保存生产重试间隔，测试结束后必须恢复，避免影响同包其他用例的等待语义。
 	previousGap := adjustPriceTransientRetryGap
 	adjustPriceTransientRetryGap = time.Millisecond
@@ -93,6 +105,33 @@ func TestAIBargainQuoteRetriesTransientBusy(t *testing.T) {
 	// err 是读取 AI 报价终态时不应出现的数据库错误。
 	if err := store.DB.QueryRowContext(ctx, `SELECT status FROM ai_bargain_quotes WHERE order_id='order-retry'`).Scan(&status); err != nil || status != "adjusted" {
 		t.Fatalf("quote status=%q err=%v", status, err)
+	}
+}
+
+// TestAdjustOrderPriceWaitsBeforeCreatedOrderRequest 验证拍下事件会先等待订单同步窗口，再发出第一次改价请求。
+func TestAdjustOrderPriceWaitsBeforeCreatedOrderRequest(t *testing.T) {
+	// previousDelay 保存生产等待值，测试用较短但可测量的窗口验证时序。
+	previousDelay := adjustPriceOrderCreatedInitialDelay
+	adjustPriceOrderCreatedInitialDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		adjustPriceOrderCreatedInitialDelay = previousDelay
+	})
+	// store、cleanup 保存改价测试数据库及其清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// fake 明确接受等待后的第一次改价请求。
+	fake := &fakeMTop{adjustOk: true, adjustRet: []string{"SUCCESS::调用成功"}}
+	// center 注入可记录请求次数的平台客户端。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
+	// startedAt 用于确认首次平台请求前确实经过了订单同步等待窗口。
+	startedAt := time.Now()
+	// adjustErr 是等待后执行真实改价模拟的结果。
+	adjustErr := center.actions.adjustOrderPriceWithRetry(context.Background(), Task{AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "order-initial-delay"}, 990)
+	if adjustErr != nil || fake.adjustCalls != 1 {
+		t.Fatalf("等待后改价失败: calls=%d err=%v", fake.adjustCalls, adjustErr)
+	}
+	if elapsed := time.Since(startedAt); elapsed < adjustPriceOrderCreatedInitialDelay { // elapsed 是从进入流程到完成第一次改价的实际时间。
+		t.Fatalf("首次改价未等待订单同步窗口: elapsed=%v delay=%v", elapsed, adjustPriceOrderCreatedInitialDelay)
 	}
 }
 

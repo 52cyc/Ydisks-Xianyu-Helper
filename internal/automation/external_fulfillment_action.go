@@ -39,6 +39,26 @@ type externalActionConfig struct {
 // errExternalFulfillmentPending 表示货源站已经受理订单但尚未产出结果；协调器会把它交给独立长轮询策略，而不是普通三次失败重试。
 var errExternalFulfillmentPending = errors.New("外部货源订单等待处理")
 
+// externalFulfillmentActionError 标记外部货源尚未成功交付的动作错误，供运行收口在重试耗尽后发送买家提示。
+type externalFulfillmentActionError struct {
+	// err 保留原始错误分类；其中不得包含货源凭证或采购成本明细。
+	err error
+}
+
+// Error 返回管理员可见的外部履约失败摘要。
+func (e *externalFulfillmentActionError) Error() string { return e.err.Error() }
+
+// Unwrap 保留安全重试和长轮询哨兵，避免买家通知改变原有恢复策略。
+func (e *externalFulfillmentActionError) Unwrap() error { return e.err }
+
+// externalFulfillmentFailed 把尚未成功采购的错误标记为外部履约失败；成功后发消息失败不使用该分类。
+func externalFulfillmentFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &externalFulfillmentActionError{err: err}
+}
+
 // parseExternalActionConfig 解析外部货源配置，旧规则统一视为本地卡密。
 func parseExternalActionConfig(raw string) (externalActionConfig, error) {
 	// config 是动作配置的结构化结果。
@@ -64,15 +84,15 @@ func parseExternalActionConfig(raw string) (externalActionConfig, error) {
 // sendExternalFulfillment 使用闲鱼订单和动作 ID 幂等采购，再把已落库结果发给买家。
 func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, task Task, action db.AutomationAction, config externalActionConfig) (int, error) {
 	if e.externalFulfillment == nil || e.externalFulfillment() == nil {
-		return 0, fmt.Errorf("%w: 外部货源履约服务未初始化", errActionNotPerformed)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源履约服务未初始化", errActionNotPerformed))
 	}
 	if strings.TrimSpace(task.OrderID) == "" {
-		return 0, fmt.Errorf("%w: 外部货源采购缺少闲鱼订单号", errActionNotPerformed)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源采购缺少闲鱼订单号", errActionNotPerformed))
 	}
 	// userID 是当前闲鱼账号所属用户，用于隔离货源实例和采购单。
 	userID, ownerErr := e.store.Cookies.GetOwnerID(ctx, task.AccountID)
 	if ownerErr != nil {
-		return 0, fmt.Errorf("%w: 读取账号归属: %v", errActionNotPerformed, ownerErr)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 读取账号归属: %v", errActionNotPerformed, ownerErr))
 	}
 	// count 是结合订单数量和每件份数后的实际采购数量。
 	count := deliverySendCount(task, action)
@@ -81,14 +101,14 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	// attach 是把规则中的闲鱼订单占位符替换为当前订单真实值后的直充参数。
 	attach, attachErr := renderExternalAttach(config.Attach, task)
 	if attachErr != nil {
-		return 0, fmt.Errorf("%w: %v", errActionNotPerformed, attachErr)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: %v", errActionNotPerformed, attachErr))
 	}
 	// safePrice 默认使用规则固定保护价；只有该订单改价明确成功时才读取订单级动态保护价。
 	safePrice := config.SafePrice
 	// quotedSafePrice、quoted、quoteErr 分别是该动作订单级动态保护价、命中标记和读取失败原因。
 	quotedSafePrice, quoted, quoteErr := e.store.Automation.AdjustedExternalSafePrice(ctx, task.OrderID, action.ID)
 	if quoteErr != nil {
-		return 0, fmt.Errorf("%w: 读取订单动态采购保护价: %v", errActionNotPerformed, quoteErr)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 读取订单动态采购保护价: %v", errActionNotPerformed, quoteErr))
 	}
 	if quoted {
 		safePrice = quotedSafePrice
@@ -96,13 +116,13 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	// result、fulfillErr 是采购或使用原单号查询后的统一结果与错误。
 	result, fulfillErr := e.externalFulfillment().Fulfill(ctx, ExternalFulfillmentRequest{UserID: userID, InstanceID: config.InstanceID, ExternalOrderNo: externalOrderNo, XianyuOrderID: task.OrderID, GoodsID: config.GoodsID, Quantity: count, SafePrice: safePrice, Attach: attach})
 	if fulfillErr != nil {
-		return 0, fmt.Errorf("%w: 外部货源履约失败: %v", errActionNotPerformed, fulfillErr)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源履约失败: %v", errActionNotPerformed, fulfillErr))
 	}
 	if result.State == "unpaid" || result.State == "waiting" || result.State == "processing" {
-		return 0, fmt.Errorf("%w: %w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, errExternalFulfillmentPending, result.State)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: %w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, errExternalFulfillmentPending, result.State))
 	}
 	if result.State != "succeeded" {
-		return 0, fmt.Errorf("%w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, result.State)
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, result.State))
 	}
 	// messages 是需要顺序发送给买家的卡密或直充结果。
 	messages := append([]string(nil), result.Cards...)

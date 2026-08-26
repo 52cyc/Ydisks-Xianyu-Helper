@@ -707,7 +707,7 @@ func (a *AutomationRules) FinishRun(ctx context.Context, id int64, attempt int, 
 	nextRetryAt := int64(0)
 	if status == "failed" && isExternalWaitError(errMsg) && attempt < externalWaitMaxAttempts {
 		nextRetryAt = time.Now().UTC().Add(externalWaitRetryDelay(attempt)).Unix()
-	} else if status == "failed" && (strings.HasPrefix(errMsg, SafeRetryErrorPrefix) || sentCount == 0 && !strings.HasPrefix(errMsg, NoRetryErrorPrefix)) {
+	} else if status == "failed" && attempt < 3 && (strings.HasPrefix(errMsg, SafeRetryErrorPrefix) || sentCount == 0 && !strings.HasPrefix(errMsg, NoRetryErrorPrefix)) {
 		nextRetryAt = time.Now().UTC().Add(time.Minute).Unix()
 	}
 	// res、err 用于本次流程后续判断的res、err

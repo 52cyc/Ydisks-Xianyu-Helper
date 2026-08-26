@@ -129,7 +129,7 @@ export const buildReviewConfig = (
   });
 };
 
-// buildExternalPriceMessageConfig 保留规则其他扩展字段并合并咨询引导或改价通知的局部修改。
+// buildExternalPriceMessageConfig 保留规则其他扩展字段并合并咨询、改价或采购失败通知的局部修改。
 export const buildExternalPriceMessageConfig = (
   raw: string | undefined,
   patch: Record<string, boolean | string>,

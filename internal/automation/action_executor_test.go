@@ -85,6 +85,8 @@ type externalFulfillmentStub struct {
 	requests []ExternalFulfillmentRequest
 	// result 是每次采购返回的统一履约结果。
 	result ExternalFulfillmentResult
+	// fulfillErr 是每次采购返回的预设业务失败，用于保护价和网络错误恢复测试。
+	fulfillErr error
 	// product 是待付款跟价查询返回的实时商品摘要。
 	product ExternalProductQuote
 	// products 是按货源商品 ID 返回不同报价的多规格测试数据。
@@ -104,7 +106,7 @@ func (s *externalFulfillmentStub) QuoteProduct(_ context.Context, _ int64, _ int
 // Fulfill 记录请求并返回预设卡密结果。
 func (s *externalFulfillmentStub) Fulfill(_ context.Context, request ExternalFulfillmentRequest) (ExternalFulfillmentResult, error) {
 	s.requests = append(s.requests, request)
-	return s.result, nil
+	return s.result, s.fulfillErr
 }
 
 // TestSendExternalFulfillmentUsesStableOrderNumber 验证外部采购按闲鱼订单和动作 ID 生成稳定单号并发送卡密。

@@ -236,6 +236,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		executeAction:            center.executeAction,
 		hasNotifier:              func() bool { return center.dependencies.notifier != nil },
 		notifyResult:             center.notifyResult,
+		notifyExternalFailure:    center.sendExternalFulfillmentFailureNotice,
 	}
 	return center
 }

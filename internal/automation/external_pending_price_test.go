@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"xianyu-go/internal/db"
@@ -23,6 +24,7 @@ func TestParseExternalPriceMessageConfigUpgradesLegacyDefault(t *testing.T) {
 
 // TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice 验证实时单价、可配置固定加价和最低利润生成订单级改价及采购保护价。
 func TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice(t *testing.T) {
+	useFastAdjustPriceInitialDelay(t)
 	// store、cleanup 保存隔离数据库和测试结束后的连接清理函数。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
@@ -176,5 +178,81 @@ func TestExternalFulfillmentUsesDynamicSafePriceOnlyAfterSuccessfulAdjustment(t 
 	}
 	if fulfillment.requests[1].SafePrice != "3.10" {
 		t.Fatalf("改价成功后应使用订单级动态保护价: %q", fulfillment.requests[1].SafePrice)
+	}
+}
+
+// TestExternalFulfillmentFailureNoticeAfterRetriesExhausted 验证保护价采购失败只在三次自动尝试结束后提示买家一次，并且不确认闲鱼发货。
+func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
+	// store、cleanup 保存隔离数据库和测试结束后的清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是规则、运行恢复和消息防重共用的测试上下文。
+	ctx := context.Background()
+	// owner 是测试闲鱼账号所属用户。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// ruleID 是开启最终失败提示的外部货源付款规则主键。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", ItemID: "item-failure",
+		Name: "保护价失败提示", TriggerType: TriggerOrderPaid, Enabled: true,
+		ConfigJSON: `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"订单 {order_id} 正在人工核实，请勿重复下单"}`,
+		Actions: []db.AutomationActionInput{
+			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, SortOrder: 1,
+				ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":40863,"safe_price":"2.80"}`},
+			{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: 2},
+		}})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	if ruleID <= 0 {
+		t.Fatal("外部货源失败通知规则未创建")
+	}
+	// fulfillment 模拟供应商因当前价格超过采购保护价而明确拒绝每次采购。
+	fulfillment := &externalFulfillmentStub{fulfillErr: errors.New("当前价格超过保护价")}
+	// platform 记录确认发货调用；采购失败时调用次数必须保持为零。
+	platform := &fakeMTop{}
+	// sender 接收第三次采购失败后的买家人工处理提示。
+	sender := &testSender{}
+	// notifier 记录原有管理员失败通知，确保新增买家提示没有替代运维告警。
+	notifier := &recordingNotifier{}
+	// center 注入订单详情、外部货源、消息发送、管理员通知和确认发货能力。
+	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{
+		MTop: platform, OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.90", OrderStatus: "pending_ship"}},
+		ExternalFulfillment: fulfillment, Notifier: notifier,
+	})
+	// task 是买家直接付款、没有订单级动态保护价的真实付款事件。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-safe-price",
+		ItemID: "item-failure", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
+	if firstErr := center.HandleTask(ctx, task); firstErr == nil { // firstErr 是首次保护价采购拒绝，应进入安全重试。
+		t.Fatal("首次保护价采购失败不应被当作成功")
+	}
+	if len(sender.texts) != 0 {
+		t.Fatalf("首次失败不应提示买家: %v", sender.texts)
+	}
+	for retryIndex := 0; retryIndex < 2; retryIndex++ { // retryIndex 表示剩余两次自动恢复尝试的下标。
+		if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET next_retry_at=0 WHERE order_id=?`, task.OrderID); updateErr != nil { // updateErr 是测试加速重试时间的数据库错误。
+			t.Fatal(updateErr)
+		}
+		_ = NewScheduler(center).runRecoveryTasks(ctx)
+		if retryIndex == 0 && len(sender.texts) != 0 {
+			t.Fatalf("第二次失败仍不应提示买家: %v", sender.texts)
+		}
+	}
+	// expectedNotice 是规则配置的最终失败文案，不能包含供应商错误、保护价或成本。
+	expectedNotice := "订单 order-safe-price 正在人工核实，请勿重复下单"
+	if len(sender.texts) != 1 || sender.texts[0] != expectedNotice {
+		t.Fatalf("重试耗尽后买家提示异常: %v", sender.texts)
+	}
+	if len(fulfillment.requests) != 3 || platform.consignCalls != 0 {
+		t.Fatalf("应采购三次且绝不确认发货: purchases=%d consign=%d", len(fulfillment.requests), platform.consignCalls)
+	}
+	if len(notifier.messages()) != 3 {
+		t.Fatalf("管理员仍应收到每次失败通知: %v", notifier.messages())
+	}
+	// duplicateErr 是重复扫描结果；已发送防重记录必须阻止第二次买家提示。
+	duplicateErr := NewScheduler(center).runRecoveryTasks(ctx)
+	if duplicateErr != nil || len(sender.texts) != 1 {
+		t.Fatalf("最终失败提示不应重复: texts=%v err=%v", sender.texts, duplicateErr)
 	}
 }

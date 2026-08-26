@@ -15,6 +15,10 @@ const defaultGuidance =
 const defaultAdjustedNotice =
   "已按最新价格为您改价为 ¥{price}，请核对订单金额，确认无误后再付款。";
 
+// defaultFailureNotice 是外部采购全部自动重试失败后发送的默认人工处理提示。
+const defaultFailureNotice =
+  "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理；如不愿等待，也可以申请退款。";
+
 // guidanceText 返回当前自定义报价文案，并把旧版默认话术无感升级为新版默认值。
 const guidanceText = (config: Record<string, unknown>): string => {
   // configured 是规则已经保存的咨询引导文本。
@@ -30,27 +34,32 @@ interface ExternalPriceMessageEditorProps {
   config: Record<string, unknown>;
   /** hasPendingPrice 表示至少一条外部发货内容已开启实时跟价。 */
   hasPendingPrice: boolean;
+  /** hasExternalFulfillment 表示规则包含可配置最终失败通知的外部货源内容。 */
+  hasExternalFulfillment: boolean;
   /** onChange 把局部消息配置交给父表单合并，避免覆盖其他规则字段。 */
   onChange: (patch: Record<string, boolean | string>) => void;
 }
 
-/** ExternalPriceMessageEditor 编辑按商品生效的实时询价流程和改价成功通知。 */
+/** ExternalPriceMessageEditor 编辑按商品生效的实时询价、改价成功和采购最终失败通知。 */
 const ExternalPriceMessageEditor: React.FC<ExternalPriceMessageEditorProps> = ({
   config,
+  hasExternalFulfillment,
   hasPendingPrice,
   onChange,
 }) => (
   <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-4 space-y-4">
     <div>
       <h5 className="text-sm font-black text-violet-900">
-        买家咨询与改价通知
+        买家询价与履约通知
       </h5>
       <p className="mt-1 text-xs leading-5 text-violet-700">
-        按本商品规则单独生效。买家咨询时先提示正在查询，再发送货源当前报价；买家需要时拍下但不付款，系统会按订单规格和数量重新查询、改价并通知最终金额。
+        按本商品规则单独生效。询价与改价消息服务拍下前流程；采购最终失败提示只在全部自动重试结束后发送，不会泄露成本或保护价。
       </p>
-      {!hasPendingPrice && (
+      {!hasPendingPrice &&
+        (config.price_guidance_enabled === true ||
+          config.price_adjusted_notice_enabled === true) && (
         <p className="mt-2 text-xs font-bold text-amber-700">
-          当前没有发货内容开启待付款自动改价，请先关闭下面两个消息开关或重新开启动态改价。
+          当前没有发货内容开启待付款自动改价，请关闭询价和改价通知，或重新开启动态改价。
         </p>
       )}
     </div>
@@ -166,6 +175,59 @@ const ExternalPriceMessageEditor: React.FC<ExternalPriceMessageEditorProps> = ({
         </span>
       </label>
     )}
+    <div className="border-t border-violet-200 pt-4 space-y-4">
+      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-gray-800">
+        <span>
+          采购最终失败后通知买家
+          <span className="mt-1 block text-xs font-normal leading-5 text-gray-500">
+            首次失败不会打扰买家；全部自动重试结束后每个订单最多发送一次，订单仍保持待发货并继续通知管理员。
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          disabled={!hasExternalFulfillment}
+          checked={config.fulfillment_failure_notice_enabled === true}
+          onChange={
+            /* fulfillmentFailureNoticeToggleHandler 切换外部采购最终失败后的买家提示。 */ (
+              event,
+            ) =>
+              onChange({
+                fulfillment_failure_notice_enabled: event.target.checked,
+                fulfillment_failure_notice_text: String(
+                  config.fulfillment_failure_notice_text ||
+                    defaultFailureNotice,
+                ),
+              })
+          }
+          className="h-4 w-4 accent-amber-600 disabled:opacity-40"
+        />
+      </label>
+      {config.fulfillment_failure_notice_enabled === true && (
+        <label className="block text-xs font-bold text-gray-600">
+          最终失败提示文案
+          <textarea
+            rows={4}
+            maxLength={1000}
+            value={String(
+              config.fulfillment_failure_notice_text || defaultFailureNotice,
+            )}
+            onChange={
+              /* fulfillmentFailureNoticeTextHandler 更新重试耗尽后发送给买家的人工处理话术。 */ (
+                event,
+              ) =>
+                onChange({
+                  fulfillment_failure_notice_text: event.target.value,
+                })
+            }
+            className="mt-2 w-full ios-input rounded-xl px-3 py-2.5 text-sm leading-6"
+          />
+          <span className="mt-1 block text-[11px] font-normal leading-5 text-gray-500">
+            支持 {"{item_title}"}、{"{item_id}"}、{"{order_id}"}、
+            {"{quantity}"}。请勿填写采购成本、保护价或利润信息。
+          </span>
+        </label>
+      )}
+    </div>
   </div>
 );
 

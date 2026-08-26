@@ -200,6 +200,12 @@ const Rules: React.FC<RulesProps> = ({
       variant.source_type === "external" &&
       variant.pending_price_enabled === true,
   );
+  // hasExternalFulfillment 表示至少一条已启用发货内容会向外部货源采购。
+  const hasExternalFulfillment = displayVariants.some(
+    /* externalFulfillmentVariantMatcher 查找允许配置最终失败提示的外部货源内容。 */ (
+      variant,
+    ) => variant.source_type === "external" && variant.enabled !== false,
+  );
   /** updateExternalPriceMessageConfig 合并规则级聊天文案配置且不覆盖其他规则字段。 */
   const updateExternalPriceMessageConfig = (
     patch: Record<string, boolean | string>,
@@ -1852,13 +1858,18 @@ const Rules: React.FC<RulesProps> = ({
                             </div>
                           ))}
                           {currentTrigger === "order_paid" &&
-                            (hasExternalPendingPrice ||
+                            (hasExternalFulfillment ||
                               externalPriceMessageConfig.price_guidance_enabled ===
                                 true ||
                               externalPriceMessageConfig.price_adjusted_notice_enabled ===
+                                true ||
+                              externalPriceMessageConfig.fulfillment_failure_notice_enabled ===
                                 true) && (
                               <ExternalPriceMessageEditor
                                 config={externalPriceMessageConfig}
+                                hasExternalFulfillment={
+                                  hasExternalFulfillment
+                                }
                                 hasPendingPrice={hasExternalPendingPrice}
                                 onChange={updateExternalPriceMessageConfig}
                               />
