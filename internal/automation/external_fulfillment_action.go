@@ -43,6 +43,8 @@ var errExternalFulfillmentPending = errors.New("外部货源订单等待处理")
 type externalFulfillmentActionError struct {
 	// err 保留原始错误分类；其中不得包含货源凭证或采购成本明细。
 	err error
+	// safePriceExceeded 表示供应站明确因实时采购价超过保护价而拒绝下单。
+	safePriceExceeded bool
 }
 
 // Error 返回管理员可见的外部履约失败摘要。
@@ -56,7 +58,7 @@ func externalFulfillmentFailed(err error) error {
 	if err == nil {
 		return nil
 	}
-	return &externalFulfillmentActionError{err: err}
+	return &externalFulfillmentActionError{err: err, safePriceExceeded: errors.Is(err, ErrExternalSafePriceExceeded)}
 }
 
 // parseExternalActionConfig 解析外部货源配置，旧规则统一视为本地卡密。
@@ -116,7 +118,7 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	// result、fulfillErr 是采购或使用原单号查询后的统一结果与错误。
 	result, fulfillErr := e.externalFulfillment().Fulfill(ctx, ExternalFulfillmentRequest{UserID: userID, InstanceID: config.InstanceID, ExternalOrderNo: externalOrderNo, XianyuOrderID: task.OrderID, GoodsID: config.GoodsID, Quantity: count, SafePrice: safePrice, Attach: attach})
 	if fulfillErr != nil {
-		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源履约失败: %v", errActionNotPerformed, fulfillErr))
+		return 0, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源履约失败: %w", errActionNotPerformed, fulfillErr))
 	}
 	if result.State == "unpaid" || result.State == "waiting" || result.State == "processing" {
 		return 0, externalFulfillmentFailed(fmt.Errorf("%w: %w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, errExternalFulfillmentPending, result.State))

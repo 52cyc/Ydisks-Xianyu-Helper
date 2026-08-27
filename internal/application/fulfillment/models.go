@@ -24,7 +24,17 @@ var (
 	ErrNotFound = errors.New("外部履约资源不存在")
 	// ErrConflict 表示幂等键、名称或映射冲突。
 	ErrConflict = errors.New("外部履约资源冲突")
+	// ErrSafePriceExceeded 表示供应站明确因为实时采购价超过保护价而拒绝下单。
+	ErrSafePriceExceeded = errors.New("外部货源实时价格超过保护价")
 )
+
+// IsSafePriceExceededMessage 判断供应站业务文案是否明确指向保护价拦截，不把普通网络或系统异常误判为涨价。
+func IsSafePriceExceededMessage(message string) bool {
+	// normalized 是去除空白并统一小写后的供应站业务提示。
+	normalized := strings.ToLower(strings.Join(strings.Fields(message), ""))
+	return strings.Contains(normalized, "保护价") || strings.Contains(normalized, "安全价") ||
+		strings.Contains(normalized, "safeprice") || strings.Contains(normalized, "safe_price")
+}
 
 // Capabilities 记录一个外部货源实例实际支持的可选能力。
 type Capabilities struct {

@@ -37,7 +37,12 @@ func (adapter *automationExternalFulfillmentAdapter) QuoteProduct(ctx context.Co
 }
 
 // Fulfill 先幂等建单，对已有或处理中订单只使用原外部单号查询。
-func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context, request automation.ExternalFulfillmentRequest) (automation.ExternalFulfillmentResult, error) {
+func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context, request automation.ExternalFulfillmentRequest) (result automation.ExternalFulfillmentResult, resultErr error) {
+	defer func() {
+		if errors.Is(resultErr, fulfillmentapp.ErrSafePriceExceeded) {
+			resultErr = fmt.Errorf("%w: %v", automation.ErrExternalSafePriceExceeded, resultErr)
+		}
+	}()
 	// purchaseRequest 是通用货源应用层的采购输入。
 	purchaseRequest := fulfillmentapp.PurchaseRequest{InstanceID: request.InstanceID, ExternalOrderNo: request.ExternalOrderNo, XianyuOrderID: request.XianyuOrderID, RemoteGoodsID: request.GoodsID, Quantity: request.Quantity, SafePrice: request.SafePrice, Attach: request.Attach}
 	// order、purchaseErr 分别是幂等采购返回的本地订单和远程结果错误。

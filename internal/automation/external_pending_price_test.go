@@ -2,7 +2,7 @@ package automation
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"testing"
 
 	"xianyu-go/internal/db"
@@ -19,6 +19,13 @@ func TestParseExternalPriceMessageConfigUpgradesLegacyDefault(t *testing.T) {
 	}
 	if config.QueryPromptText != defaultExternalPriceQueryPrompt || config.GuidanceText != defaultExternalPriceGuidance {
 		t.Fatalf("旧版默认话术未升级: %+v", config)
+	}
+	// failureRaw 是升级前保存的通用采购失败默认提示。
+	failureRaw := `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"` + legacyExternalFulfillmentFailureNotice + `"}`
+	// failureConfig、failureErr 是升级后的保护价和货源站异常两类默认提示。
+	failureConfig, failureErr := parseExternalPriceMessageConfig(failureRaw)
+	if failureErr != nil || failureConfig.FailureNoticeText != defaultExternalFulfillmentFailureNotice || failureConfig.SafePriceFailureNoticeText != defaultExternalSafePriceFailureNotice {
+		t.Fatalf("旧版采购失败话术未升级: config=%+v err=%v", failureConfig, failureErr)
 	}
 }
 
@@ -196,10 +203,10 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	// ruleID 是开启最终失败提示的外部货源付款规则主键。
 	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", ItemID: "item-failure",
 		Name: "保护价失败提示", TriggerType: TriggerOrderPaid, Enabled: true,
-		ConfigJSON: `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"订单 {order_id} 正在人工核实，请勿重复下单"}`,
+		ConfigJSON: `{"fulfillment_failure_notice_enabled":true,"fulfillment_safe_price_notice_text":"最新总价 ¥{price}，请退款后重新拍下","fulfillment_failure_notice_text":"订单 {order_id} 正在人工核实，请勿重复下单"}`,
 		Actions: []db.AutomationActionInput{
 			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, SortOrder: 1,
-				ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":40863,"safe_price":"2.80"}`},
+				ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":40863,"safe_price":"2.80","pending_price_enabled":true,"fixed_markup":"0.50","minimum_profit":"0.20"}`},
 			{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: 2},
 		}})
 	if createErr != nil {
@@ -208,8 +215,13 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	if ruleID <= 0 {
 		t.Fatal("外部货源失败通知规则未创建")
 	}
+	// rule 是带持久化动作 ID 的完整规则，用于直接验证第二类货源站异常提示。
+	rule, ruleErr := store.Automation.Get(ctx, ruleID)
+	if ruleErr != nil || rule == nil {
+		t.Fatalf("读取失败通知规则失败: rule=%+v err=%v", rule, ruleErr)
+	}
 	// fulfillment 模拟供应商因当前价格超过采购保护价而明确拒绝每次采购。
-	fulfillment := &externalFulfillmentStub{fulfillErr: errors.New("当前价格超过保护价")}
+	fulfillment := &externalFulfillmentStub{product: ExternalProductQuote{Price: "3.10", CanBuy: true}, fulfillErr: fmt.Errorf("%w: 当前价格超过保护价", ErrExternalSafePriceExceeded)}
 	// platform 记录确认发货调用；采购失败时调用次数必须保持为零。
 	platform := &fakeMTop{}
 	// sender 接收第三次采购失败后的买家人工处理提示。
@@ -239,8 +251,8 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 			t.Fatalf("第二次失败仍不应提示买家: %v", sender.texts)
 		}
 	}
-	// expectedNotice 是规则配置的最终失败文案，不能包含供应商错误、保护价或成本。
-	expectedNotice := "订单 order-safe-price 正在人工核实，请勿重复下单"
+	// expectedNotice 是按实时货源价 3.10 元加固定加价 0.50 元计算的新订单总价和重新下单引导。
+	expectedNotice := "最新总价 ¥3.60，请退款后重新拍下"
 	if len(sender.texts) != 1 || sender.texts[0] != expectedNotice {
 		t.Fatalf("重试耗尽后买家提示异常: %v", sender.texts)
 	}
@@ -254,5 +266,25 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	duplicateErr := NewScheduler(center).runRecoveryTasks(ctx)
 	if duplicateErr != nil || len(sender.texts) != 1 {
 		t.Fatalf("最终失败提示不应重复: texts=%v err=%v", sender.texts, duplicateErr)
+	}
+	// supplierTask 模拟另一笔非保护价货源站异常，必须选择人工核实文案而不是重新报价。
+	supplierTask := task
+	supplierTask.OrderID = "order-supplier-error"
+	if noticeErr := center.sendExternalFulfillmentFailureNotice(ctx, supplierTask, *rule, false); noticeErr != nil { // noticeErr 是货源站异常提示的发送结果。
+		t.Fatal(noticeErr)
+	}
+	if len(sender.texts) != 2 || sender.texts[1] != "订单 order-supplier-error 正在人工核实，请勿重复下单" {
+		t.Fatalf("货源站异常应使用人工核实提示: %v", sender.texts)
+	}
+	// unavailableTask 模拟保护价拦截后商品已经不可采购，系统不得向买家发送不可靠的新价格。
+	fulfillment.product = ExternalProductQuote{Price: "3.20", CanBuy: false}
+	// unavailableTask 是需要验证报价回退策略的另一笔独立订单。
+	unavailableTask := task
+	unavailableTask.OrderID = "order-price-unavailable"
+	if noticeErr := center.sendExternalFulfillmentFailureNotice(ctx, unavailableTask, *rule, true); noticeErr != nil { // noticeErr 是重新报价失败后回退人工核实提示的结果。
+		t.Fatal(noticeErr)
+	}
+	if len(sender.texts) != 3 || sender.texts[2] != "订单 order-price-unavailable 正在人工核实，请勿重复下单" {
+		t.Fatalf("最新报价不可用时应回退人工核实提示: %v", sender.texts)
 	}
 }

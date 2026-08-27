@@ -205,6 +205,9 @@ func (client *Client) call(ctx context.Context, instance fulfillmentapp.Instance
 		if strings.Contains(message, "订单不存在") {
 			return fmt.Errorf("%w: %s", fulfillmentapp.ErrNotFound, message)
 		}
+		if fulfillmentapp.IsSafePriceExceededMessage(message) {
+			return fmt.Errorf("%w: %s", fulfillmentapp.ErrSafePriceExceeded, message)
+		}
 		return fmt.Errorf("卡速售业务失败: %s", message)
 	}
 	if output == nil || len(envelope.Data) == 0 || string(envelope.Data) == "null" {

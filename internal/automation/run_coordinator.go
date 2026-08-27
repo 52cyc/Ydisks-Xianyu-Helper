@@ -38,7 +38,7 @@ type automationRunCoordinator struct {
 	// notifyResult 将运行结果转换为用户可见的、按运行终态幂等的通知。
 	notifyResult func(context.Context, Task, int64, string, int, string)
 	// notifyExternalFailure 在外部采购重试耗尽后向买家发送一次可配置的人工处理提示。
-	notifyExternalFailure func(context.Context, Task, db.AutomationRule) error
+	notifyExternalFailure func(context.Context, Task, db.AutomationRule, bool) error
 }
 
 // executeRule 创建或恢复一次自动化运行，并统一处理运行成功、失败、延期和人工核对结果；resultErr 返回动作执行或结果收口错误。
@@ -65,6 +65,8 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	finish := true
 	// externalFailureDetected 表示本次失败发生在外部货源尚未成功交付之前，可在重试耗尽后安全提示买家。
 	externalFailureDetected := false
+	// safePriceFailureDetected 表示供应站已明确因实时采购价超过保护价而拒绝下单。
+	safePriceFailureDetected := false
 	defer func() {
 		if !finish {
 			return
@@ -99,7 +101,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				r.logger.Error("读取外部采购最终失败状态失败", "run_id", run.ID, "err", finalRunErr)
 				resultErr = errors.Join(resultErr, fmt.Errorf("读取外部采购最终失败状态: %w", finalRunErr))
 			} else if finalRun.NextRetryAt == 0 {
-				if noticeErr := r.notifyExternalFailure(finishCtx, task, rule); noticeErr != nil { // noticeErr 是买家提示发送或防重状态保存失败原因。
+				if noticeErr := r.notifyExternalFailure(finishCtx, task, rule, safePriceFailureDetected); noticeErr != nil { // noticeErr 是买家提示发送或防重状态保存失败原因。
 					r.logger.Error("发送外部采购最终失败提示失败", "run_id", run.ID, "order_id", task.OrderID, "err", noticeErr)
 					resultErr = errors.Join(resultErr, fmt.Errorf("发送外部采购最终失败提示: %w", noticeErr))
 				}
@@ -120,6 +122,9 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	// externalFailure 标记外部货源是否尚未成功交付；成功采购后的消息异常继续走人工核对而不发送普通失败提示。
 	var externalFailure *externalFulfillmentActionError
 	externalFailureDetected = errors.As(actionErr, &externalFailure)
+	if externalFailureDetected {
+		safePriceFailureDetected = externalFailure.safePriceExceeded
+	}
 	if deferred {
 		finish = false
 		return errAutomationDeferred

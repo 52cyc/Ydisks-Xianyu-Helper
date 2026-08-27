@@ -3,6 +3,7 @@ package kayixin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,21 @@ import (
 
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 )
+
+// TestClientBuyClassifiesSafePriceExceeded 验证卡易信保护价业务拒绝可被自动化稳定识别为涨价分支。
+func TestClientBuyClassifiesSafePriceExceeded(t *testing.T) {
+	// server 返回卡易信统一响应中的保护价失败文案。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":2400,"msg":"商品价格高于安全价","data":null}`))
+	}))
+	defer server.Close()
+	// buyErr 必须保留保护价哨兵，供上层重新查询最新售价。
+	_, buyErr := NewClient(server.Client()).Buy(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, fulfillmentapp.PurchaseRequest{RemoteGoodsID: 8, ExternalOrderNo: "XY-SAFE", Quantity: 1, SafePrice: "2.80"})
+	if !errors.Is(buyErr, fulfillmentapp.ErrSafePriceExceeded) {
+		t.Fatalf("保护价错误分类丢失: %v", buyErr)
+	}
+}
 
 // TestClientBuySignsExactBodyAndConvertsAttach 验证卡易信下单正文、请求头签名和直充字段转换。
 func TestClientBuySignsExactBodyAndConvertsAttach(t *testing.T) {

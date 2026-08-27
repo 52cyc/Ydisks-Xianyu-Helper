@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,21 @@ import (
 
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 )
+
+// TestClientBuyClassifiesSafePriceExceeded 验证卡速售保护价业务拒绝保留稳定错误分类供自动化选择重新报价文案。
+func TestClientBuyClassifiesSafePriceExceeded(t *testing.T) {
+	// server 返回兼容站常见的保护价拦截业务文案。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":500,"msg":"当前价格超过保护价","data":null}`))
+	}))
+	defer server.Close()
+	// buyErr 应保留应用层保护价哨兵，不能退化成普通供应站异常。
+	_, buyErr := NewClient(server.Client()).Buy(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}, fulfillmentapp.PurchaseRequest{RemoteGoodsID: 8, ExternalOrderNo: "XY-SAFE", Quantity: 1, SafePrice: "2.80"})
+	if !errors.Is(buyErr, fulfillmentapp.ErrSafePriceExceeded) {
+		t.Fatalf("保护价错误分类丢失: %v", buyErr)
+	}
+}
 
 // TestClientBuySignsCanonicalBody 验证下单请求使用 13 位时间戳和稳定 JSON 生成签名。
 func TestClientBuySignsCanonicalBody(t *testing.T) {

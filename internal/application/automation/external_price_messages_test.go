@@ -35,6 +35,7 @@ func TestValidateExternalPriceMessageConfig(t *testing.T) {
 		{name: "查询提示过长", raw: `{"price_guidance_enabled":true,"price_query_prompt_text":"` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: true, external: true},
 		{name: "失败通知没有外部货源", raw: failureNotice, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: false},
 		{name: "失败通知文案过长", raw: `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
+		{name: "保护价提示文案过长", raw: `{"fulfillment_failure_notice_enabled":true,"fulfillment_safe_price_notice_text":"` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
 	}
 	for _, testCase := range cases { // testCase 是当前应被拒绝的规则组合。
 		t.Run(testCase.name, func(t *testing.T) { // t 是隔离当前校验分支的测试句柄。

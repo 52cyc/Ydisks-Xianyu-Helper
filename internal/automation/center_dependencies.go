@@ -2,9 +2,13 @@ package automation
 
 import (
 	"context"
+	"errors"
 
 	"xianyu-go/internal/xianyu/mtop"
 )
+
+// ErrExternalSafePriceExceeded 表示协议适配器已确认供应站因实时采购价超过保护价而拒绝下单。
+var ErrExternalSafePriceExceeded = errors.New("外部货源实时价格超过保护价")
 
 // CenterDependencies 保存自动化中心启动时必须固定的外部协作依赖。
 type CenterDependencies struct {

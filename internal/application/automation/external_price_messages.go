@@ -21,6 +21,8 @@ type externalPriceMessageDraft struct {
 	AdjustedNoticeText string `json:"price_adjusted_notice_text"`
 	// FailureNoticeEnabled 表示外部采购重试耗尽后是否向买家发送人工处理提示。
 	FailureNoticeEnabled bool `json:"fulfillment_failure_notice_enabled"`
+	// SafePriceFailureNoticeText 是保护价拦截后携带最新买家售价的重新下单提示。
+	SafePriceFailureNoticeText string `json:"fulfillment_safe_price_notice_text"`
 	// FailureNoticeText 是不包含货源成本和保护价的最终失败提示。
 	FailureNoticeText string `json:"fulfillment_failure_notice_text"`
 }
@@ -48,7 +50,8 @@ func validateExternalPriceMessageConfig(raw, triggerType, itemID string, dynamic
 		return errors.New("开启外部货源买家通知必须关联具体闲鱼商品")
 	}
 	if utf8.RuneCountInString(config.QueryPromptText) > 1000 || utf8.RuneCountInString(config.GuidanceText) > 1000 ||
-		utf8.RuneCountInString(config.AdjustedNoticeText) > 1000 || utf8.RuneCountInString(config.FailureNoticeText) > 1000 {
+		utf8.RuneCountInString(config.AdjustedNoticeText) > 1000 || utf8.RuneCountInString(config.SafePriceFailureNoticeText) > 1000 ||
+		utf8.RuneCountInString(config.FailureNoticeText) > 1000 {
 		return errors.New("外部货源买家通知文案不能超过 1000 个字")
 	}
 	return nil
