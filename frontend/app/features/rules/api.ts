@@ -143,7 +143,7 @@ const normalizeShippingRules = (rules: any[]): ShippingRule[] =>
               goods_price: cfg.goods_price || "",
               safe_price: cfg.safe_price || "",
               pending_price_enabled: cfg.pending_price_enabled === true,
-              fixed_markup: cfg.fixed_markup || "0.50",
+              fixed_markup: cfg.fixed_markup || "0.40",
               minimum_profit: cfg.minimum_profit ?? "0.20",
               attach_json: JSON.stringify(cfg.attach || {}, null, 2),
               attach_fields: Array.isArray(cfg.attach_fields)

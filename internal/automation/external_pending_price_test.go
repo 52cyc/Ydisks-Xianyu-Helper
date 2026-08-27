@@ -188,6 +188,117 @@ func TestExternalFulfillmentUsesDynamicSafePriceOnlyAfterSuccessfulAdjustment(t 
 	}
 }
 
+// TestDirectPaymentChecksMinimumProfitBeforePurchase 验证买家直接付款时先查实时成本，利润不足则不创建货源订单并立即引导重拍。
+func TestDirectPaymentChecksMinimumProfitBeforePurchase(t *testing.T) {
+	// store 和 cleanup 提供隔离测试数据库及关闭函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是本次规则、订单和履约预检共用的测试上下文。
+	ctx := context.Background()
+	// owner 和 ownerErr 是测试账号所属管理员及读取错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// 买家实付 13.83 元，实时成本 13.64 元再加最低利润 0.20 元，已超过实付。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", ItemID: "item-direct-profit",
+		Name: "直接付款利润预检", TriggerType: TriggerOrderPaid, Enabled: true,
+		ConfigJSON: `{"fulfillment_failure_notice_enabled":true,"fulfillment_safe_price_notice_text":"当前最新价格 ¥{price}，请退款后重新拍下"}`,
+		Actions: []db.AutomationActionInput{
+			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, SortOrder: 1,
+				ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":4683,"safe_price":"14.00","pending_price_enabled":true,"fixed_markup":"0.40","minimum_profit":"0.20"}`},
+			{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: 2},
+		}})
+	if createErr != nil || ruleID <= 0 {
+		t.Fatalf("创建直接付款测试规则失败: id=%d err=%v", ruleID, createErr)
+	}
+	// fulfillment 返回导致最低利润不足的实时价格，并记录是否误调采购。
+	fulfillment := &externalFulfillmentStub{
+		product: ExternalProductQuote{Price: "13.64", CanBuy: true},
+		result:  ExternalFulfillmentResult{State: "succeeded", Cards: []string{"SHOULD-NOT-BUY"}},
+	}
+	// sender 接收应立即发送的退款重拍引导。
+	sender := &testSender{}
+	// platform 记录利润拦截后是否误确认闲鱼发货。
+	platform := &fakeMTop{}
+	// center 注入实付订单详情、实时报价和买家消息发送能力。
+	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{
+		MTop: platform, OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "13.83", OrderStatus: "pending_ship"}},
+		ExternalFulfillment: fulfillment,
+	})
+	// task 是没有成功改价快照的买家直接付款事件。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-direct-profit",
+		ItemID: "item-direct-profit", BuyerID: "buyer", ChatID: "chat"}
+	// handleErr 是预期的本地利润拦截结果。
+	if handleErr := center.HandleTask(ctx, task); handleErr == nil {
+		t.Fatal("利润不足的直接付款订单不应被当作发货成功")
+	}
+	if len(fulfillment.requests) != 0 || platform.consignCalls != 0 {
+		t.Fatalf("利润不足必须在采购前拦截: purchases=%d consign=%d", len(fulfillment.requests), platform.consignCalls)
+	}
+	if len(sender.texts) != 1 || sender.texts[0] != "当前最新价格 ¥14.04，请退款后重新拍下" {
+		t.Fatalf("利润拦截应立即发送最新价格和重拍引导: %v", sender.texts)
+	}
+	// nextRetryAt 为零证明本地已确认的利润不足不会再重试采购。
+	var attemptCount int
+	// nextRetryAt 是运行下次自动恢复时间，本地利润拦截必须为零。
+	var nextRetryAt int64
+	// queryErr 是读取运行尝试次数和恢复时间的错误。
+	if queryErr := store.DB.QueryRowContext(ctx, `SELECT attempt_count,next_retry_at FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&attemptCount, &nextRetryAt); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if attemptCount != 1 || nextRetryAt != 0 {
+		t.Fatalf("利润不足应立即终止且不重试: attempts=%d next_retry_at=%d", attemptCount, nextRetryAt)
+	}
+}
+
+// TestDirectPaymentPreflightSkipsAcceptedExternalOrder 验证恢复已受理的外部订单时只查原单，不被新价格预检中断。
+func TestDirectPaymentPreflightSkipsAcceptedExternalOrder(t *testing.T) {
+	// store 和 cleanup 提供含货源表的隔离数据库及关闭函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是创建规则、原外部单和执行预检的共用上下文。
+	ctx := context.Background()
+	// owner 和 ownerErr 是已受理外部单归属的测试用户及读取错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// ruleID 和 createErr 是启用实时跟价的付款规则主键及创建错误。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", ItemID: "item-existing-order",
+		Name: "已受理外部单", TriggerType: TriggerOrderPaid, Enabled: true,
+		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true,
+			ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":4683,"safe_price":"14.00","pending_price_enabled":true,"fixed_markup":"0.40","minimum_profit":"0.20"}`}}})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// rule 和 ruleErr 是包含稳定动作 ID 的持久化规则及读取错误。
+	rule, ruleErr := store.Automation.Get(ctx, ruleID)
+	if ruleErr != nil || rule == nil || len(rule.Actions) != 1 {
+		t.Fatalf("读取已受理外单规则失败: rule=%+v err=%v", rule, ruleErr)
+	}
+	// insertErr 是构造已配置货源实例时的数据库错误。
+	if _, insertErr := store.DB.ExecContext(ctx, `INSERT INTO fulfillment_instances(id,public_id,user_id,name,provider,base_url,merchant_user_id,api_key) VALUES(8,'existing-source',?,'existing','kasushou_v2','https://example.invalid','merchant','secret')`, owner.ID); insertErr != nil {
+		t.Fatal(insertErr)
+	}
+	// externalOrderNo 是模拟首次采购已经创建的稳定外部单号。
+	externalOrderNo := fmt.Sprintf("xy-%s-a%d", "order-existing", rule.Actions[0].ID)
+	// insertErr 是写入等待处理履约订单的数据库错误。
+	if _, insertErr := store.DB.ExecContext(ctx, `INSERT INTO fulfillment_orders(user_id,instance_id,external_order_no,xianyu_order_id,remote_goods_id,quantity,state) VALUES(?,?,?,?,?,1,'waiting')`, owner.ID, 8, externalOrderNo, "order-existing", 4683); insertErr != nil {
+		t.Fatal(insertErr)
+	}
+	// quoteErr 证明预检若误查新价格就会失败；正确行为应在发现原单后直接返回。
+	fulfillment := &externalFulfillmentStub{quoteErr: fmt.Errorf("不应重新查价")}
+	// center 只注入不应被调用的实时报价替身。
+	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{ExternalFulfillment: fulfillment})
+	// task 是调度器恢复的已付款原订单事实。
+	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-existing", ItemID: "item-existing-order", Quantity: "1", Amount: "1.00"}
+	// preflightErr 应为空，表示已有外部单继续原单恢复。
+	if preflightErr := center.preflightExternalDirectPayment(ctx, task, rule.Actions); preflightErr != nil {
+		t.Fatalf("已存在的外部订单必须继续查原单: %v", preflightErr)
+	}
+}
+
 // TestExternalFulfillmentFailureNoticeAfterRetriesExhausted 验证保护价采购失败只在三次自动尝试结束后提示买家一次，并且不确认闲鱼发货。
 func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	// store、cleanup 保存隔离数据库和测试结束后的清理函数。

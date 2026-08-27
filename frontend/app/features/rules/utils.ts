@@ -75,7 +75,7 @@ export const emptyVariant = (): ShippingVariant => ({
   goods_price: "",
   safe_price: "",
   pending_price_enabled: false,
-  fixed_markup: "0.50",
+  fixed_markup: "0.40",
   minimum_profit: "0.20",
   attach_json: "{}",
   attach_fields: [],
@@ -188,6 +188,28 @@ export const isValidNonNegativeMoney = (raw: string): boolean => {
   // cents 是金额折算出的整数分，用于避免直接比较小数字符串。
   const cents = Math.round(Number(trimmed) * 100);
   return cents >= 0 && cents <= 100000000;
+};
+
+// recommendedExternalPricing 按每次货源校验的实时采购价生成并覆盖默认跟价配置。
+export const recommendedExternalPricing = (goodsPrice: string) => {
+  // fixedMarkupCents 和 minimumProfitCents 是用户确认的每件默认加价与最低利润。
+  const fixedMarkupCents = 40;
+  const minimumProfitCents = 20;
+  // trimmedPrice 是货源接口返回的当前采购价文本。
+  const trimmedPrice = String(goodsPrice || "").trim();
+  // unitCostCents 仅在返回值是有效金额时计算，避免为缺价商品伪造保护价。
+  const unitCostCents = isValidAdjustPrice(trimmedPrice)
+    ? Math.round(Number(trimmedPrice) * 100)
+    : 0;
+  // safePriceCents 保留固定加价中扣除最低利润后可承受的货源涨价空间。
+  const safePriceCents = unitCostCents
+    ? unitCostCents + fixedMarkupCents - minimumProfitCents
+    : 0;
+  return {
+    fixed_markup: "0.40",
+    minimum_profit: "0.20",
+    safe_price: safePriceCents ? (safePriceCents / 100).toFixed(2) : "",
+  };
 };
 
 // cardActionsForTrigger 根据触发类型创建默认动作链。

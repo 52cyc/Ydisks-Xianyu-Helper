@@ -224,19 +224,20 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		logger: center.logger,
 	}
 	center.runs = automationRunCoordinator{
-		store:                    store,
-		planner:                  center.planner,
-		logger:                   center.logger,
-		prepareTask:              center.prepareTask,
-		actionDelaySeconds:       center.actionDelaySeconds,
-		accountAutomationAllowed: center.accountAutomationAllowed,
-		accountSenderReady:       center.accountSenderReady,
-		deferTask:                center.deferTask,
-		prepareAction:            center.prepareRechargeChatInput,
-		executeAction:            center.executeAction,
-		hasNotifier:              func() bool { return center.dependencies.notifier != nil },
-		notifyResult:             center.notifyResult,
-		notifyExternalFailure:    center.sendExternalFulfillmentFailureNotice,
+		store:                        store,
+		planner:                      center.planner,
+		logger:                       center.logger,
+		prepareTask:                  center.prepareTask,
+		actionDelaySeconds:           center.actionDelaySeconds,
+		accountAutomationAllowed:     center.accountAutomationAllowed,
+		accountSenderReady:           center.accountSenderReady,
+		deferTask:                    center.deferTask,
+		prepareAction:                center.prepareRechargeChatInput,
+		executeAction:                center.executeAction,
+		hasNotifier:                  func() bool { return center.dependencies.notifier != nil },
+		notifyResult:                 center.notifyResult,
+		notifyExternalFailure:        center.sendExternalFulfillmentFailureNotice,
+		preflightExternalFulfillment: center.preflightExternalDirectPayment,
 	}
 	return center
 }

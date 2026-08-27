@@ -136,3 +136,13 @@ func (a *AutomationRules) AdjustedExternalSafePrice(ctx context.Context, orderID
 	}
 	return storedSafePrice, true, nil
 }
+
+// ExternalFulfillmentOrderExists 判断稳定外部单号是否已创建本地履约记录。
+// 恢复执行命中时必须继续查原单，不能再用新的实时价格中断已受理订单。
+func (a *AutomationRules) ExternalFulfillmentOrderExists(ctx context.Context, userID int64, externalOrderNo string) (bool, error) {
+	// count 是当前用户和稳定外部单号匹配的履约记录数。
+	var count int
+	// err 是履约记录存在性查询错误。
+	err := a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM fulfillment_orders WHERE user_id=? AND external_order_no=?`, userID, externalOrderNo).Scan(&count)
+	return count > 0, err
+}

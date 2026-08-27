@@ -39,6 +39,8 @@ type automationRunCoordinator struct {
 	notifyResult func(context.Context, Task, int64, string, int, string)
 	// notifyExternalFailure 在外部采购重试耗尽后向买家发送一次可配置的人工处理提示。
 	notifyExternalFailure func(context.Context, Task, db.AutomationRule, bool) error
+	// preflightExternalFulfillment 在任何外部采购动作前校验直接付款订单的实时成本和最低利润。
+	preflightExternalFulfillment func(context.Context, Task, []db.AutomationAction) error
 }
 
 // executeRule 创建或恢复一次自动化运行，并统一处理运行成功、失败、延期和人工核对结果；resultErr 返回动作执行或结果收口错误。
@@ -114,11 +116,16 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 		status, errMsg = "failed", "未匹配到订单规格对应的卡密动作"
 		return errors.New(errMsg)
 	}
-	// deferred 表示动作已写入延迟队列；actionErr 表示动作执行或检查点失败。
+	// deferred 表示动作已写入延迟队列；actionErr 表示付款预检或动作执行失败。
 	var deferred bool
 	// actionErr 表示动作执行或检查点持久化失败，成功时为 nil。
 	var actionErr error
-	sent, deferred, actionErr = r.executeRunActions(ctx, task, rule.ID, run, actions, false)
+	if r.preflightExternalFulfillment != nil {
+		actionErr = r.preflightExternalFulfillment(ctx, task, actions)
+	}
+	if actionErr == nil {
+		sent, deferred, actionErr = r.executeRunActions(ctx, task, rule.ID, run, actions, false)
+	}
 	// externalFailure 标记外部货源是否尚未成功交付；成功采购后的消息异常继续走人工核对而不发送普通失败提示。
 	var externalFailure *externalFulfillmentActionError
 	externalFailureDetected = errors.As(actionErr, &externalFailure)
@@ -153,7 +160,9 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			return fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 		}
 		status, errMsg = "failed", actionErr.Error()
-		if errors.Is(actionErr, errExternalFulfillmentPending) {
+		if externalFailureDetected && externalFailure.noRetry {
+			errMsg = db.NoRetryErrorPrefix + errMsg
+		} else if errors.Is(actionErr, errExternalFulfillmentPending) {
 			errMsg = db.ExternalWaitErrorPrefix + errMsg
 		} else if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
 			errMsg = db.SafeRetryErrorPrefix + errMsg

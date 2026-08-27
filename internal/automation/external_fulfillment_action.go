@@ -45,6 +45,8 @@ type externalFulfillmentActionError struct {
 	err error
 	// safePriceExceeded 表示供应站明确因实时采购价超过保护价而拒绝下单。
 	safePriceExceeded bool
+	// noRetry 表示系统已在创建货源订单前确认利润不足，重试不会改变结果。
+	noRetry bool
 }
 
 // Error 返回管理员可见的外部履约失败摘要。
@@ -59,6 +61,14 @@ func externalFulfillmentFailed(err error) error {
 		return nil
 	}
 	return &externalFulfillmentActionError{err: err, safePriceExceeded: errors.Is(err, ErrExternalSafePriceExceeded)}
+}
+
+// externalFulfillmentProfitBlocked 标记直接付款订单在远程采购前已被最低利润校验拦截。
+func externalFulfillmentProfitBlocked(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &externalFulfillmentActionError{err: err, safePriceExceeded: true, noRetry: true}
 }
 
 // parseExternalActionConfig 解析外部货源配置，旧规则统一视为本地卡密。

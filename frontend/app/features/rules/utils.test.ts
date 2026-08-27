@@ -16,6 +16,7 @@ fulfillmentGoodsID,
 isValidAdjustPrice,
 isValidNonNegativeMoney,
 parseJSONObject,
+recommendedExternalPricing,
 shouldReplaceGeneratedName,
 statusPill,
 } from './utils';
@@ -107,6 +108,19 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(isValidNonNegativeMoney('')).toBe(false);
   });
 
+  test('每次商品校验按实时采购价覆盖推荐金额', /* 当前回调验证固定加价、最低利润和采购保护价的统一公式。 */ () => {
+    expect(recommendedExternalPricing('13.43')).toEqual({
+      fixed_markup: '0.40',
+      minimum_profit: '0.20',
+      safe_price: '13.63',
+    });
+    expect(recommendedExternalPricing('-')).toEqual({
+      fixed_markup: '0.40',
+      minimum_profit: '0.20',
+      safe_price: '',
+    });
+  });
+
   test('汇总动作、主题样式和布尔标志', /* 当前回调处理规则配置和展示状态。 */ () => {
     expect(actionSummary(rule({ trigger_type: 'review_missing_timeout', actions: [{ action_type: 'send_text', message_template: '请评价', enabled: true }] }))).toBe('请评价');
     expect(actionSummary(rule({ trigger_type: 'review_missing_timeout', actions: [] }))).toBe('发送求评价文案');
@@ -129,7 +143,7 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
   });
 
   test('创建空规格并选择账号展示名称', /* 当前回调处理规则配置和展示状态。 */ () => {
-    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0, pending_price_enabled: false, fixed_markup: '0.50', minimum_profit: '0.20' }));
+    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0, pending_price_enabled: false, fixed_markup: '0.40', minimum_profit: '0.20' }));
     // idOnly 是仅包含平台账号标识的最小账号对象。
     const idOnly = { id: 'account-1' } as AccountDetail;
     expect(accountLabel({ id: 'a', nickname: '昵称' } as AccountDetail)).toBe('昵称');
