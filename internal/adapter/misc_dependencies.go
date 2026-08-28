@@ -12,6 +12,7 @@ import (
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/kasushou"
 	"xianyu-go/internal/kayixin"
+	"xianyu-go/internal/mifeng"
 	"xianyu-go/internal/netguard"
 )
 
@@ -30,10 +31,11 @@ func (d *MiscDependencies) NewFulfillmentService(httpClient *http.Client) *fulfi
 	if httpClient == nil {
 		httpClient = netguard.ConfiguredHTTPClient(15 * time.Second)
 	}
-	// gateway 是按实例 provider 路由到卡速售或卡易信的固定协议表。
+	// gateway 是按实例 provider 路由到三种外部货源协议的固定表。
 	gateway := newFulfillmentGateway(map[string]fulfillmentapp.Gateway{
 		fulfillmentapp.ProviderKasushouV2: kasushou.NewClient(httpClient),
 		fulfillmentapp.ProviderKayixinV3:  kayixin.NewClient(httpClient),
+		fulfillmentapp.ProviderMifengV1:   mifeng.NewClient(httpClient),
 	})
 	return fulfillmentapp.NewService(NewFulfillmentRepository(d.store), gateway)
 }

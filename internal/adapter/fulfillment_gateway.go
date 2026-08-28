@@ -66,13 +66,13 @@ func (gateway *fulfillmentGateway) Buy(ctx context.Context, instance fulfillment
 }
 
 // QueryOrder 使用实例对应协议查询原采购单。
-func (gateway *fulfillmentGateway) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, externalOrderNo, remoteOrderNo string) (fulfillmentapp.RemoteOrder, error) {
+func (gateway *fulfillmentGateway) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.OrderQuery) (fulfillmentapp.RemoteOrder, error) {
 	// selected、selectErr 分别是协议实现和选择错误。
 	selected, selectErr := gateway.gatewayFor(instance)
 	if selectErr != nil {
 		return fulfillmentapp.RemoteOrder{}, selectErr
 	}
-	return selected.QueryOrder(ctx, instance, externalOrderNo, remoteOrderNo)
+	return selected.QueryOrder(ctx, instance, query)
 }
 
 // VerifyOrderCallback 使用实例对应协议验证订单回调。

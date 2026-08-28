@@ -111,7 +111,7 @@ func TestClientQueryOrderMapsStatusesAndCards(t *testing.T) {
 	}))
 	defer server.Close()
 	// result、queryErr 是统一订单结果和查询错误。
-	result, queryErr := NewClient(server.Client()).QueryOrder(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, "xy-stable", "KYX-2")
+	result, queryErr := NewClient(server.Client()).QueryOrder(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, fulfillmentapp.OrderQuery{ExternalOrderNo: "xy-stable", RemoteOrderNo: "KYX-2"})
 	if queryErr != nil || result.State != "succeeded" || result.TotalPrice != "8.8" || len(result.CardList) != 1 || result.CardList[0] != "卡号：NO-1\n卡密：PWD-1" {
 		t.Fatalf("result=%+v err=%v", result, queryErr)
 	}
@@ -137,7 +137,7 @@ func TestClientRejectsMultiSKUAndMapsNotFound(t *testing.T) {
 	if _, productErr := client.GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, 10); productErr == nil || !strings.Contains(productErr.Error(), "多规格") { // productErr 是预期的规格能力错误。
 		t.Fatalf("product err=%v", productErr)
 	}
-	if _, queryErr := client.QueryOrder(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, "xy-missing", ""); queryErr == nil || !strings.Contains(queryErr.Error(), fulfillmentapp.ErrNotFound.Error()) { // queryErr 是预期的稳定查无订单错误。
+	if _, queryErr := client.QueryOrder(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, fulfillmentapp.OrderQuery{ExternalOrderNo: "xy-missing"}); queryErr == nil || !strings.Contains(queryErr.Error(), fulfillmentapp.ErrNotFound.Error()) { // queryErr 是预期的稳定查无订单错误。
 		t.Fatalf("query err=%v", queryErr)
 	}
 }

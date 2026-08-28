@@ -47,6 +47,10 @@ func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context
 	purchaseRequest := fulfillmentapp.PurchaseRequest{InstanceID: request.InstanceID, ExternalOrderNo: request.ExternalOrderNo, XianyuOrderID: request.XianyuOrderID, RemoteGoodsID: request.GoodsID, Quantity: request.Quantity, SafePrice: request.SafePrice, Attach: request.Attach}
 	// order、purchaseErr 分别是幂等采购返回的本地订单和远程结果错误。
 	order, purchaseErr := adapter.service.Purchase(ctx, request.UserID, purchaseRequest)
+	// 供应站已明确拒绝保护价时直接交给自动化重试和买家通知，不能用查单等待覆盖失败原因。
+	if errors.Is(purchaseErr, fulfillmentapp.ErrSafePriceExceeded) {
+		return automation.ExternalFulfillmentResult{}, purchaseErr
+	}
 	if purchaseErr == nil && fulfillmentOrderIsTerminal(order.State) {
 		if fulfillmentapp.TerminalRetryRequired(order) {
 			order, purchaseErr = adapter.service.ReplaceTerminalOrder(ctx, request.UserID, purchaseRequest)
@@ -96,7 +100,7 @@ func fulfillmentOrderIsTerminal(state string) bool {
 // fulfillmentOrderNeedsRefresh 判断当前状态是否还需要向货源站查询最新结果。
 func fulfillmentOrderNeedsRefresh(state string) bool {
 	switch strings.TrimSpace(state) {
-	case "succeeded", "cancelled", "refunded":
+	case "succeeded", "failed", "cancelled", "refunded":
 		return false
 	default:
 		return true

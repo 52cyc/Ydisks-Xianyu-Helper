@@ -30,7 +30,7 @@ func (stub fulfillmentGatewayStub) Buy(context.Context, fulfillmentapp.Instance,
 }
 
 // QueryOrder 返回当前协议的测试订单。
-func (stub fulfillmentGatewayStub) QueryOrder(context.Context, fulfillmentapp.Instance, string, string) (fulfillmentapp.RemoteOrder, error) {
+func (stub fulfillmentGatewayStub) QueryOrder(context.Context, fulfillmentapp.Instance, fulfillmentapp.OrderQuery) (fulfillmentapp.RemoteOrder, error) {
 	return fulfillmentapp.RemoteOrder{RemoteOrderNo: stub.productName}, nil
 }
 
@@ -45,11 +45,17 @@ func TestFulfillmentGatewayRoutesByProvider(t *testing.T) {
 	gateway := newFulfillmentGateway(map[string]fulfillmentapp.Gateway{
 		fulfillmentapp.ProviderKasushouV2: fulfillmentGatewayStub{productName: "kasushou"},
 		fulfillmentapp.ProviderKayixinV3:  fulfillmentGatewayStub{productName: "kayixin"},
+		fulfillmentapp.ProviderMifengV1:   fulfillmentGatewayStub{productName: "mifeng"},
 	})
 	// product、productErr 是卡易信实例路由后的商品和错误。
 	product, productErr := gateway.GetProduct(context.Background(), fulfillmentapp.Instance{Provider: fulfillmentapp.ProviderKayixinV3}, 1)
 	if productErr != nil || product.Name != "kayixin" {
 		t.Fatalf("product=%+v err=%v", product, productErr)
+	}
+	// mifengProduct、mifengErr 验证蜜蜂汇云协议能按标识路由。
+	mifengProduct, mifengErr := gateway.GetProduct(context.Background(), fulfillmentapp.Instance{Provider: fulfillmentapp.ProviderMifengV1}, 1)
+	if mifengErr != nil || mifengProduct.Name != "mifeng" {
+		t.Fatalf("mifeng product=%+v err=%v", mifengProduct, mifengErr)
 	}
 	if _, unknownErr := gateway.ListProducts(context.Background(), fulfillmentapp.Instance{Provider: "unknown"}); unknownErr == nil || !strings.Contains(unknownErr.Error(), "不支持") { // unknownErr 是未登记协议的预期错误。
 		t.Fatalf("unknown err=%v", unknownErr)

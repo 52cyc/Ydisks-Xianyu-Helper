@@ -2109,7 +2109,7 @@ export interface components {
              * @default kasushou_v2
              * @enum {string}
              */
-            provider: "kasushou_v2" | "kayixin_v3";
+            provider: "kasushou_v2" | "kayixin_v3" | "mifeng_v1";
             /** Format: uri */
             base_url: string;
             merchant_user_id: string;
@@ -2207,7 +2207,7 @@ export interface components {
             /** @enum {integer} */
             status: -1 | 0 | 1 | 2 | 3 | 4 | 5 | 7 | 8 | 9;
             /** @enum {string} */
-            state: "created" | "unpaid" | "waiting" | "processing" | "succeeded" | "cancelled" | "refunded" | "unknown";
+            state: "created" | "unpaid" | "waiting" | "processing" | "succeeded" | "failed" | "cancelled" | "refunded" | "unknown";
             total_price: string;
             card_list?: string[];
             recharge_info?: string;

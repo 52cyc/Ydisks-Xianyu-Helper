@@ -1,5 +1,5 @@
 /** FulfillmentProvider 是货源管理当前支持的协议标识。 */
-export type FulfillmentProvider = "kasushou_v2" | "kayixin_v3";
+export type FulfillmentProvider = "kasushou_v2" | "kayixin_v3" | "mifeng_v1";
 
 /** FulfillmentCapabilities 是协议切换时需要保留的能力字段。 */
 export interface FulfillmentCapabilities {
@@ -16,23 +16,32 @@ export interface FulfillmentCapabilities {
 }
 
 /** providerLabel 返回货源协议的中文名称。 */
-export const providerLabel = (provider: string): string =>
-  provider === "kayixin_v3" ? "卡易信 API 3.0" : "卡速售 v2";
+export const providerLabel = (provider: string): string => {
+  if (provider === "kayixin_v3") return "卡易信 API 3.0";
+  if (provider === "mifeng_v1") return "蜜蜂汇云";
+  return "卡速售 v2";
+};
 
 /** merchantCredentialLabel 返回当前协议的商户身份字段名称。 */
 export const merchantCredentialLabel = (provider: string): string =>
-  provider === "kayixin_v3" ? "APP ID" : "UserId";
+  provider === "kayixin_v3"
+    ? "APP ID"
+    : provider === "mifeng_v1"
+      ? "AppKey"
+      : "UserId";
 
 /** secretCredentialLabel 返回当前协议的密钥字段名称。 */
 export const secretCredentialLabel = (provider: string): string =>
-  provider === "kayixin_v3" ? "AppSecret" : "API Key";
+  provider === "kayixin_v3" || provider === "mifeng_v1"
+    ? "AppSecret"
+    : "API Key";
 
 /** providerCapabilities 保留通用能力并设置协议当前支持的回调默认值。 */
 export const providerCapabilities = (
   provider: FulfillmentProvider,
   current?: FulfillmentCapabilities,
 ): Required<FulfillmentCapabilities> => ({
-  order_list: current?.order_list ?? false,
+  order_list: provider === "mifeng_v1" ? true : (current?.order_list ?? false),
   order_callback: provider === "kasushou_v2",
   cancel_callback: current?.cancel_callback ?? false,
   cancel_request_mode: current?.cancel_request_mode ?? "callback_url",

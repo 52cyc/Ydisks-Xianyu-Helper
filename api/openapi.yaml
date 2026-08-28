@@ -7071,7 +7071,7 @@ components:
       required: [name, base_url, merchant_user_id, enabled]
       properties:
         name: {type: string}
-        provider: {type: string, enum: [kasushou_v2, kayixin_v3], default: kasushou_v2}
+        provider: {type: string, enum: [kasushou_v2, kayixin_v3, mifeng_v1], default: kasushou_v2}
         base_url: {type: string, format: uri}
         merchant_user_id: {type: string}
         api_key: {type: string, format: password, description: 更新时留空表示保留原密钥}
@@ -7175,7 +7175,7 @@ components:
         remote_goods_id: {type: integer}
         quantity: {type: integer}
         status: {type: integer, enum: [-1, 0, 1, 2, 3, 4, 5, 7, 8, 9]}
-        state: {type: string, enum: [created, unpaid, waiting, processing, succeeded, cancelled, refunded, unknown]}
+        state: {type: string, enum: [created, unpaid, waiting, processing, succeeded, failed, cancelled, refunded, unknown]}
         total_price: {type: string}
         card_list: {type: array, items: {type: string}}
         recharge_info: {type: string}

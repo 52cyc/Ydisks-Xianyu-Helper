@@ -123,11 +123,11 @@ func (client *Client) Buy(ctx context.Context, instance fulfillmentapp.Instance,
 }
 
 // QueryOrder 优先按本地稳定外部单号查询卡易信订单。
-func (client *Client) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, externalOrderNo, remoteOrderNo string) (fulfillmentapp.RemoteOrder, error) {
+func (client *Client) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.OrderQuery) (fulfillmentapp.RemoteOrder, error) {
 	// body 是卡易信支持按远程单号或外部单号二选一的查询参数。
-	body := orderDetailRequest{OuterNumber: strings.TrimSpace(externalOrderNo)}
+	body := orderDetailRequest{OuterNumber: strings.TrimSpace(query.ExternalOrderNo)}
 	if body.OuterNumber == "" {
-		body.OrderNumber = strings.TrimSpace(remoteOrderNo)
+		body.OrderNumber = strings.TrimSpace(query.RemoteOrderNo)
 	}
 	if body.OuterNumber == "" && body.OrderNumber == "" {
 		return fulfillmentapp.RemoteOrder{}, errors.New("查询卡易信订单缺少外部订单号或远程订单号")

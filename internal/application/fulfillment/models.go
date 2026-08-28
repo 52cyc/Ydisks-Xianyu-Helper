@@ -13,6 +13,8 @@ const (
 	ProviderKasushouV2 = "kasushou_v2"
 	// ProviderKayixinV3 表示使用卡易信商家客户 API 3.0 协议的货源实例。
 	ProviderKayixinV3 = "kayixin_v3"
+	// ProviderMifengV1 表示使用蜜蜂汇云商户采购 API 的货源实例。
+	ProviderMifengV1 = "mifeng_v1"
 	// GoodsTypeCard 表示履约成功后返回卡密。
 	GoodsTypeCard = 1
 	// GoodsTypeRecharge 表示需要提交账号、手机号等附加字段的直充商品。
@@ -26,6 +28,8 @@ var (
 	ErrConflict = errors.New("外部履约资源冲突")
 	// ErrSafePriceExceeded 表示供应站明确因为实时采购价超过保护价而拒绝下单。
 	ErrSafePriceExceeded = errors.New("外部货源实时价格超过保护价")
+	// ErrSubmissionUncertain 表示请求可能已到达供应站，只能使用原外部单号查单。
+	ErrSubmissionUncertain = errors.New("外部货源下单结果未确认")
 )
 
 // IsSafePriceExceededMessage 判断供应站业务文案是否明确指向保护价拦截，不把普通网络或系统异常误判为涨价。
@@ -220,6 +224,16 @@ type RemoteOrder struct {
 	State string
 }
 
+// OrderQuery 提供跨协议查单所需的稳定单号和本地建单时间。
+type OrderQuery struct {
+	// ExternalOrderNo 是系统生成且重试不变的外部单号。
+	ExternalOrderNo string
+	// RemoteOrderNo 是供应站已返回的订单号。
+	RemoteOrderNo string
+	// CreatedAt 是本地幂等订单创建时间，供有最小查单延时的协议使用。
+	CreatedAt string
+}
+
 // Repository 是履约应用服务消费的持久化窄端口。
 type Repository interface {
 	ListInstances(context.Context, int64) ([]Instance, error)
@@ -243,7 +257,7 @@ type Gateway interface {
 	ListProducts(context.Context, Instance) ([]Product, error)
 	GetProduct(context.Context, Instance, int64) (Product, error)
 	Buy(context.Context, Instance, PurchaseRequest) (RemoteOrder, error)
-	QueryOrder(context.Context, Instance, string, string) (RemoteOrder, error)
+	QueryOrder(context.Context, Instance, OrderQuery) (RemoteOrder, error)
 	VerifyOrderCallback(Instance, []byte) (RemoteOrder, error)
 }
 

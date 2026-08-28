@@ -104,13 +104,13 @@ func (client *Client) Buy(ctx context.Context, instance fulfillmentapp.Instance,
 }
 
 // QueryOrder 优先使用外部订单号查询，与幂等下单键保持一致。
-func (client *Client) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, externalOrderNo, remoteOrderNo string) (fulfillmentapp.RemoteOrder, error) {
+func (client *Client) QueryOrder(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.OrderQuery) (fulfillmentapp.RemoteOrder, error) {
 	// body 是官方二选一订单查询参数。
 	body := map[string]any{}
-	if strings.TrimSpace(externalOrderNo) != "" {
-		body["external_orderno"] = strings.TrimSpace(externalOrderNo)
-	} else if strings.TrimSpace(remoteOrderNo) != "" {
-		body["ordersn"] = strings.TrimSpace(remoteOrderNo)
+	if strings.TrimSpace(query.ExternalOrderNo) != "" {
+		body["external_orderno"] = strings.TrimSpace(query.ExternalOrderNo)
+	} else if strings.TrimSpace(query.RemoteOrderNo) != "" {
+		body["ordersn"] = strings.TrimSpace(query.RemoteOrderNo)
 	} else {
 		return fulfillmentapp.RemoteOrder{}, errors.New("查询订单缺少外部订单号或远程订单号")
 	}

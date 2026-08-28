@@ -117,7 +117,7 @@ func (stub *serviceGatewayStub) Buy(context.Context, Instance, PurchaseRequest) 
 }
 
 // QueryOrder 返回空测试查询结果。
-func (stub *serviceGatewayStub) QueryOrder(context.Context, Instance, string, string) (RemoteOrder, error) {
+func (stub *serviceGatewayStub) QueryOrder(context.Context, Instance, OrderQuery) (RemoteOrder, error) {
 	return RemoteOrder{}, nil
 }
 
@@ -166,7 +166,7 @@ func TestReplaceTerminalOrderCreatesStableRevision(t *testing.T) {
 func TestValidateInstanceInputAcceptsSupportedProviders(t *testing.T) {
 	// baseInput 是两个受支持协议共用的完整实例输入。
 	baseInput := InstanceInput{Name: "测试货源", BaseURL: "https://supplier.example", MerchantUserID: "merchant", APIKey: "secret"}
-	for _, provider := range []string{ProviderKasushouV2, ProviderKayixinV3} { // provider 是当前待验证的受支持协议。
+	for _, provider := range []string{ProviderKasushouV2, ProviderKayixinV3, ProviderMifengV1} { // provider 是当前待验证的受支持协议。
 		// input 是写入当前协议后的独立测试输入。
 		input := baseInput
 		input.Provider = provider

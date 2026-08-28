@@ -55,6 +55,7 @@ const stateLabel = (state: string): string =>
     waiting: "等待处理",
     processing: "处理中",
     succeeded: "已成功",
+    failed: "已失败",
     cancelled: "已取消",
     refunded: "已退款",
     unknown: "未知",
@@ -64,7 +65,7 @@ const stateLabel = (state: string): string =>
 const stateClass = (state: string): string =>
   state === "succeeded"
     ? "bg-emerald-50 text-emerald-700"
-    : state === "cancelled" || state === "refunded"
+    : state === "failed" || state === "cancelled" || state === "refunded"
       ? "bg-red-50 text-red-700"
       : "bg-amber-50 text-amber-700";
 
@@ -218,7 +219,7 @@ const Fulfillment: React.FC = () => {
             货源管理
           </h2>
           <p className="mt-2 text-slate-500">
-            支持卡速售 v2 兼容站和卡易信 API 3.0，规则仍按商品 ID 精确采购。
+            支持卡速售 v2、卡易信 API 3.0 和蜜蜂汇云，规则仍按商品 ID 精确采购。
           </p>
         </div>
         <button
@@ -294,6 +295,7 @@ const Fulfillment: React.FC = () => {
               >
                 <option value="kasushou_v2">卡速售 v2（智客等兼容站）</option>
                 <option value="kayixin_v3">卡易信 API 3.0</option>
+                <option value="mifeng_v1">蜜蜂汇云</option>
               </select>
             </label>
             <label className="space-y-1.5 text-sm font-bold text-slate-700">
