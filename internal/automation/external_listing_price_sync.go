@@ -9,7 +9,7 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// scanExternalListingPrices 每轮最多修改同一账号一个普通商品，降低连续写接口触发平台风控的概率。
+// scanExternalListingPrices 每轮检查全部开启同步的普通商品，仅在计算售价发生变化时调用闲鱼改价接口。
 func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 	if s == nil || s.center == nil || s.center.dependencies.externalFulfillment == nil {
 		return
@@ -19,14 +19,17 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 		s.center.logger.Warn("扫描货源价格同步规则失败", "err", listErr)
 		return
 	}
-	updatedAccounts := map[string]struct{}{}
+	// rules 已按账号、商品、优先级排序；同一商品只让优先级最高的规则控制售价。
+	processedItems := map[string]struct{}{}
 	for _, rule := range rules {
 		if ctx.Err() != nil {
 			return
 		}
-		if _, alreadyUpdated := updatedAccounts[rule.CookieID]; alreadyUpdated {
+		itemKey := rule.CookieID + "\x00" + rule.ItemID
+		if _, alreadyProcessed := processedItems[itemKey]; alreadyProcessed {
 			continue
 		}
+		processedItems[itemKey] = struct{}{}
 		targetCents, enabled, quoteErr := s.center.externalListingTargetCents(ctx, rule)
 		if quoteErr != nil {
 			s.center.logger.Warn("查询商品自动同步价格失败", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "err", quoteErr)
@@ -56,7 +59,6 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 			s.center.logger.Warn("同步闲鱼商品售价失败", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", formatCentsAsYuan(targetCents), "err", syncErr)
 			continue
 		}
-		updatedAccounts[rule.CookieID] = struct{}{}
 		item.ItemPrice = formatCentsAsYuan(targetCents)
 		if saveErr := s.center.store.Items.Upsert(ctx, &item); saveErr != nil {
 			s.center.logger.Warn("闲鱼商品已改价但本地价格保存失败", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice, "err", saveErr)
