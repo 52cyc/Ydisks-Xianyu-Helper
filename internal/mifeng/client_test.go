@@ -68,6 +68,46 @@ func TestClientGetProductAndBuyCard(t *testing.T) {
 	}
 }
 
+// TestClientGetDiningProductAsCard 验证餐饮代下商品无需充值账号并按卡券链接履约。
+func TestClientGetDiningProductAsCard(t *testing.T) {
+	// server 模拟蜜蜂返回 b_id=18 的餐饮商品及放单结果。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// body 是完成公共字段及签名校验后的请求体。
+		body := decodeSignedBody(t, request)
+		switch request.URL.Path {
+		case "/api/merchant/productGoodsListNew":
+			writeJSON(t, writer, map[string]any{"code": 0, "message": "ok", "data": map[string]any{"count": 1, "data": []map[string]any{{"b_id": 18, "miniunit_id": 1002821, "goods_name": "麦当劳", "spec": "圆筒冰淇淋", "status": 1, "goods_price": "4.070"}}}})
+		case "/api/merchant/upload_order":
+			// datas 是餐饮卡券采购参数，不应包含直充账号。
+			datas := body["datas"].(map[string]any)
+			if _, exists := datas["target"]; exists { // exists 用于阻止餐饮卡券误收买家充值账号。
+				t.Fatalf("餐饮卡券不应提交 target: %v", datas)
+			}
+			if textValue(datas["num"]) != "1" {
+				t.Fatalf("datas=%v", datas)
+			}
+			writeJSON(t, writer, map[string]any{"code": 0, "message": "ok", "data": map[string]any{"third_id": "xy-food", "order_id": "MF-food", "state": 1}})
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	// client 是连接模拟服务的蜜蜂客户端。
+	client := NewClient(server.Client())
+	// instance 是测试使用的货源实例凭据。
+	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app-key", APIKey: testSecret}
+	// product、productErr 是餐饮商品校验结果和错误。
+	product, productErr := client.GetProduct(context.Background(), instance, 1002821)
+	if productErr != nil || product.GoodsType != fulfillmentapp.GoodsTypeCard || len(product.Attach) != 0 {
+		t.Fatalf("product=%+v err=%v", product, productErr)
+	}
+	// order、buyErr 是无需充值账号的餐饮卡券采购结果和错误。
+	order, buyErr := client.Buy(context.Background(), instance, fulfillmentapp.PurchaseRequest{RemoteGoodsID: 1002821, ExternalOrderNo: "xy-food", Quantity: 1, SafePrice: "4.50"})
+	if buyErr != nil || order.RemoteOrderNo != "MF-food" || order.State != "waiting" {
+		t.Fatalf("order=%+v err=%v", order, buyErr)
+	}
+}
+
 // TestClientBuyRechargeRequiresTarget 验证直充商品必须提供充值账号。
 func TestClientBuyRechargeRequiresTarget(t *testing.T) {
 	// server 模拟返回可采购的直充商品。

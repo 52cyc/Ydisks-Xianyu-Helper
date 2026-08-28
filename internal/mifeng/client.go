@@ -395,7 +395,7 @@ func (payload productPayload) product() fulfillmentapp.Product {
 		attach[0].Name = "充值手机号"
 		attach[0].Validation = `^1\d{10}$`
 	}
-	if payload.BusinessID == 13 {
+	if payload.BusinessID == 13 || payload.BusinessID == 18 {
 		goodsType = fulfillmentapp.GoodsTypeCard
 		attach = nil
 	}
