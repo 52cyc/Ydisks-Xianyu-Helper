@@ -145,6 +145,12 @@ const normalizeShippingRules = (rules: any[]): ShippingRule[] =>
               pending_price_enabled: cfg.pending_price_enabled === true,
               fixed_markup: cfg.fixed_markup || "0.40",
               minimum_profit: cfg.minimum_profit ?? "0.20",
+              profit_rate: cfg.profit_rate || "2.00",
+              price_sync_enabled:
+                cfg.price_sync_enabled === true ||
+                cfg.pending_price_enabled === true,
+              stop_purchase_on_inversion:
+                cfg.stop_purchase_on_inversion !== false,
               attach_json: JSON.stringify(cfg.attach || {}, null, 2),
               attach_fields: Array.isArray(cfg.attach_fields)
                 ? cfg.attach_fields
@@ -367,6 +373,18 @@ export const updateShippingRule = async (
                   variant.source_type === "external"
                     ? variant.minimum_profit || ""
                     : "",
+                profit_rate:
+                  variant.source_type === "external"
+                    ? variant.profit_rate || "2.00"
+                    : "",
+                price_sync_enabled:
+                  variant.source_type === "external"
+                    ? variant.price_sync_enabled === true
+                    : false,
+                stop_purchase_on_inversion:
+                  variant.source_type === "external"
+                    ? variant.stop_purchase_on_inversion !== false
+                    : false,
                 attach:
                   variant.source_type === "external"
                     ? JSON.parse(variant.attach_json || "{}")

@@ -483,12 +483,14 @@ func externalFulfillmentConfig(raw string) (string, int64, int64, error) {
 	return config.SourceType, config.InstanceID, config.GoodsID, nil
 }
 
-// validateExternalPendingPriceConfig 校验外部货源动作中的固定加价和最低利润，返回是否启用待付款跟价。
+// validateExternalPendingPriceConfig 校验外部货源动作中的利润率，返回是否启用价格自动同步。
 func validateExternalPendingPriceConfig(raw string) (bool, error) {
-	// config 只读取待付款跟价开关和两个精确金额字段。
+	// config 同时读取新利润率模型和旧固定加价模型，保证历史规则可继续保存。
 	var config struct {
 		SourceType          string `json:"source_type"`
 		PendingPriceEnabled bool   `json:"pending_price_enabled"`
+		PriceSyncEnabled    bool   `json:"price_sync_enabled"`
+		ProfitRate          string `json:"profit_rate"`
 		FixedMarkup         string `json:"fixed_markup"`
 		MinimumProfit       string `json:"minimum_profit"`
 	}
@@ -498,11 +500,18 @@ func validateExternalPendingPriceConfig(raw string) (bool, error) {
 	if err := json.Unmarshal([]byte(raw), &config); err != nil { // err 是待付款跟价动作 JSON 的解析结果。
 		return false, errors.New("动作配置必须是 JSON 对象")
 	}
-	if !config.PendingPriceEnabled {
+	enabled := config.PriceSyncEnabled || config.PendingPriceEnabled
+	if !enabled {
 		return false, nil
 	}
 	if strings.TrimSpace(config.SourceType) != "external" {
-		return false, errors.New("待付款跟价只能用于外部货源")
+		return false, errors.New("价格自动同步只能用于外部货源")
+	}
+	if strings.TrimSpace(config.ProfitRate) != "" {
+		if _, rateErr := parseRuleProfitRateHundredths(config.ProfitRate); rateErr != nil {
+			return false, rateErr
+		}
+		return true, nil
 	}
 	// markupCents、markupErr 是每件固定加价的整数分值和格式错误。
 	markupCents, markupErr := parseRuleMoneyCents(config.FixedMarkup, false)
@@ -518,6 +527,35 @@ func validateExternalPendingPriceConfig(raw string) (bool, error) {
 		return false, errors.New("最低保留利润不能大于固定加价")
 	}
 	return true, nil
+}
+
+// parseRuleProfitRateHundredths 校验 0 到 1000%、最多两位小数的利润率。
+func parseRuleProfitRateHundredths(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	parts := strings.Split(raw, ".")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && len(parts[1]) > 2) {
+		return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+	}
+	whole, wholeErr := strconv.ParseInt(parts[0], 10, 64)
+	if wholeErr != nil || whole < 0 || whole > 1000 {
+		return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+	}
+	fraction := int64(0)
+	if len(parts) == 2 && parts[1] != "" {
+		fracText := parts[1]
+		if len(fracText) == 1 {
+			fracText += "0"
+		}
+		var fracErr error
+		fraction, fracErr = strconv.ParseInt(fracText, 10, 64)
+		if fracErr != nil {
+			return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+		}
+	}
+	if whole == 1000 && fraction > 0 {
+		return 0, errors.New("利润率不能超过 1000%")
+	}
+	return whole*100 + fraction, nil
 }
 
 // parseRuleMoneyCents 把规则金额解析为整数分；allowZero 控制零金额是否允许。

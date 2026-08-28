@@ -104,6 +104,30 @@ func TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice(t *testing.T) {
 	}
 }
 
+func TestProfitRatePricingRoundsUpToCent(t *testing.T) {
+	config := externalActionConfig{ProfitRate: "2.00"}
+	target, markup, minimum, err := externalUnitTargetCents(config, 950)
+	if err != nil || target != 969 || markup != 19 || minimum != 0 {
+		t.Fatalf("9.50 按 2%% 利润率应为 9.69: target=%d markup=%d minimum=%d err=%v", target, markup, minimum, err)
+	}
+	target, _, _, err = externalUnitTargetCents(config, 1343)
+	if err != nil || target != 1370 {
+		t.Fatalf("13.43 按 2%% 利润率应向上取整为 13.70: target=%d err=%v", target, err)
+	}
+}
+
+func TestExternalListingTargetUsesProfitRate(t *testing.T) {
+	center := NewWithDependencies(nil, nil, nil, CenterDependencies{ExternalFulfillment: &externalFulfillmentStub{
+		product: ExternalProductQuote{Price: "9.50", CanBuy: true},
+	}})
+	rule := db.AutomationRule{UserID: 7, Actions: []db.AutomationAction{{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true,
+		ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":4994,"price_sync_enabled":true,"profit_rate":"2.00"}`}}}
+	target, enabled, err := center.externalListingTargetCents(context.Background(), rule)
+	if err != nil || !enabled || target != 969 {
+		t.Fatalf("商品页同步价应为 9.69: target=%d enabled=%v err=%v", target, enabled, err)
+	}
+}
+
 // TestQuoteExternalPriceGuidanceBuildsMultiSpecList 验证咨询报价按规格聚合同规格多条发货内容，并保持规则顺序。
 func TestQuoteExternalPriceGuidanceBuildsMultiSpecList(t *testing.T) {
 	// store、cleanup 保存包含管理员账号的隔离数据库及释放函数。

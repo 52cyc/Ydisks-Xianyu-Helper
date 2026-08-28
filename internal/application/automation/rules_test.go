@@ -127,6 +127,16 @@ func TestRuleServiceValidatesExternalPendingPrice(t *testing.T) {
 	if _, err := service.Normalize(context.Background(), 7, valid); err != nil { // err 是有效动态跟价配置不应产生的校验错误。
 		t.Fatalf("有效外部跟价规则被拒绝: %v", err)
 	}
+	// simplified 是新版利润率、价格同步和倒挂保护配置。
+	simplified := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Enabled: true, Actions: []ActionDraft{{ActionType: ActionSendCard,
+		ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"price_sync_enabled":true,"profit_rate":"2.00","stop_purchase_on_inversion":true}`}}}
+	if _, err := service.Normalize(context.Background(), 7, simplified); err != nil {
+		t.Fatalf("有效利润率价格同步规则被拒绝: %v", err)
+	}
+	simplified.Actions[0].ConfigJSON = `{"source_type":"external","instance_id":3,"goods_id":4366,"price_sync_enabled":true,"profit_rate":"1000.01"}`
+	if _, err := service.Normalize(context.Background(), 7, simplified); err == nil || !strings.Contains(err.Error(), "利润率") {
+		t.Fatalf("超限利润率应被拒绝: %v", err)
+	}
 	// invalid 把每件最低利润设为高于固定加价，必须在保存前拒绝。
 	invalid := valid
 	invalid.Actions = []ActionDraft{{ActionType: ActionSendCard,

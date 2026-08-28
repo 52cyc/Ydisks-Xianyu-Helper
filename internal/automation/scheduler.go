@@ -16,6 +16,9 @@ import (
 // defaultReviewRequestScanInterval 用于本次流程后续判断的defaultReview请求ScanInterval
 const defaultReviewRequestScanInterval = time.Minute
 
+// defaultExternalListingPriceSyncInterval 控制货源价到闲鱼商品页的后台同步频率。
+const defaultExternalListingPriceSyncInterval = 10 * time.Minute
+
 // defaultDeferredTaskScanInterval 是持久化延迟动作的轮询周期，保证秒级动作不会被分钟级业务扫描额外延后。
 const defaultDeferredTaskScanInterval = time.Second
 
@@ -36,6 +39,8 @@ type Scheduler struct {
 	runOnce sync.Once
 	// done 在调度循环退出后关闭，供关闭流程等待全部调度工作停止。
 	done chan struct{}
+	// lastExternalListingPriceSync 保存最近一次货源商品页价格扫描时间。
+	lastExternalListingPriceSync time.Time
 }
 
 // NewScheduler 构造计划任务调度器。
@@ -110,6 +115,10 @@ func (s *Scheduler) WaitContext(ctx context.Context) error {
 // scan 封装scan业务协调。
 func (s *Scheduler) scan(ctx context.Context) {
 	s.center.scanAccountTasks(ctx)
+	if s.lastExternalListingPriceSync.IsZero() || time.Since(s.lastExternalListingPriceSync) >= defaultExternalListingPriceSyncInterval {
+		s.lastExternalListingPriceSync = time.Now()
+		s.scanExternalListingPrices(ctx)
+	}
 	if // recovered、err 用于本次流程后续判断的recovered、err
 	recovered, err := s.center.store.Automation.RecoverDefinitelyUnsentReviewRuns(ctx); err != nil {
 		s.center.logger.Warn("恢复历史求评价未发送任务失败", "err", err)

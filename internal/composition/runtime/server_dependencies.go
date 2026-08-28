@@ -190,6 +190,8 @@ type HTTPDependencies struct {
 	DatabaseHealth server.DatabaseHealthPort
 	// DataBackup 是管理员下载快照和暂存恢复文件的应用服务。
 	DataBackup *databackupapp.Service
+	// LiveLogs 是管理端实时日志页的有界增量读取端口。
+	LiveLogs server.LiveLogReader
 }
 
 // ServerDependencies 将组合层服务投影为 HTTP Server 需要的不可变最小 Port 快照。
@@ -203,7 +205,7 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 		return server.Dependencies{}, fmt.Errorf("组合层 transport Port 未初始化")
 	}
 	return server.Dependencies{
-		Auth: base.Auth, WebDir: base.WebDir, Addr: base.Addr, Logger: base.Logger, DatabaseHealth: base.DatabaseHealth,
+		Auth: base.Auth, WebDir: base.WebDir, Addr: base.Addr, Logger: base.Logger, DatabaseHealth: base.DatabaseHealth, LiveLogs: base.LiveLogs,
 		Applications: server.NewApplicationPorts(server.ApplicationPortsInput{
 			Orders: ordersTransport{services: ports.Orders}, OrderRefreshJobs: orderRefreshJobsTransport{service: ports.OrderRefreshJobs, lifecycleContext: services.LifecycleContext},
 			ItemSinglePublish: ports.ItemSinglePublish, ItemBatchPreview: ports.ItemBatchPreview,

@@ -8,13 +8,13 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// preflightExternalDirectPayment 在买家直接付款且没有成功改价快照时，先查实时成本并核对订单级最低利润。
+// preflightExternalDirectPayment 在买家直接付款且没有成功改价快照时，先查实时成本并阻止价格倒挂。
 // 全部匹配动作校验通过前不调用 Fulfill，避免多条发货内容出现部分采购。
 func (c *Center) preflightExternalDirectPayment(ctx context.Context, task Task, actions []db.AutomationAction) error {
 	if task.TriggerType != TriggerOrderPaid || strings.TrimSpace(task.OrderID) == "" {
 		return nil
 	}
-	// externalActions 和 configs 只收集当前规格动作计划中开启待付款跟价的外部货源。
+	// externalActions 和 configs 收集开启价格同步或倒挂保护的外部货源。
 	externalActions := make([]db.AutomationAction, 0, len(actions))
 	// configs 与 externalActions 按下标对应，供一次性订单成本核算使用。
 	configs := make([]externalActionConfig, 0, len(actions))
@@ -28,7 +28,7 @@ func (c *Center) preflightExternalDirectPayment(ctx context.Context, task Task, 
 		if configErr != nil {
 			return externalFulfillmentFailed(fmt.Errorf("%w: 解析直接付款货源配置: %v", errActionNotPerformed, configErr))
 		}
-		if config.SourceType == "external" && config.PendingPriceEnabled {
+		if config.SourceType == "external" && (config.priceSyncEnabled() || config.inversionProtectionEnabled()) {
 			externalActions = append(externalActions, action)
 			configs = append(configs, config)
 		}
@@ -90,14 +90,39 @@ func (c *Center) preflightExternalDirectPayment(ctx context.Context, task Task, 
 		return externalFulfillmentFailed(fmt.Errorf("%w: 直接付款前查询实时货源成本: %v", errActionNotPerformed, quoteErr))
 	}
 
-	// requiredCents 是“全部实时采购成本 + 全部最低利润”，必须不高于买家实付总额。
+	// requiredCents 是全部开启倒挂保护动作的实时采购成本；新模型不再要求最低利润门槛。
 	var requiredCents int64
-	// quote 是当前外部动作的单价、数量和最低利润快照。
+	// quote 是当前外部动作的单价、数量和倒挂保护配置快照。
 	for _, quote := range quotes {
-		requiredCents += (quote.unitCostCents + quote.minimumProfitCents) * int64(quote.fulfillmentQuantity)
+		if quote.config.inversionProtectionEnabled() {
+			requiredUnitCents := quote.unitCostCents
+			if strings.TrimSpace(quote.config.ProfitRate) == "" {
+				requiredUnitCents += quote.minimumProfitCents
+			}
+			requiredCents += requiredUnitCents * int64(quote.fulfillmentQuantity)
+		}
 	}
 	if requiredCents > paidCents {
-		return externalFulfillmentProfitBlocked(fmt.Errorf("%w: 直接付款订单实付金额不足以覆盖实时采购成本和最低利润", ErrExternalSafePriceExceeded))
+		return externalFulfillmentProfitBlocked(fmt.Errorf("%w: 闲鱼订单实付金额低于实时采购成本，已停止采购", ErrExternalSafePriceExceeded))
+	}
+	// 直接付款也保存动作级售价上限，供应站下单时继续执行同一倒挂保护。
+	storedQuotes := make([]db.ExternalPriceQuote, 0, len(quotes))
+	for _, quote := range quotes {
+		dynamicSafePrice := ""
+		if quote.config.inversionProtectionEnabled() {
+			safeUnitCents := quote.unitTargetCents
+			if strings.TrimSpace(quote.config.ProfitRate) == "" {
+				safeUnitCents -= quote.minimumProfitCents
+			}
+			dynamicSafePrice = formatCentsAsYuan(safeUnitCents * int64(quote.fulfillmentQuantity))
+		}
+		storedQuotes = append(storedQuotes, db.ExternalPriceQuote{OrderID: task.OrderID, CookieID: task.AccountID,
+			ActionID: quote.action.ID, UnitCostCents: quote.unitCostCents, FulfillmentQuantity: quote.fulfillmentQuantity,
+			FixedMarkupCents: quote.fixedMarkupCents, MinimumProfitCents: 0, TargetOrderCents: paidCents,
+			DynamicSafePrice: dynamicSafePrice, Status: "adjusted"})
+	}
+	if snapshotErr := c.store.Automation.ReplaceExternalPriceQuotesAsAdjusted(ctx, storedQuotes); snapshotErr != nil {
+		return externalFulfillmentFailed(fmt.Errorf("%w: 保存直接付款倒挂保护快照: %v", errActionNotPerformed, snapshotErr))
 	}
 	return nil
 }

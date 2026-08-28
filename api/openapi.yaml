@@ -6994,6 +6994,19 @@ paths:
         '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
         '422': {description: 当前数据库不支持内置备份, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
         '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/admin/logs":
+    get:
+      operationId: getAdminLiveLogs
+      summary: 增量读取进程内最新运行日志
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: after, in: query, required: false, schema: {type: integer, format: uint64, minimum: 0, default: 0}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 500, default: 500}}
+      responses:
+        '200': {description: 日志快照, content: {application/json: {schema: {$ref: '#/components/schemas/LiveLogsResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   "/api/v1/admin/data-restore":
     post:
       operationId: importDataBackup
@@ -7023,6 +7036,19 @@ components:
       in: cookie
       name: session
   schemas:
+    LiveLogLine:
+      type: object
+      required: [sequence, text]
+      properties:
+        sequence: {type: integer, format: uint64, minimum: 1}
+        text: {type: string}
+    LiveLogsResponse:
+      type: object
+      required: [lines, next_cursor, oldest_cursor]
+      properties:
+        lines: {type: array, items: {$ref: '#/components/schemas/LiveLogLine'}}
+        next_cursor: {type: integer, format: uint64, minimum: 0}
+        oldest_cursor: {type: integer, format: uint64, minimum: 1}
     DataRestoreResponse:
       type: object
       required: [filename, size, restart_required, message]

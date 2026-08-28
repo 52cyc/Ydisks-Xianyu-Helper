@@ -92,6 +92,8 @@ type serverInfrastructure struct {
 	logger *slog.Logger
 	// logWriter 是 logger 使用的输出目标，关闭由 closeLog 负责。
 	logWriter io.Writer
+	// liveLogs 在进程内保留最新日志，供管理后台增量读取。
+	liveLogs *logging.LiveBuffer
 	// closeLog 释放服务日志文件；标准输出场景下该函数为空操作。
 	closeLog func()
 	// initializationOnly 表示本次调用仅完成 -init-admin 管理员初始化，调用方不得继续启动运行时。
@@ -335,8 +337,12 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 	if err != nil {
 		return serverInfrastructure{}, err
 	}
+	// liveLogs 保留最新 2000 行已格式化日志，不影响容器标准输出。
+	liveLogs := logging.NewLiveBuffer(2000)
+	// combinedLogWriter 同时写入原有日志目标与管理端内存缓冲区。
+	combinedLogWriter := io.MultiWriter(logWriter, liveLogs)
 	// logger 是当前进程的初始结构化日志器；后续数据库日志格式变更会替换默认 logger。
-	logger := logging.NewLogger(logWriter, startup.resolvedLogFormat)
+	logger := logging.NewLogger(combinedLogWriter, startup.resolvedLogFormat)
 	slog.SetDefault(logger)
 	// sqlitePath、isSQLite 表示当前地址是否可映射到本地 SQLite 主文件。
 	sqlitePath, isSQLite := db.SQLitePathFromURL(startup.resolvedDBURL)
@@ -394,7 +400,7 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 	if !startup.explicitLogFormat {
 		// format、formatErr 分别是数据库保存的日志格式及其读取错误；读取失败时保留进程默认格式。
 		if format, formatErr := store.Settings.Get(ctx, "log_format"); formatErr == nil && strings.TrimSpace(format) != "" {
-			logger = logging.NewLogger(logWriter, format)
+			logger = logging.NewLogger(combinedLogWriter, format)
 			slog.SetDefault(logger)
 		}
 	}
@@ -406,7 +412,7 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 			return serverInfrastructure{}, fmt.Errorf("初始化管理员失败: %w", err)
 		}
 		logger.Info("管理员初始化完成", "username", "admin")
-		return serverInfrastructure{database: database, store: store, logger: logger, logWriter: logWriter, closeLog: closeLog, initializationOnly: true}, nil
+		return serverInfrastructure{database: database, store: store, logger: logger, logWriter: combinedLogWriter, liveLogs: liveLogs, closeLog: closeLog, initializationOnly: true}, nil
 	}
 	if opts.ensureAdmin {
 		// created、ensureErr 分别标记是否新建管理员以及查询或创建管理员时的失败。
@@ -428,7 +434,7 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 			logger.Warn("系统尚未初始化，请先运行本二进制的 -init-admin 初始化管理员")
 		}
 	}
-	return serverInfrastructure{database: database, store: store, logger: logger, logWriter: logWriter, closeLog: closeLog}, nil
+	return serverInfrastructure{database: database, store: store, logger: logger, logWriter: combinedLogWriter, liveLogs: liveLogs, closeLog: closeLog}, nil
 }
 
 // buildServerRuntime 构造浏览器、账号、自动化、通知、应用服务和 HTTP 服务依赖，并登记全部生命周期组件但不启动它们。
@@ -437,7 +443,7 @@ func buildServerRuntime(opts serverOptions, infrastructure serverInfrastructure,
 	runtime, buildErr := compositionruntime.BuildRuntime(compositionruntime.RuntimeOptions{
 		NoBrowser: opts.noBrowser, SecureCookie: opts.secure, WebDir: opts.webDir, Addr: opts.addr,
 		DatabaseURL: databaseURL,
-	}, compositionruntime.RuntimeInfrastructure{Store: infrastructure.store, Logger: infrastructure.logger})
+	}, compositionruntime.RuntimeInfrastructure{Store: infrastructure.store, Logger: infrastructure.logger, LiveLogs: infrastructure.liveLogs})
 	if buildErr != nil {
 		return serverRuntime{}, buildErr
 	}

@@ -109,7 +109,7 @@ func TestNewRejectsMissingRequiredDependencies(t *testing.T) {
 	// missingApplications 保存故意移除应用服务集合后的构造输入。
 	missingApplications := Dependencies{
 		Auth: source.Auth, WebDir: source.WebDir, Addr: source.Addr, Logger: source.Logger,
-		DatabaseHealth: source.databaseHealth,
+		DatabaseHealth: source.databaseHealth, LiveLogs: source.liveLogs,
 	}
 	// applicationsErr 表示构造阶段没有应用服务集合时的失败。
 	if _, applicationsErr := New(missingApplications); applicationsErr == nil {
@@ -118,7 +118,7 @@ func TestNewRejectsMissingRequiredDependencies(t *testing.T) {
 	// incompleteApplications 在容器存在但未绑定全部路由 Port 时也必须于启动前失败。
 	incompleteApplications := Dependencies{
 		Auth: source.Auth, WebDir: source.WebDir, Addr: source.Addr, Logger: source.Logger,
-		DatabaseHealth: source.databaseHealth, Applications: NewApplicationPorts(ApplicationPortsInput{}),
+		DatabaseHealth: source.databaseHealth, LiveLogs: source.liveLogs, Applications: NewApplicationPorts(ApplicationPortsInput{}),
 	}
 	// incompleteErr 是容器存在但缺少路由所需 Port 时的构造失败。
 	if _, incompleteErr := New(incompleteApplications); incompleteErr == nil {
@@ -134,8 +134,8 @@ func TestNewAcceptsPrebuiltApplicationSet(t *testing.T) {
 	// dependencies 将已有构造结果转换为不可变 Server 依赖快照。
 	dependencies := Dependencies{
 		Auth: source.Auth, WebDir: source.WebDir, Addr: source.Addr, Logger: source.Logger,
-		DatabaseHealth: source.databaseHealth,
-		Applications:   source.applications,
+		DatabaseHealth: source.databaseHealth, LiveLogs: source.liveLogs,
+		Applications: source.applications,
 	}
 	// serverInstance、constructErr 保存纯注入入口的构造结果。
 	serverInstance, constructErr := New(dependencies)

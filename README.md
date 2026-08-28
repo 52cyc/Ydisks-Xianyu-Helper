@@ -426,6 +426,7 @@ DATABASE_URL="postgres://user:pass@127.0.0.1:5432/xianyu?sslmode=disable" ./xian
 - **议价策略**：最大折扣比例、最大折扣金额和最多议价轮次
 - **通知设置**：Bark、钉钉、飞书、企业微信、Telegram、邮件和 Webhook
 - **日志设置**：日志等级、输出格式和续期日志保留天数
+- **实时日志**：管理员可在后台暂停、搜索和跟随当前进程的最新日志；服务端内存保留最新 2000 行，重启后清空，完整 Docker 历史仍使用 `docker compose logs`
 - **管理凭据**：管理员用户名、密码和邮箱
 
 AI Base URL 支持 OpenAI 兼容接口，可连接 OpenAI、通义千问、Ollama、vLLM、

@@ -41,6 +41,7 @@ import {
   buildReviewConfig,
   cardActionsForTrigger,
   fulfillmentGoodsID,
+  externalSalePrice,
   parseJSONObject,
   recommendedExternalPricing,
   statusPill,
@@ -193,13 +194,13 @@ const Rules: React.FC<RulesProps> = ({
   const externalPriceMessageConfig = parseJSONObject(
     editingAutomationRule?.config_json,
   );
-  // hasExternalPendingPrice 表示至少一条外部货源内容已经开启待付款实时跟价。
+  // hasExternalPendingPrice 表示至少一条外部货源内容已经开启价格自动同步。
   const hasExternalPendingPrice = displayVariants.some(
     /* pendingPriceVariantMatcher 查找会接管待付款订单价格的外部发货内容。 */ (
       variant,
     ) =>
       variant.source_type === "external" &&
-      variant.pending_price_enabled === true,
+      variant.price_sync_enabled === true,
   );
   // hasExternalFulfillment 表示至少一条已启用发货内容会向外部货源采购。
   const hasExternalFulfillment = displayVariants.some(
@@ -1491,96 +1492,41 @@ const Rules: React.FC<RulesProps> = ({
                                     </div>
                                   )}
                                   <div className="grid gap-3 md:grid-cols-2">
-                                    <label className="text-xs font-bold text-gray-600">
-                                      采购保护价
-                                      <input
-                                        value={variant.safe_price || ""}
-                                        onChange={
-                                          /* safePriceChangeHandler 更新外部采购保护价。 */ (
-                                            event,
-                                          ) =>
-                                            updateVariant(index, {
-                                              safe_price: event.target.value,
-                                            })
-                                        }
-                                        className="mt-2 w-full ios-input px-3 py-2.5 rounded-lg"
-                                        placeholder="例如：9.90"
-                                      />
-                                      <span className="mt-1 block text-[11px] font-normal leading-5 text-gray-500">
-                                        买家直接付款、未完成自动改价时继续使用此保护价。
-                                      </span>
-                                    </label>
-                                    <div className="space-y-3 rounded-xl border border-violet-100 bg-white p-3 md:col-span-2">
-                                      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-gray-800">
-                                        <span>
-                                          开启待付款自动改价
-                                          <span className="mt-1 block text-xs font-normal leading-5 text-gray-500">
-                                            按货源实时采购价和固定加价修改闲鱼订单总价。
-                                          </span>
-                                        </span>
-                                        <input
-                                          type="checkbox"
-                                          checked={
-                                            variant.pending_price_enabled ===
-                                            true
-                                          }
-                                          onChange={
-                                            /* pendingPriceToggleHandler 切换当前外部发货内容的待付款实时跟价。 */ (
-                                              event,
-                                            ) =>
-                                              updateVariant(index, {
-                                                pending_price_enabled:
-                                                  event.target.checked,
-                                              })
-                                          }
-                                          className="h-4 w-4 accent-violet-600"
-                                        />
-                                      </label>
-                                      {variant.pending_price_enabled && (
-                                        <div className="grid gap-3 md:grid-cols-2">
-                                          <label className="text-xs font-bold text-gray-600">
-                                            每件固定加价
-                                            <input
-                                              value={
-                                                variant.fixed_markup || ""
-                                              }
-                                              onChange={
-                                                /* fixedMarkupChangeHandler 更新每个实际采购单位增加的固定金额。 */ (
-                                                  event,
-                                                ) =>
-                                                  updateVariant(index, {
-                                                    fixed_markup:
-                                                      event.target.value,
-                                                  })
-                                              }
-                                              className="mt-2 w-full ios-input rounded-lg px-3 py-2.5"
-                                              placeholder="例如：0.50"
-                                            />
-                                          </label>
-                                          <label className="text-xs font-bold text-gray-600">
-                                            每件最低保留利润
-                                            <input
-                                              value={
-                                                variant.minimum_profit || ""
-                                              }
-                                              onChange={
-                                                /* minimumProfitChangeHandler 更新付款采购时必须保留的每件利润。 */ (
-                                                  event,
-                                                ) =>
-                                                  updateVariant(index, {
-                                                    minimum_profit:
-                                                      event.target.value,
-                                                  })
-                                              }
-                                              className="mt-2 w-full ios-input rounded-lg px-3 py-2.5"
-                                              placeholder="例如：0.20"
-                                            />
-                                          </label>
-                                          <p className="text-[11px] font-normal leading-5 text-violet-700 md:col-span-2">
-                                            自动改价后，付款采购保护价会按本笔订单单独计算；货源上涨导致利润低于此值时停止采购。
-                                          </p>
+                                    <div className="grid grid-cols-3 gap-2 rounded-xl border border-violet-100 bg-white p-3 md:col-span-2">
+                                      <div>
+                                        <div className="text-[11px] font-medium text-gray-500">闲鱼现价</div>
+                                        <div className="mt-1 text-base font-extrabold text-gray-900">¥{selectedRuleItem?.item_price || "—"}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-[11px] font-medium text-gray-500">采购价</div>
+                                        <div className="mt-1 text-base font-extrabold text-gray-900">¥{variant.goods_price || "—"}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-[11px] font-medium text-gray-500">变更后</div>
+                                        <div className="mt-1 text-base font-extrabold text-violet-700">¥{externalSalePrice(variant.goods_price || "", variant.profit_rate || "2.00", variant.delivery_count || 1) || "—"}</div>
+                                      </div>
+                                    </div>
+                                    <div className="space-y-4 rounded-xl border border-violet-100 bg-white p-3 md:col-span-2">
+                                      <div>
+                                        <label className="text-xs font-bold text-gray-600" htmlFor={`profit-rate-${index}`}>利润率</label>
+                                        <div className="mt-2 flex items-center gap-2">
+                                          <button type="button" aria-label="降低利润率" onClick={/* decreaseProfitRateHandler 每次把利润率降低 0.5 个百分点。 */ () => updateVariant(index, { profit_rate: Math.max(0, Number(variant.profit_rate || 0) - 0.5).toFixed(2) })} className="h-11 w-11 rounded-xl border border-gray-200 bg-gray-50 text-lg font-bold text-gray-700">−</button>
+                                          <div className="relative flex-1">
+                                            <input id={`profit-rate-${index}`} inputMode="decimal" value={variant.profit_rate || ""} onChange={/* profitRateChangeHandler 更新当前发货内容的利润率。 */ (event) => updateVariant(index, { profit_rate: event.target.value })} className="h-11 w-full rounded-xl border border-gray-200 px-3 pr-9 text-center font-bold text-gray-900" placeholder="2.00" />
+                                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
+                                          </div>
+                                          <button type="button" aria-label="提高利润率" onClick={/* increaseProfitRateHandler 每次把利润率提高 0.5 个百分点。 */ () => updateVariant(index, { profit_rate: Math.min(1000, Number(variant.profit_rate || 0) + 0.5).toFixed(2) })} className="h-11 w-11 rounded-xl border border-gray-200 bg-gray-50 text-lg font-bold text-gray-700">＋</button>
                                         </div>
-                                      )}
+                                      </div>
+                                      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-gray-800">
+                                        <span>开启价格自动同步<span className="mt-1 block text-xs font-normal leading-5 text-gray-500">按实时采购价和利润率生成新售价；普通商品同步闲鱼售价，待付款订单仍会按最新价格改价。</span></span>
+                                        <input type="checkbox" checked={variant.price_sync_enabled === true} onChange={/* priceSyncToggleHandler 切换商品页和待付款订单价格同步。 */ (event) => updateVariant(index, { price_sync_enabled: event.target.checked, pending_price_enabled: false })} className="h-5 w-5 accent-violet-600" />
+                                      </label>
+                                      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-bold text-gray-800">
+                                        <span>开启价格倒挂停止采购<span className="mt-1 block text-xs font-normal leading-5 text-gray-500">买家实付低于货源实时采购成本时，不调用货源站、不确认发货，并按已配置话术引导处理。</span></span>
+                                        <input type="checkbox" checked={variant.stop_purchase_on_inversion !== false} onChange={/* inversionProtectionToggleHandler 切换采购前价格倒挂保护。 */ (event) => updateVariant(index, { stop_purchase_on_inversion: event.target.checked })} className="h-5 w-5 accent-violet-600" />
+                                      </label>
+                                      {isMultiSpecRule && variant.price_sync_enabled && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">多规格商品暂不直接修改商品页规格价，系统仍会在买家拍下未付款后按实际规格自动改价。</p>}
                                     </div>
                                     {variant.goods_type === 2 && (
                                       <div className="space-y-3 md:col-span-2">

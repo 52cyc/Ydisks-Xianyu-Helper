@@ -203,6 +203,43 @@ func (a *AutomationRules) ListForUser(ctx context.Context, userID int64) ([]Auto
 	return rules, err
 }
 
+// ListEnabledPaidItemRules 返回全部绑定具体商品的启用付款规则，供后台货源价格同步扫描。
+func (a *AutomationRules) ListEnabledPaidItemRules(ctx context.Context) ([]AutomationRule, error) {
+	rows, err := a.DB.QueryContext(ctx, `
+SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.trigger_type,r.enabled,
+       r.priority,r.config_json,r.created_at,r.updated_at
+  FROM automation_rules r
+  LEFT JOIN item_info i ON i.cookie_id=r.cookie_id AND i.item_id=r.item_id AND i.deleted_at IS NULL
+ WHERE r.deleted_at IS NULL AND r.enabled=1 AND r.trigger_type='order_paid' AND r.item_id<>''
+ ORDER BY r.cookie_id,r.item_id,r.priority ASC,r.id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AutomationRule{}
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var rule AutomationRule
+		var enabled int
+		if scanErr := rows.Scan(&rule.ID, &rule.UserID, &rule.CookieID, &rule.ItemID, &rule.ItemTitle, &rule.Name,
+			&rule.TriggerType, &enabled, &rule.Priority, &rule.ConfigJSON, &rule.CreatedAt, &rule.UpdatedAt); scanErr != nil {
+			return nil, scanErr
+		}
+		key := rule.CookieID + "\x00" + rule.ItemID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		rule.Enabled = enabled != 0
+		rule.Actions, err = a.Actions(ctx, rule.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rule)
+	}
+	return out, rows.Err()
+}
+
 // ListPageForUser 按用户隔离筛选并分页查询自动化规则和动作。
 func (a *AutomationRules) ListPageForUser(ctx context.Context, f AutomationRuleListFilter) ([]AutomationRule, int, error) {
 	// whereSQL、args 用于本次流程后续判断的whereSQL、args

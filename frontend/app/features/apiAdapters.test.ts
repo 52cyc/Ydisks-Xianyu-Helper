@@ -862,6 +862,9 @@ test('getShippingRules restores external pending price configuration', async () 
     instance_id: 8,
     goods_id: 40863,
     pending_price_enabled: true,
+    price_sync_enabled: true,
+    profit_rate: '2.00',
+    stop_purchase_on_inversion: true,
     fixed_markup: '0.40',
     minimum_profit: '0.15',
   });
@@ -1160,7 +1163,7 @@ test('updateShippingRule posts every matching card action before confirm shipmen
   expect(body.actions[1].delay_seconds).toBe(0);
 } /* 测试回调验证：updateShippingRule posts every matching card action before confirm shipment。 */);
 
-test('updateShippingRule serializes configurable external pending price fields', async () => {
+test('updateShippingRule serializes simplified external pricing fields', async () => {
   // fetchMock 捕获外部货源付款规则请求体，验证动态跟价字段保存在对应发货动作中。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 31 }));
   stubContractFetch(fetchMock);
@@ -1179,10 +1182,9 @@ test('updateShippingRule serializes configurable external pending price fields',
       source_type: 'external',
       instance_id: 8,
       goods_id: 40863,
-      safe_price: '2.80',
-      pending_price_enabled: true,
-      fixed_markup: '0.40',
-      minimum_profit: '0.15',
+      profit_rate: '2.50',
+      price_sync_enabled: true,
+      stop_purchase_on_inversion: true,
       attach_json: '{}',
     }],
   });
@@ -1195,10 +1197,9 @@ test('updateShippingRule serializes configurable external pending price fields',
     source_type: 'external',
     instance_id: 8,
     goods_id: 40863,
-    safe_price: '2.80',
-    pending_price_enabled: true,
-    fixed_markup: '0.40',
-    minimum_profit: '0.15',
+    profit_rate: '2.50',
+    price_sync_enabled: true,
+    stop_purchase_on_inversion: true,
   });
 } /* 测试回调验证外部货源固定加价和最低利润按发货动作独立序列化。 */);
 

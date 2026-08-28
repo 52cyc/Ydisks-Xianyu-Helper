@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"xianyu-go/internal/db"
@@ -23,6 +24,8 @@ type pendingPriceActionQuote struct {
 	fixedMarkupCents int64
 	// minimumProfitCents 是付款时每个采购单位必须保留的利润，单位为分。
 	minimumProfitCents int64
+	// unitTargetCents 是按利润率计算后的每个采购单位售价；旧规则仍按固定加价计算。
+	unitTargetCents int64
 }
 
 // handleOrderCreatedPricing 按互斥顺序让 AI 报价或外部货源实时价接管待付款订单；prepared 保留后续固定规则需要的任务事实。
@@ -127,7 +130,7 @@ func (c *Center) externalPendingPriceRule(ctx context.Context, task Task) (*db.A
 		if configErr != nil {
 			return &paidRules[0], true, configErr
 		}
-		if config.SourceType == "external" && config.PendingPriceEnabled {
+		if config.SourceType == "external" && config.priceSyncEnabled() {
 			return &paidRules[0], true, nil
 		}
 	}
@@ -152,13 +155,13 @@ func pendingPriceActions(task Task, rule db.AutomationRule) ([]db.AutomationActi
 			return nil, nil, true, configErr
 		}
 		actions, configs = append(actions, action), append(configs, config)
-		dynamicEnabled = dynamicEnabled || (config.SourceType == "external" && config.PendingPriceEnabled)
+		dynamicEnabled = dynamicEnabled || (config.SourceType == "external" && config.priceSyncEnabled())
 	}
 	if !dynamicEnabled {
 		return actions, configs, false, nil
 	}
 	for configIndex, config := range configs { // configIndex、config 是当前匹配动作位置和货源配置。
-		if config.SourceType != "external" || !config.PendingPriceEnabled {
+		if config.SourceType != "external" || !config.priceSyncEnabled() {
 			return nil, nil, true, fmt.Errorf("外部货源待付款跟价要求同一规格的全部发货内容都开启跟价，第 %d 条未开启", configIndex+1)
 		}
 	}
@@ -188,23 +191,14 @@ func (c *Center) quotePendingPriceActions(ctx context.Context, task Task, userID
 		if costErr != nil {
 			return nil, 0, fmt.Errorf("货源商品 %d 没有有效实时价格: %w", config.GoodsID, costErr)
 		}
-		// fixedMarkupCents、markupErr 是管理员配置的每件固定加价及格式错误。
-		fixedMarkupCents, markupErr := parseYuanToCents(config.FixedMarkup)
-		if markupErr != nil {
-			return nil, 0, fmt.Errorf("货源商品 %d 固定加价无效: %w", config.GoodsID, markupErr)
-		}
-		// minimumProfitCents、profitErr 是允许为零的每件最低保留利润及格式错误。
-		minimumProfitCents, profitErr := parseNonNegativeYuanToCents(config.MinimumProfit)
-		if profitErr != nil {
-			return nil, 0, fmt.Errorf("货源商品 %d 最低保留利润无效: %w", config.GoodsID, profitErr)
-		}
-		if minimumProfitCents > fixedMarkupCents {
-			return nil, 0, fmt.Errorf("货源商品 %d 最低保留利润不能大于固定加价", config.GoodsID)
+		// unitTargetCents、fixedMarkupCents、minimumProfitCents 同时兼容新利润率模型和旧固定加价模型。
+		unitTargetCents, fixedMarkupCents, minimumProfitCents, pricingErr := externalUnitTargetCents(config, unitCostCents)
+		if pricingErr != nil {
+			return nil, 0, fmt.Errorf("货源商品 %d 售价配置无效: %w", config.GoodsID, pricingErr)
 		}
 		// fulfillmentQuantity 是当前动作真正采购的单位数。
 		fulfillmentQuantity := deliverySendCount(task, action)
 		// unitTargetCents 是当前动作每个采购单位对闲鱼订单总价的贡献。
-		unitTargetCents := unitCostCents + fixedMarkupCents
 		if fulfillmentQuantity <= 0 || int64(fulfillmentQuantity) > 100000000/unitTargetCents {
 			return nil, 0, fmt.Errorf("货源商品 %d 按订单数量计算后超过闲鱼改价上限", config.GoodsID)
 		}
@@ -215,7 +209,8 @@ func (c *Center) quotePendingPriceActions(ctx context.Context, task Task, userID
 		}
 		targetOrderCents += actionTargetCents
 		actionQuotes = append(actionQuotes, pendingPriceActionQuote{action: action, config: config, unitCostCents: unitCostCents,
-			fulfillmentQuantity: fulfillmentQuantity, fixedMarkupCents: fixedMarkupCents, minimumProfitCents: minimumProfitCents})
+			fulfillmentQuantity: fulfillmentQuantity, fixedMarkupCents: fixedMarkupCents, minimumProfitCents: minimumProfitCents,
+			unitTargetCents: unitTargetCents})
 	}
 	if targetOrderCents <= 0 {
 		return nil, 0, errors.New("外部货源跟价计算出的订单价格无效")
@@ -229,8 +224,12 @@ func (c *Center) persistAndApplyPendingPrice(ctx context.Context, task Task, rul
 	storedQuotes := make([]db.ExternalPriceQuote, 0, len(actionQuotes))
 	// actionQuote 是当前已查询成功的动作成本快照。
 	for _, actionQuote := range actionQuotes {
-		// dynamicSafeCents 允许货源在买家付款前上涨，但必须保留管理员配置的每件最低利润。
-		dynamicSafeCents := (actionQuote.unitCostCents + actionQuote.fixedMarkupCents - actionQuote.minimumProfitCents) * int64(actionQuote.fulfillmentQuantity)
+		// 新利润率模型以售价为倒挂边界；旧规则继续扣除最低利润，保持升级前采购语义。
+		dynamicSafeUnitCents := actionQuote.unitTargetCents
+		if strings.TrimSpace(actionQuote.config.ProfitRate) == "" {
+			dynamicSafeUnitCents -= actionQuote.minimumProfitCents
+		}
+		dynamicSafeCents := dynamicSafeUnitCents * int64(actionQuote.fulfillmentQuantity)
 		storedQuotes = append(storedQuotes, db.ExternalPriceQuote{OrderID: task.OrderID, CookieID: task.AccountID,
 			ActionID: actionQuote.action.ID, UnitCostCents: actionQuote.unitCostCents, FulfillmentQuantity: actionQuote.fulfillmentQuantity,
 			FixedMarkupCents: actionQuote.fixedMarkupCents, MinimumProfitCents: actionQuote.minimumProfitCents,
@@ -260,6 +259,73 @@ func (c *Center) persistAndApplyPendingPrice(ctx context.Context, task Task, rul
 	c.logger.Info("已按外部货源实时价格修改待付款订单", "account", task.AccountID, "order_id", task.OrderID,
 		"target_price", formatCentsAsYuan(targetOrderCents), "actions", len(actionQuotes))
 	return c.sendExternalPriceAdjustedNotice(ctx, task, rule, targetOrderCents)
+}
+
+// externalUnitTargetCents 按利润率计算售价并向上取整到分；缺少新字段时兼容旧固定加价配置。
+func externalUnitTargetCents(config externalActionConfig, unitCostCents int64) (targetCents, markupCents, legacyMinimumProfitCents int64, err error) {
+	if strings.TrimSpace(config.ProfitRate) != "" {
+		// rateHundredths 是百分比的百分之一，例如 2.50% 保存为 250。
+		rateHundredths, rateErr := parseProfitRateHundredths(config.ProfitRate)
+		if rateErr != nil {
+			return 0, 0, 0, rateErr
+		}
+		if unitCostCents > 100000000 || unitCostCents > (1<<62)/(10000+rateHundredths) {
+			return 0, 0, 0, errors.New("按利润率计算后超过金额上限")
+		}
+		targetCents = (unitCostCents*(10000+rateHundredths) + 9999) / 10000
+		if targetCents <= 0 || targetCents > 100000000 {
+			return 0, 0, 0, errors.New("按利润率计算后的售价无效")
+		}
+		return targetCents, targetCents - unitCostCents, 0, nil
+	}
+	if strings.TrimSpace(config.FixedMarkup) == "" {
+		return unitCostCents, 0, 0, nil
+	}
+	markupCents, markupErr := parseYuanToCents(config.FixedMarkup)
+	if markupErr != nil {
+		return 0, 0, 0, fmt.Errorf("固定加价无效: %w", markupErr)
+	}
+	minimumProfitCents := int64(0)
+	var profitErr error
+	if strings.TrimSpace(config.MinimumProfit) != "" {
+		minimumProfitCents, profitErr = parseNonNegativeYuanToCents(config.MinimumProfit)
+	}
+	if profitErr != nil {
+		return 0, 0, 0, fmt.Errorf("最低保留利润无效: %w", profitErr)
+	}
+	if minimumProfitCents > markupCents {
+		return 0, 0, 0, errors.New("最低保留利润不能大于固定加价")
+	}
+	return unitCostCents + markupCents, markupCents, minimumProfitCents, nil
+}
+
+// parseProfitRateHundredths 解析 0 到 1000%、最多两位小数的利润率。
+func parseProfitRateHundredths(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	parts := strings.Split(raw, ".")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && len(parts[1]) > 2) {
+		return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+	}
+	whole, wholeErr := strconv.ParseInt(parts[0], 10, 64)
+	if wholeErr != nil || whole < 0 || whole > 1000 {
+		return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+	}
+	fraction := int64(0)
+	if len(parts) == 2 && parts[1] != "" {
+		fracText := parts[1]
+		if len(fracText) == 1 {
+			fracText += "0"
+		}
+		var fracErr error
+		fraction, fracErr = strconv.ParseInt(fracText, 10, 64)
+		if fracErr != nil {
+			return 0, errors.New("利润率必须是 0 到 1000、最多两位小数的百分比")
+		}
+	}
+	if whole == 1000 && fraction > 0 {
+		return 0, errors.New("利润率不能超过 1000%")
+	}
+	return whole*100 + fraction, nil
 }
 
 // parseNonNegativeYuanToCents 解析允许为零的十进制元金额，最多两位小数且不得超过系统金额上限。

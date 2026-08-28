@@ -34,6 +34,22 @@ type externalActionConfig struct {
 	FixedMarkup string `json:"fixed_markup"`
 	// MinimumProfit 是付款采购时每个实际采购单位必须保留的最低利润。
 	MinimumProfit string `json:"minimum_profit"`
+	// ProfitRate 是售价相对采购价的利润率百分比，最多保留两位小数。
+	ProfitRate string `json:"profit_rate"`
+	// PriceSyncEnabled 表示查询到货源新价格时同步闲鱼商品价，并接管待付款订单改价。
+	PriceSyncEnabled bool `json:"price_sync_enabled"`
+	// StopPurchaseOnInversion 控制买家实付低于实时采购成本时是否在采购前停止；指针用于兼容旧规则默认开启保护。
+	StopPurchaseOnInversion *bool `json:"stop_purchase_on_inversion"`
+}
+
+// priceSyncEnabled 同时兼容升级前的待付款跟价开关。
+func (c externalActionConfig) priceSyncEnabled() bool {
+	return c.PriceSyncEnabled || c.PendingPriceEnabled
+}
+
+// inversionProtectionEnabled 对旧规则默认开启倒挂保护，只有新配置明确关闭时才允许亏损采购。
+func (c externalActionConfig) inversionProtectionEnabled() bool {
+	return c.StopPurchaseOnInversion == nil || *c.StopPurchaseOnInversion
 }
 
 // errExternalFulfillmentPending 表示货源站已经受理订单但尚未产出结果；协调器会把它交给独立长轮询策略，而不是普通三次失败重试。
@@ -115,8 +131,11 @@ func (e *automationActionExecutor) sendExternalFulfillment(ctx context.Context, 
 	if attachErr != nil {
 		return 0, externalFulfillmentFailed(fmt.Errorf("%w: %v", errActionNotPerformed, attachErr))
 	}
-	// safePrice 默认使用规则固定保护价；只有该订单改价明确成功时才读取订单级动态保护价。
-	safePrice := config.SafePrice
+	// safePrice 仅在倒挂保护开启时传给供应站；新模型不再要求管理员维护固定保护价。
+	safePrice := ""
+	if config.inversionProtectionEnabled() {
+		safePrice = config.SafePrice
+	}
 	// quotedSafePrice、quoted、quoteErr 分别是该动作订单级动态保护价、命中标记和读取失败原因。
 	quotedSafePrice, quoted, quoteErr := e.store.Automation.AdjustedExternalSafePrice(ctx, task.OrderID, action.ID)
 	if quoteErr != nil {

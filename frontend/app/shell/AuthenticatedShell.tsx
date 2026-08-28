@@ -57,6 +57,8 @@ const Rules = lazy(/* Rules 页面按路由激活时加载。 */ () => import('.
 const Notifications = lazy(/* Notifications 页面按路由激活时加载。 */ () => import('../features/notifications/pages/Notifications'));
 // DataBackup 是仅管理员可访问的数据备份与恢复页面。
 const DataBackup = lazy(/* DataBackup 页面按路由激活时加载。 */ () => import('../features/data-backup/pages/DataBackup'));
+// LiveLogs 是仅管理员可访问的实时进程日志页面。
+const LiveLogs = lazy(/* LiveLogs 页面按路由激活时加载，避免普通页面初始化轮询。 */ () => import('../features/logs/pages/LiveLogs'));
 // Chat 是按需加载的聊天页面，避免未访问时载入聊天历史和 WebSocket 视图。
 const Chat = lazy(/* Chat 页面按路由激活时加载。 */ () => import('../features/chat/pages/Chat'));
 
@@ -113,6 +115,7 @@ export const AppContent: React.FC<AppContentProps> = ({
         onDeliveryTargetHandled={onDeliveryTargetHandled}
       />;
       case 'notifications': return <Notifications isAdmin={isAdmin} />;
+      case 'logs': return isAdmin ? <LiveLogs /> : <Dashboard />;
       case 'data-backup': return isAdmin ? <DataBackup /> : <Dashboard />;
       case 'settings': return isAdmin ? <Settings /> : <Dashboard />;
       default: return <Dashboard />;

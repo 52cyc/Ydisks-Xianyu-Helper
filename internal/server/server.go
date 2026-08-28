@@ -41,12 +41,20 @@ type Dependencies struct {
 	DatabaseHealth DatabaseHealthPort
 	// Applications 是完整的 transport 应用 Port 快照；缺失时构造必须失败。
 	Applications *ApplicationPorts
+	// LiveLogs 是管理员实时日志页的进程内增量读取端口。
+	LiveLogs LiveLogReader
 }
 
 // DatabaseHealthPort 定义健康检查需要的最小数据库连通性能力。
 type DatabaseHealthPort interface {
 	// Ping 在调用方 Context 内探测数据库连接是否可用。
 	Ping(context.Context) error
+}
+
+// LiveLogReader 定义 HTTP transport 读取进程内最新日志所需的最小能力。
+type LiveLogReader interface {
+	// Snapshot 返回 after 游标之后最多 limit 条已格式化日志。
+	Snapshot(after uint64, limit int) logging.LiveSnapshot
 }
 
 // Server 聚合 HTTP transport 依赖，不持有账号运行时或业务 worker 实现。
@@ -60,6 +68,8 @@ type Server struct {
 	applications *ApplicationPorts
 	// databaseHealth 提供健康检查所需的数据库探测能力，避免 handler 直接触碰 SQL 连接。
 	databaseHealth DatabaseHealthPort
+	// liveLogs 提供管理员页面所需的有界增量日志快照。
+	liveLogs LiveLogReader
 	// backgroundMu 保护 Server 后台任务计数与完成信号，避免关闭等待创建不可取消的等待 goroutine。
 	backgroundMu    sync.Mutex
 	backgroundCount int
@@ -92,6 +102,9 @@ func New(dependencies Dependencies) (*Server, error) {
 	if dependencies.Applications == nil {
 		return nil, fmt.Errorf("server 应用服务集合不能为空")
 	}
+	if dependencies.LiveLogs == nil {
+		return nil, fmt.Errorf("server 实时日志端口不能为空")
+	}
 	// applicationPortsErr 表示组合根提供的 Port 容器仍有未装配的 HTTP 路由能力。
 	if applicationPortsErr := dependencies.Applications.validate(); applicationPortsErr != nil {
 		return nil, fmt.Errorf("server 应用 Port 未完成装配: %w", applicationPortsErr)
@@ -110,6 +123,7 @@ func New(dependencies Dependencies) (*Server, error) {
 		Addr:           dependencies.Addr,
 		applications:   &copiedApplications,
 		databaseHealth: dependencies.DatabaseHealth,
+		liveLogs:       dependencies.LiveLogs,
 		loginLimiter:   newLoginFailureLimiter(),
 		taskRegistry:   newTaskRegistry(),
 		backgroundDone: closedSignal(),
@@ -222,6 +236,9 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		// ww 用于本次流程后续判断的ww
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
+		if r.URL.Path == "/api/v1/admin/logs" {
+			return
+		}
 		// status 用于本次流程后续判断的状态
 		status := ww.Status()
 		if status == 0 {

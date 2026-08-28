@@ -254,6 +254,45 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 	return nil
 }
 
+// syncItemListingPrice 修改普通商品页售价，并复用交易写操作的 Cookie 快照和条件写回保护。
+func (e *automationActionExecutor) syncItemListingPrice(ctx context.Context, accountID, itemID string, priceCents int64, allowCredentialRecovery bool) error {
+	editor, supported := e.mtop().(mtop.ItemPriceEditor)
+	if !supported {
+		return errors.New("当前闲鱼客户端不支持商品售价同步")
+	}
+	session, openErr := e.openShipmentConsignSession(ctx, accountID)
+	if openErr != nil {
+		return openErr
+	}
+	succeeded, returns, updatedCookie, callErr := editor.UpdateItemPriceContext(session.requestContext, session.cookieStr, itemID, priceCents)
+	result := shipmentConsignResult{succeeded: succeeded, returns: returns, updatedCookie: updatedCookie, callErr: callErr}
+	persistence := e.persistShipmentConsignCookies(ctx, accountID, session, result)
+	sessionErr := callErr
+	if sessionErr == nil && !succeeded {
+		sessionErr = errors.New(strings.Join(returns, "; "))
+	}
+	if mtop.IsSessionExpiredErr(sessionErr) {
+		if len(persistence.errors) > 0 {
+			return errors.Join(sessionErr, errors.Join(persistence.errors...))
+		}
+		recoverer := e.recoverer()
+		if allowCredentialRecovery && recoverer != nil && recoverer.RecoverExpiredCredential(ctx, accountID) {
+			return e.syncItemListingPrice(ctx, accountID, itemID, priceCents, false)
+		}
+		return fmt.Errorf("商品售价同步 Session 已失效: %w", sessionErr)
+	}
+	if callErr != nil {
+		return errors.Join(callErr, errors.Join(persistence.errors...))
+	}
+	if !succeeded {
+		return errors.Join(fmt.Errorf("商品售价同步失败: %s", strings.Join(returns, "; ")), errors.Join(persistence.errors...))
+	}
+	if len(persistence.errors) > 0 {
+		return uncertainAction(fmt.Errorf("闲鱼已修改商品售价，但响应凭证保存失败: %w", errors.Join(persistence.errors...)))
+	}
+	return nil
+}
+
 // adjustPriceCentsFromConfig 从动作配置解析目标价格并转换为整数分。
 // 金额使用十进制字符串解析，最多两位小数，禁止浮点运算引入误差。
 func adjustPriceCentsFromConfig(configJSON string) (int64, error) {

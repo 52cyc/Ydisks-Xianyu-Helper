@@ -77,6 +77,9 @@ export const emptyVariant = (): ShippingVariant => ({
   pending_price_enabled: false,
   fixed_markup: "0.40",
   minimum_profit: "0.20",
+  profit_rate: "2.00",
+  price_sync_enabled: false,
+  stop_purchase_on_inversion: true,
   attach_json: "{}",
   attach_fields: [],
   product_verified: false,
@@ -190,26 +193,48 @@ export const isValidNonNegativeMoney = (raw: string): boolean => {
   return cents >= 0 && cents <= 100000000;
 };
 
+// isValidProfitRate 校验 0 到 1000%、最多两位小数的利润率。
+export const isValidProfitRate = (raw: string): boolean => {
+  // trimmed 是去掉首尾空白后的利润率文本。
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return false;
+  // rate 是利润率百分比数值。
+  const rate = Number(trimmed);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1000;
+};
+
 // recommendedExternalPricing 按每次货源校验的实时采购价生成并覆盖默认跟价配置。
-export const recommendedExternalPricing = (goodsPrice: string) => {
-  // fixedMarkupCents 和 minimumProfitCents 是用户确认的每件默认加价与最低利润。
-  const fixedMarkupCents = 40;
-  const minimumProfitCents = 20;
-  // trimmedPrice 是货源接口返回的当前采购价文本。
-  const trimmedPrice = String(goodsPrice || "").trim();
-  // unitCostCents 仅在返回值是有效金额时计算，避免为缺价商品伪造保护价。
-  const unitCostCents = isValidAdjustPrice(trimmedPrice)
-    ? Math.round(Number(trimmedPrice) * 100)
-    : 0;
-  // safePriceCents 保留固定加价中扣除最低利润后可承受的货源涨价空间。
-  const safePriceCents = unitCostCents
-    ? unitCostCents + fixedMarkupCents - minimumProfitCents
-    : 0;
+export const recommendedExternalPricing = (_goodsPrice: string) => {
   return {
-    fixed_markup: "0.40",
-    minimum_profit: "0.20",
-    safe_price: safePriceCents ? (safePriceCents / 100).toFixed(2) : "",
+    profit_rate: "2.00",
+    price_sync_enabled: true,
+    pending_price_enabled: false,
+    stop_purchase_on_inversion: true,
   };
+};
+
+// externalSalePrice 按采购价和利润率计算建议售价，并向上取整到分以避免少收一分钱。
+export const externalSalePrice = (
+  goodsPrice: string,
+  profitRate: string,
+  quantity = 1,
+): string => {
+  // cost 是货源实时采购价的数值表示。
+  const cost = Number(String(goodsPrice || "").trim());
+  // rate 是用户配置的利润率百分比数值。
+  const rate = Number(String(profitRate || "").trim());
+  if (
+    !Number.isFinite(cost) ||
+    cost <= 0 ||
+    !Number.isFinite(rate) ||
+    rate < 0 ||
+    rate > 1000 ||
+    quantity < 1
+  )
+    return "";
+  // unitCents 是按利润率计算并向上取整后的单个采购单位售价分值。
+  const unitCents = Math.ceil(cost * (1 + rate / 100) * 100);
+  return ((unitCents * quantity) / 100).toFixed(2);
 };
 
 // cardActionsForTrigger 根据触发类型创建默认动作链。

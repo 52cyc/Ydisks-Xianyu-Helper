@@ -285,6 +285,12 @@ export interface ShippingVariant {
   fixed_markup?: string;
   /** 付款采购时每个实际采购单位必须保留的最低利润。 */
   minimum_profit?: string;
+  /** 售价相对采购价的利润率百分比。 */
+  profit_rate?: string;
+  /** 是否按货源实时采购价同步闲鱼售价并接管待付款订单改价。 */
+  price_sync_enabled?: boolean;
+  /** 闲鱼实付低于实时采购成本时是否停止采购。 */
+  stop_purchase_on_inversion?: boolean;
   /** 直充附加字段的 JSON 编辑文本。 */
   attach_json?: string;
   /** 货源商品校验返回的直充字段定义，用于生成订单字段映射。 */

@@ -15,6 +15,8 @@ emptyVariant,
 fulfillmentGoodsID,
 isValidAdjustPrice,
 isValidNonNegativeMoney,
+isValidProfitRate,
+externalSalePrice,
 parseJSONObject,
 recommendedExternalPricing,
 shouldReplaceGeneratedName,
@@ -108,17 +110,22 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(isValidNonNegativeMoney('')).toBe(false);
   });
 
-  test('每次商品校验按实时采购价覆盖推荐金额', /* 当前回调验证固定加价、最低利润和采购保护价的统一公式。 */ () => {
+  test('每次商品校验覆盖简化后的默认价格策略', /* 当前回调验证利润率、自动同步和倒挂保护默认值。 */ () => {
     expect(recommendedExternalPricing('13.43')).toEqual({
-      fixed_markup: '0.40',
-      minimum_profit: '0.20',
-      safe_price: '13.63',
+      profit_rate: '2.00',
+      price_sync_enabled: true,
+      pending_price_enabled: false,
+      stop_purchase_on_inversion: true,
     });
     expect(recommendedExternalPricing('-')).toEqual({
-      fixed_markup: '0.40',
-      minimum_profit: '0.20',
-      safe_price: '',
+      profit_rate: '2.00',
+      price_sync_enabled: true,
+      pending_price_enabled: false,
+      stop_purchase_on_inversion: true,
     });
+    expect(isValidProfitRate('2.50')).toBe(true);
+    expect(isValidProfitRate('1000.01')).toBe(false);
+    expect(externalSalePrice('9.50', '2.00')).toBe('9.69');
   });
 
   test('汇总动作、主题样式和布尔标志', /* 当前回调处理规则配置和展示状态。 */ () => {
@@ -143,7 +150,7 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
   });
 
   test('创建空规格并选择账号展示名称', /* 当前回调处理规则配置和展示状态。 */ () => {
-    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0, pending_price_enabled: false, fixed_markup: '0.40', minimum_profit: '0.20' }));
+    expect(emptyVariant()).toEqual(expect.objectContaining({ spec_name: '', spec_value: '', card_id: 0, delivery_count: 1, enabled: true, delay_override: false, delay_seconds: 0, source_type: 'local', goods_ref: '', goods_id: 0, profit_rate: '2.00', price_sync_enabled: false, stop_purchase_on_inversion: true }));
     // idOnly 是仅包含平台账号标识的最小账号对象。
     const idOnly = { id: 'account-1' } as AccountDetail;
     expect(accountLabel({ id: 'a', nickname: '昵称' } as AccountDetail)).toBe('昵称');

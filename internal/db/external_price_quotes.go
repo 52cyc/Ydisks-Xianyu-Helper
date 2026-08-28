@@ -102,6 +102,41 @@ VALUES(?,?,?,?,?,?,?,?,?,'pending','')`, quote.OrderID, quote.CookieID, quote.Ac
 	return true, nil
 }
 
+// ReplaceExternalPriceQuotesAsAdjusted 为直接付款订单保存已通过倒挂校验的动作级采购上限。
+// 仅允许替换尚未成功改价的历史报价；已 adjusted 的订单保持原快照，避免采购过程中改变边界。
+func (a *AutomationRules) ReplaceExternalPriceQuotesAsAdjusted(ctx context.Context, quotes []ExternalPriceQuote) error {
+	if len(quotes) == 0 || quotes[0].OrderID == "" {
+		return errors.New("直接付款外部报价不能为空")
+	}
+	tx, beginErr := a.DB.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return beginErr
+	}
+	defer tx.Rollback()
+	var adjustedCount int
+	if queryErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM external_price_quotes WHERE order_id=? AND status='adjusted'`, quotes[0].OrderID).Scan(&adjustedCount); queryErr != nil {
+		return queryErr
+	}
+	if adjustedCount > 0 {
+		return tx.Commit()
+	}
+	if _, deleteErr := tx.ExecContext(ctx, `DELETE FROM external_price_quotes WHERE order_id=?`, quotes[0].OrderID); deleteErr != nil {
+		return deleteErr
+	}
+	for _, quote := range quotes {
+		if quote.OrderID != quotes[0].OrderID || quote.ActionID <= 0 || quote.FulfillmentQuantity <= 0 {
+			return errors.New("直接付款外部报价字段无效")
+		}
+		if _, insertErr := tx.ExecContext(ctx, `INSERT INTO external_price_quotes
+(order_id,cookie_id,action_id,unit_cost_cents,fulfillment_quantity,fixed_markup_cents,minimum_profit_cents,target_order_cents,dynamic_safe_price,status,error_message)
+VALUES(?,?,?,?,?,?,?,?,?,'adjusted','')`, quote.OrderID, quote.CookieID, quote.ActionID, quote.UnitCostCents,
+			quote.FulfillmentQuantity, quote.FixedMarkupCents, quote.MinimumProfitCents, quote.TargetOrderCents, quote.DynamicSafePrice); insertErr != nil {
+			return insertErr
+		}
+	}
+	return tx.Commit()
+}
+
 // FinishExternalPriceQuotes 将订单全部报价收口为 adjusted 或 failed；错误原因不得包含货源凭证。
 func (a *AutomationRules) FinishExternalPriceQuotes(ctx context.Context, orderID, status, errorMessage string) error {
 	if status != "adjusted" && status != "failed" {

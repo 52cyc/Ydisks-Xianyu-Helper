@@ -62,6 +62,11 @@ type Client interface {
 	RefreshTokenWithDeviceIDContext(ctx context.Context, cookiesStr, deviceID string) (*RefreshResult, error)
 }
 
+// ItemPriceEditor 是可选的商品页售价修改能力；测试替身无需实现即可保持兼容。
+type ItemPriceEditor interface {
+	UpdateItemPriceContext(ctx context.Context, cookiesStr, itemID string, priceCents int64) (ok bool, ret []string, updatedCookies string, err error)
+}
+
 // ClientImpl 是 Client 接口的 HTTP 实现。零值可用；HTTP 超时默认 30s。
 // 仍导出 HTTPClient/TokenURL 等字段以便调用方覆盖（如测试注入 RoundTripper）。
 // ClientImpl 用于本次流程后续判断的ClientImpl
@@ -73,7 +78,10 @@ type ClientImpl struct {
 	TokenURL   string
 	ConsignURL string
 	// AdjustPriceURL 覆盖订单改价端点，仅供测试注入本地 HTTP 服务。
-	AdjustPriceURL      string
+	AdjustPriceURL string
+	// ItemEditDetailURL 和 ItemEditURL 允许测试把商品编辑链路指向本地服务。
+	ItemEditDetailURL   string
+	ItemEditURL         string
 	OrderDetailURL      string
 	SoldOrdersURL       string
 	ItemDetailURL       string

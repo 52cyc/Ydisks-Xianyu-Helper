@@ -22,6 +22,7 @@ import (
 	"xianyu-go/internal/composition"
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/engine"
+	"xianyu-go/internal/logging"
 	"xianyu-go/internal/notify"
 	"xianyu-go/internal/xianyu/mtop"
 )
@@ -372,7 +373,7 @@ func (testDataBackupPort) Import(context.Context, int64, io.Reader, string) (dat
 func testServerDependencies(authentication *auth.Service, databaseHealth DatabaseHealthPort, services *composition.Services, sessionRecovery adapter.SessionRecoveryHandler) Dependencies {
 	// ports 是测试组合根投影的完整 transport Port 集合。
 	ports := services.TransportPorts()
-	return Dependencies{Auth: authentication, Addr: ":0", DatabaseHealth: databaseHealth, Applications: NewApplicationPorts(ApplicationPortsInput{
+	return Dependencies{Auth: authentication, Addr: ":0", DatabaseHealth: databaseHealth, LiveLogs: logging.NewLiveBuffer(2000), Applications: NewApplicationPorts(ApplicationPortsInput{
 		Orders: testOrdersTransport{services: ports.Orders}, OrderRefreshJobs: testOrderRefreshJobsTransport{service: ports.OrderRefreshJobs}, ItemSinglePublish: ports.ItemSinglePublish,
 		ItemBatchPreview: ports.ItemBatchPreview, ItemBatchManagement: ports.ItemBatchManagement, ItemCategoryRecommendation: ports.ItemCategoryRecommendation,
 		ItemBatchPreviewPersistence: ports.ItemBatchPreviewPersistence, ItemBatchLocalPublish: ports.ItemBatchLocalPublish,

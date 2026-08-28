@@ -56,6 +56,7 @@ func TestOpenAPISuccessContractCoverage(t *testing.T) {
 		{name: "remaining-versioned-success", run: TestOpenAPIRemainingVersionedSuccessResponses},
 		{name: "fulfillment-success", run: TestOpenAPIFulfillmentSuccessResponses},
 		{name: "data-backup-success", run: TestDataBackupRoutes},
+		{name: "live-logs-success", run: TestLiveLogsEndpoint},
 	}
 	// scenario 是当前执行的领域真实响应场景。
 	for _, scenario := range scenarios {

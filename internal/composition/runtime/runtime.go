@@ -39,6 +39,8 @@ type RuntimeInfrastructure struct {
 	Store *db.Store
 	// Logger 是进程级脱敏结构化日志器。
 	Logger *slog.Logger
+	// LiveLogs 是供管理端读取的有界进程日志源。
+	LiveLogs server.LiveLogReader
 }
 
 // Runtime 是由组合根创建并由 cmd 启动、等待和关闭的完整进程运行时。
@@ -51,7 +53,7 @@ type Runtime struct {
 
 // BuildRuntime 构造全部基础设施适配器、应用服务和生命周期组件，但不启动任何 worker。
 func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) (Runtime, error) {
-	if infrastructure.Store == nil || infrastructure.Logger == nil {
+	if infrastructure.Store == nil || infrastructure.Logger == nil || infrastructure.LiveLogs == nil {
 		return Runtime{}, fmt.Errorf("组合根基础设施不完整")
 	}
 	// browserManager 是可选 Chromium 生命周期拥有者；禁用浏览器时保持 nil。
@@ -194,7 +196,7 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	// serverDependencies、dependenciesErr 分别是投影给 HTTP transport 的依赖快照及其构造错误。
 	serverDependencies, dependenciesErr := ServerDependencies(services, HTTPDependencies{
 		Auth: &auth.Service{Store: infrastructure.Store, Logger: infrastructure.Logger, Secure: options.SecureCookie}, WebDir: options.WebDir, Addr: options.Addr,
-		Logger: infrastructure.Logger, DatabaseHealth: databaseHealth, DataBackup: dataBackupService,
+		Logger: infrastructure.Logger, DatabaseHealth: databaseHealth, DataBackup: dataBackupService, LiveLogs: infrastructure.LiveLogs,
 	}, sessionRecovery)
 	if dependenciesErr != nil {
 		return Runtime{}, dependenciesErr

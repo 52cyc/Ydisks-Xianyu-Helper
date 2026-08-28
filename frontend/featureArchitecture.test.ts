@@ -68,6 +68,7 @@ const canonicalPageEntrypoints = [
   'app/features/data-backup/pages/DataBackup.tsx',
   'app/features/fulfillment/pages/Fulfillment.tsx',
   'app/features/items/pages/ItemList.tsx',
+  'app/features/logs/pages/LiveLogs.tsx',
   'app/features/notifications/pages/Notifications.tsx',
   'app/features/orders/pages/OrderList.tsx',
   'app/features/rules/pages/Rules.tsx',

@@ -241,7 +241,7 @@ func (c *Center) quoteExternalPriceGuidance(ctx context.Context, accountID strin
 		if configErr != nil {
 			return "", "", configErr
 		}
-		if config.SourceType != "external" || !config.PendingPriceEnabled {
+		if config.SourceType != "external" || !config.priceSyncEnabled() {
 			continue
 		}
 		// product、quoteErr 是供应商当前商品价格和可采购状态。
@@ -257,10 +257,10 @@ func (c *Center) quoteExternalPriceGuidance(ctx context.Context, accountID strin
 		if costErr != nil {
 			return "", "", fmt.Errorf("货源商品 %d 没有有效实时价格: %w", config.GoodsID, costErr)
 		}
-		// fixedMarkupCents、markupErr 是管理员配置的每个采购单位固定加价。
-		fixedMarkupCents, markupErr := parseYuanToCents(config.FixedMarkup)
-		if markupErr != nil {
-			return "", "", fmt.Errorf("货源商品 %d 固定加价无效: %w", config.GoodsID, markupErr)
+		// unitTargetCents 同时支持利润率新模型和固定加价旧模型。
+		unitTargetCents, _, _, pricingErr := externalUnitTargetCents(config, unitCostCents)
+		if pricingErr != nil {
+			return "", "", fmt.Errorf("货源商品 %d 售价配置无效: %w", config.GoodsID, pricingErr)
 		}
 		// deliveryCount 是买家购买一件闲鱼商品时该动作实际采购的数量。
 		deliveryCount := action.DeliveryCount
@@ -268,7 +268,6 @@ func (c *Center) quoteExternalPriceGuidance(ctx context.Context, accountID strin
 			deliveryCount = 1
 		}
 		// actionCents 是该动作对当前规格单件报价的贡献。
-		unitTargetCents := unitCostCents + fixedMarkupCents
 		if unitTargetCents <= 0 || int64(deliveryCount) > 100000000/unitTargetCents {
 			return "", "", fmt.Errorf("货源商品 %d 报价超过闲鱼改价上限", config.GoodsID)
 		}
@@ -336,7 +335,7 @@ func ruleUsesExternalPendingPrice(rule db.AutomationRule) (bool, error) {
 		if configErr != nil {
 			return false, configErr
 		}
-		if config.SourceType == "external" && config.PendingPriceEnabled {
+		if config.SourceType == "external" && config.priceSyncEnabled() {
 			return true, nil
 		}
 	}
