@@ -10,6 +10,7 @@ getShippingRules,
 } from '../api';
 import { batchStatusClass,batchStatusText } from '../batchState';
 import { BatchPhaseIndicator } from '../components/BatchPhaseIndicator';
+import { ItemCloneFlow } from '../components/ItemCloneFlow';
 import { consumeSelectedFile } from '../fileInput';
 import { useItemPublishBatch } from '../hooks';
 import { useItemActions } from '../itemActions';
@@ -84,6 +85,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
     setBatchLocations,
     setBatchLocation,
     openBatchModal,
+    openClonePreview,
     handleRecommendBatchCategory,
     openRecentBatchResult,
     handlePreviewBatch,
@@ -270,6 +272,14 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
               <PackagePlus className="w-4 h-4" />
               发布商品
             </button>
+            <ItemCloneFlow
+              accounts={accounts}
+              items={items}
+              preferredSourceAccountID={accountFilter || selectedAccount}
+              batchBusy={Boolean(recentBatch && ['running', 'canceling'].includes(recentBatch.status))}
+              accountName={accountName}
+              onPreviewClone={openClonePreview}
+            />
             <button
               onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void openBatchModal()}
               className="px-5 py-3 rounded-2xl font-bold bg-brand text-white hover:bg-brand-highlight transition-colors flex items-center gap-2 shadow-lg shadow-blue-100"

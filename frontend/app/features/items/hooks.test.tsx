@@ -145,6 +145,50 @@ describe('useItemPublishBatch', /* 当前回调处理批量发布的表单、任
     hook.unmount();
   });
 
+  test('账号间克隆快照直接进入现有批量预检流程', /* clonePreviewTest 验证目标账号和批量预览状态。 */ async () => {
+    // hook 是商品克隆预检场景的批量状态容器。
+    const hook = renderHook(/* cloneHookFactory 创建拥有默认同步账号的克隆场景。 */ () => useItemPublishBatch({ selectedAccount: 'source-account', loadItems: vi.fn(), loadShippingRules: vi.fn() }));
+    // cloneFile 是前端根据勾选商品生成的不可变 CSV 快照。
+    const cloneFile = new File(['账号ID,标题'], '商品克隆.csv', { type: 'text/csv' });
+    // opened 表示克隆预检是否成功打开批量预览。
+    let opened = false;
+    await act(
+      // clonePreviewAction 提交目标账号克隆快照。
+      async () => { opened = await hook.result.current.openClonePreview(cloneFile, 'target-account'); },
+    );
+    expect(opened).toBe(true);
+    expect(previewBatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      file: cloneFile,
+      defaultCookieId: 'target-account',
+      publishIntervalSeconds: 5,
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(hook.result.current.showBatchModal).toBe(true);
+    expect(hook.result.current.batchPhase).toBe('preview');
+    expect(hook.result.current.batchPreview).toEqual(previewFixture);
+    hook.unmount();
+  });
+
+  test('账号间克隆缺少目标账号或预检失败时不会停留在空弹窗', /* clonePreviewGuardTest 验证克隆预检守卫和异常恢复。 */ async () => {
+    // hook 是克隆预检守卫场景的批量状态容器。
+    const hook = renderHook(/* cloneGuardHookFactory 创建克隆异常场景。 */ () => useItemPublishBatch({ selectedAccount: 'source-account', loadItems: vi.fn(), loadShippingRules: vi.fn() }));
+    // cloneFile 是用于覆盖异常分支的最小 CSV 文件。
+    const cloneFile = new File(['账号ID,标题'], '商品克隆.csv', { type: 'text/csv' });
+    await act(
+      // missingTargetAction 验证空目标账号不会发起预检。
+      async () => { expect(await hook.result.current.openClonePreview(cloneFile, '')).toBe(false); },
+    );
+    expect(previewBatchMock).not.toHaveBeenCalled();
+    previewBatchMock.mockRejectedValueOnce(new Error('克隆校验失败'));
+    await act(
+      // failedCloneAction 验证服务端拒绝克隆快照后的界面恢复。
+      async () => { expect(await hook.result.current.openClonePreview(cloneFile, 'target-account')).toBe(false); },
+    );
+    expect(alert).toHaveBeenCalledWith('克隆校验失败');
+    expect(hook.result.current.showBatchModal).toBe(false);
+    expect(hook.result.current.batchLoading).toBe(false);
+    hook.unmount();
+  });
+
   test('无账号、空关键词、无文件和异常响应会阻止危险操作', /* 当前回调验证批量表单守卫和错误分支。 */ async () => {
     // loadItems 是错误场景下的列表刷新替身。
     const loadItems = vi.fn().mockResolvedValue(undefined);

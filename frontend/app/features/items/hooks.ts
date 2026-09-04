@@ -125,6 +125,53 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     [beginBatchRequest, isCurrentBatchOperation],
   );
 
+  // openClonePreview 将前端生成的克隆快照直接送入批量预检，并复用后续发布、轮询和重试流程。
+  const openClonePreview = useCallback(
+    // clonePreviewAction 初始化克隆批次表单并请求服务端逐行校验。
+    async (file: File, targetAccountID: string): Promise<boolean> => {
+    if (!targetAccountID) {
+      alert('请选择目标账号');
+      return false;
+    }
+    // request 是本次克隆预检独占的取消器和请求代次。
+    const request = beginBatchRequest();
+    setBatchPhase('upload');
+    setBatchFile(file);
+    setBatchImagesZip(null);
+    setBatchCategoryKeyword('');
+    setBatchFallbackCategory({ catId: '', catName: '', channelCatId: '', tbCatId: '' });
+    setBatchLocations([]);
+    setBatchLocation(null);
+    setBatchPublishIntervalSeconds(5);
+    setBatchPreview(null);
+    setBatchDetail(null);
+    setShowBatchModal(true);
+    setBatchLoading(true);
+    try {
+      // result 是克隆商品经现有服务端规则校验后的逐行预览。
+      const result = await previewItemPublishBatch({
+        file,
+        defaultCookieId: targetAccountID,
+        fallbackCategory: { catId: '', catName: '', channelCatId: '', tbCatId: '' },
+        publishIntervalSeconds: 5,
+      }, { signal: request.controller.signal });
+      if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return false;
+      setBatchPreview(result);
+      setBatchPhase('preview');
+      return true;
+    } catch (error: any /* 克隆预检错误 */) {
+      if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return false;
+      console.error('商品克隆预检失败:', error);
+      alert(error?.message || '克隆预检失败，请检查源商品数据');
+      setShowBatchModal(false);
+      return false;
+    } finally {
+      if (isCurrentBatchOperation(request.requestGeneration, request.controller)) setBatchLoading(false);
+    }
+    },
+    [beginBatchRequest, isCurrentBatchOperation],
+  );
+
   // handleRecommendBatchCategory 请求默认发布账号对应的推荐类目。
   const handleRecommendBatchCategory = useCallback(
     // 类目推荐动作响应用户点击或回车提交。
@@ -441,6 +488,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     batchPublishIntervalSeconds,
     setBatchPublishIntervalSeconds,
     openBatchModal,
+    openClonePreview,
     handleRecommendBatchCategory,
     openRecentBatchResult,
     handlePreviewBatch,

@@ -66,6 +66,10 @@ export default defineConfig({
           if (modulePath.includes('/app/features/delivery-templates/hooks.')) {
             return 'delivery-template-runtime';
           }
+          // 账号间克隆弹窗属于商品页低频交互，独立分片可保持商品列表页面在既有下载预算内。
+          if (modulePath.includes('/app/features/items/components/ItemCloneFlow.') || modulePath.includes('/app/features/items/cloneState.')) {
+            return 'item-clone-flow';
+          }
           if (!modulePath.includes('/node_modules/')) {
             return undefined;
           }
