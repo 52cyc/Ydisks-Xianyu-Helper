@@ -30,8 +30,18 @@ const (
 
 // secretCodec 对数据库敏感字段做 AES-256-GCM 信封加密。未配置密钥时保持
 // 明文兼容；已加密数据若缺少/使用错误密钥会明确报错，绝不把密文当凭证使用。
-// secretCodec 用于本次流程后续判断的secretCodec
-type secretCodec struct{ aead cipher.AEAD }
+type secretCodec struct {
+	// aead 保存当前进程使用的 AES-GCM 实例。
+	aead cipher.AEAD
+}
+
+// currentAEAD 读取启动时固定的数据加密实例，运行期间不会改变该引用。
+func (c *secretCodec) currentAEAD() cipher.AEAD {
+	if c == nil {
+		return nil
+	}
+	return c.aead
+}
 
 // secretCodecFromEnvironment 封装secretCodecFromEnvironment业务协调。
 func secretCodecFromEnvironment() *secretCodec {
@@ -105,17 +115,19 @@ func (c *secretCodec) encrypt(scope, owner, value string) (string, error) {
 		}
 		return value, nil
 	}
-	if c == nil || c.aead == nil {
+	// aead 保存当前可用的 AES-GCM 实例。
+	aead := c.currentAEAD()
+	if aead == nil {
 		return value, nil
 	}
 	// nonce 用于本次流程后续判断的nonce
-	nonce := make([]byte, c.aead.NonceSize())
+	nonce := make([]byte, aead.NonceSize())
 	if // err 用于本次流程后续判断的err
 	_, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
 	// sealed 用于本次流程后续判断的sealed
-	sealed := c.aead.Seal(nonce, nonce, []byte(value), []byte(scope+"\x00"+owner))
+	sealed := aead.Seal(nonce, nonce, []byte(value), []byte(scope+"\x00"+owner))
 	return encryptedValuePrefix + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
@@ -153,6 +165,10 @@ func (s *Store) EncryptLegacySecrets(ctx context.Context) error {
 	if err := migrateLegacyCardAPIConfigs(ctx, tx, codec); err != nil {
 		return err
 	}
+	// err 表示历史自动化发货凭证升级失败。
+	if err := migrateLegacyAutomationDeliveryProofs(ctx, tx, codec); err != nil {
+		return err
+	}
 
 	return tx.Commit()
 }
@@ -177,18 +193,20 @@ func (c *secretCodec) decrypt(scope, owner, value string) (string, error) {
 	if !strings.HasPrefix(value, encryptedValuePrefix) {
 		return value, nil
 	}
-	if c == nil || c.aead == nil {
+	// aead 保存当前可用的 AES-GCM 实例。
+	aead := c.currentAEAD()
+	if aead == nil {
 		return "", errors.New("数据库包含加密凭证，但 XIANYU_DATA_KEY 未配置")
 	}
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, encryptedValuePrefix))
-	if err != nil || len(raw) < c.aead.NonceSize() {
+	if err != nil || len(raw) < aead.NonceSize() {
 		return "", fmt.Errorf("敏感字段密文格式无效")
 	}
 	// nonce 用于本次流程后续判断的nonce
-	nonce := raw[:c.aead.NonceSize()]
+	nonce := raw[:aead.NonceSize()]
 	// plain、err 用于本次流程后续判断的plain、err
-	plain, err := c.aead.Open(nil, nonce, raw[c.aead.NonceSize():], []byte(scope+"\x00"+owner))
+	plain, err := aead.Open(nil, nonce, raw[aead.NonceSize():], []byte(scope+"\x00"+owner))
 	if err != nil {
 		return "", errors.New("敏感字段解密失败，请检查 XIANYU_DATA_KEY")
 	}

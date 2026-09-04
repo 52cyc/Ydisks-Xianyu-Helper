@@ -823,6 +823,17 @@ test('getShippingRules exposes buyer reviewed gift rules as automation rules', a
       config_json: '{"spec_name":"套餐","spec_value":"赠品"}',
       enabled: true,
       sort_order: 1,
+    }, {
+      id: 34,
+      action_type: 'send_template',
+      card_id: 0,
+      delivery_count: 1,
+      delivery_template_id: 9,
+      template_keys: ['main'],
+      template_bindings: [{ variable_key: 'main', card_id: 7, card_name: '赠品库存', delivery_count: 2 }],
+      config_json: '{}',
+      enabled: true,
+      sort_order: 2,
     }],
   }])));
 
@@ -837,6 +848,10 @@ test('getShippingRules exposes buyer reviewed gift rules as automation rules', a
     spec_name: '套餐',
     spec_value: '赠品',
     card_id: 7,
+  });
+  expect(rules[0].variants[1]).toMatchObject({
+    delivery_mode: 'template',
+    template_bindings: [{ variable_key: 'main', card_id: 7, delivery_count: 2 }],
   });
 } /* 测试回调验证：getShippingRules exposes buyer reviewed gift rules as automation rules。 */);
 
@@ -1158,13 +1173,76 @@ test('updateShippingRule posts every matching card action before confirm shipmen
       sort_order: 3,
     }),
   ]);
-  expect(JSON.parse(body.actions[0].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: false });
-  expect(JSON.parse(body.actions[1].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: true });
+  expect(JSON.parse(body.actions[0].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: false, custom_variables: {} });
+  expect(JSON.parse(body.actions[1].config_json)).toMatchObject({ spec_name: '套餐', spec_value: '30天', delay_override: true, custom_variables: {} });
   expect(body.actions[1].delay_seconds).toBe(0);
 } /* 测试回调验证：updateShippingRule posts every matching card action before confirm shipment。 */);
 
+test('updateShippingRule serializes template custom variables as key-value strings', /* 测试回调验证自定义变量按键值表序列化。 */ async () => {
+  // fetchMock 是自动化规则保存接口的网络替身。
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 5 }));
+  stubContractFetch(fetchMock);
+
+  await updateShippingRule({
+    cookie_id: 'cookie-1',
+    item_id: 'item-1',
+    trigger_type: 'order_paid',
+    enabled: true,
+    variants: [{
+      spec_name: '',
+      spec_value: '',
+      card_id: 0,
+      delivery_count: 1,
+      enabled: true,
+      delivery_mode: 'template',
+      delivery_template_id: 9,
+      template_bindings: [{ variable_key: 'main', card_id: 7, delivery_count: 2 }],
+      custom_variables: { remark: '请联系客服', tier: 'VIP' },
+    }],
+  });
+
+  // body 是规则保存请求体，用于验证自定义变量没有退化成数组。
+  const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(body.actions[0].custom_variables).toEqual({ remark: '请联系客服', tier: 'VIP' });
+  expect(JSON.parse(body.actions[0].config_json).custom_variables).toEqual({ remark: '请联系客服', tier: 'VIP' });
+  expect(body.actions[0].template_bindings).toEqual([{ key: 'main', card_id: 7, delivery_count: 2 }]);
+  expect(body.actions[0].template_bindings[0]).not.toHaveProperty('variable_key');
+});
+
+test('模板绑定读取后不修改直接保存时完成 variable_key 到 key 的往返转换', /* 当前回调验证响应字段和请求字段的非对称契约。 */ async () => {
+  // fetchMock 是先返回规则、再接收原样保存请求的 HTTP 替身。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse([{
+      id: 15,
+      cookie_id: 'cookie-1',
+      item_id: 'item-1',
+      name: '模板规则',
+      trigger_type: 'order_paid',
+      enabled: true,
+      actions: [{
+        action_type: 'send_template',
+        card_id: 0,
+        delivery_count: 1,
+        delivery_template_id: 9,
+        template_bindings: [{ variable_key: 'main', card_id: 7, delivery_count: 3 }],
+        config_json: '{}',
+        enabled: true,
+        sort_order: 1,
+      }],
+    }]))
+    .mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+
+  // rules 是响应字段归一化后的 UI 模型，保存时应可直接再次提交。
+  const rules = await getShippingRules();
+  await updateShippingRule(rules[0]);
+  // payload 是第二次请求的 transport body，用于验证请求字段没有泄漏 UI 命名。
+  const payload = JSON.parse(fetchMock.mock.calls[1][1].body);
+  expect(payload.actions[0].template_bindings).toEqual([{ key: 'main', card_id: 7, delivery_count: 3 }]);
+  expect(payload.actions[0].template_bindings[0]).not.toHaveProperty('variable_key');
+});
+
 test('updateShippingRule serializes simplified external pricing fields', async () => {
-  // fetchMock 捕获外部货源付款规则请求体，验证动态跟价字段保存在对应发货动作中。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 31 }));
   stubContractFetch(fetchMock);
 
@@ -1189,11 +1267,8 @@ test('updateShippingRule serializes simplified external pricing fields', async (
     }],
   });
 
-  // body 是适配器提交的付款后自动化规则。
   const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-  // actionConfig 是第一条外部货源动作配置。
-  const actionConfig = JSON.parse(body.actions[0].config_json);
-  expect(actionConfig).toMatchObject({
+  expect(JSON.parse(body.actions[0].config_json)).toMatchObject({
     source_type: 'external',
     instance_id: 8,
     goods_id: 40863,
@@ -1201,7 +1276,7 @@ test('updateShippingRule serializes simplified external pricing fields', async (
     price_sync_enabled: true,
     stop_purchase_on_inversion: true,
   });
-} /* 测试回调验证外部货源固定加价和最低利润按发货动作独立序列化。 */);
+});
 
 test('updateShippingRule preserves text actions while editing card variants', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 4 })); /* fetchMock 表示fetchMock。 */

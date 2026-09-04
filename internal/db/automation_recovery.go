@@ -95,7 +95,7 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 			return nil, nil, err
 		}
 		issue.IssueKind, issue.AllowedResolutions = automationIssuePolicy(
-			rawEventJSON, actionStarted != 0, ruleEnabled != 0, issue.SentCount, issue.ErrorMessage,
+			rawEventJSON, actionStarted != 0, issue.ActionCursor, ruleEnabled != 0, issue.SentCount, issue.ErrorMessage,
 		)
 		runs = append(runs, issue)
 	}
@@ -132,9 +132,9 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	// rawEventJSON、errorMessage 用于本次流程后续判断的原始EventJSON、error消息
 	var rawEventJSON, errorMessage string
 	// actionStarted、ruleEnabled、sentCount 用于本次流程后续判断的动作Started、ruleEnabled、sent数量
-	var actionStarted, ruleEnabled, sentCount int
+	var actionStarted, actionCursor, ruleEnabled, sentCount int
 	// err 用于本次流程后续判断的err
-	err := a.DB.QueryRowContext(ctx, `SELECT ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0),ar.sent_count,ar.error_message
+	err := a.DB.QueryRowContext(ctx, `SELECT ar.raw_event_json,ar.action_started,ar.action_cursor,COALESCE(r.enabled,0),ar.sent_count,ar.error_message
 		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
 		LEFT JOIN automation_rules r ON r.id=ar.rule_id
 		WHERE ar.id=? AND (ar.status='needs_review' OR (ar.status='failed' AND ar.action_started=0 AND ar.error_message NOT LIKE '[no_retry]%'
@@ -142,7 +142,7 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 		     OR (ar.attempt_count>=? AND ar.error_message LIKE '[external_wait]%'))
 		AND NOT (ar.attempt_count<? AND ar.error_message LIKE '[external_wait]%')))
 		AND c.user_id=? AND r.deleted_at IS NULL`, runID, externalWaitMaxAttempts, externalWaitMaxAttempts, userID).
-		Scan(&rawEventJSON, &actionStarted, &ruleEnabled, &sentCount, &errorMessage)
+		Scan(&rawEventJSON, &actionStarted, &actionCursor, &ruleEnabled, &sentCount, &errorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -150,7 +150,7 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 		return err
 	}
 	// allowed 用于本次流程后续判断的allowed
-	_, allowed := automationIssuePolicy(rawEventJSON, actionStarted != 0, ruleEnabled != 0, sentCount, errorMessage)
+	_, allowed := automationIssuePolicy(rawEventJSON, actionStarted != 0, actionCursor, ruleEnabled != 0, sentCount, errorMessage)
 	if !containsString(allowed, resolution) {
 		return fmt.Errorf("当前异常不允许使用 %s 处理", resolution)
 	}
@@ -162,7 +162,7 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	case "retry":
 		set = "status='running',attempt_count=0,action_started=0,lease_expires_at=0,next_retry_at=0,error_message=''"
 	case "cancel":
-		set = "status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0"
+		set = "status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0,delivery_proof=''"
 	default:
 		return errors.New("不支持的人工处理方式")
 	}
@@ -183,11 +183,29 @@ func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int
 	return nil
 }
 
+// automationRecoveryAction 是运行快照中用于人工恢复决策的最小动作信息。
+type automationRecoveryAction struct {
+	// ActionType 是动作的稳定类型，用于判断未知外部结果是否可能影响后续确认发货。
+	ActionType string `json:"ActionType"`
+}
+
+// automationRecoverySnapshot 是人工恢复策略需要读取的无敏感任务快照。
+type automationRecoverySnapshot struct {
+	// ActionPlan 是创建运行时冻结的动作顺序。
+	ActionPlan []automationRecoveryAction `json:"ActionPlan"`
+	// AccountID 是快照所属账号标识，用于校验历史快照完整性。
+	AccountID string `json:"AccountID"`
+	// LegacyAccountID 兼容早期快照使用的小写账号字段。
+	LegacyAccountID string `json:"account_id"`
+}
+
 // automationIssuePolicy 封装自动化问题Policy业务协调。
-func automationIssuePolicy(rawEventJSON string, actionStarted, ruleEnabled bool, sentCount int, errorMessage string) (string, []string) {
+func automationIssuePolicy(rawEventJSON string, actionStarted bool, actionCursor int, ruleEnabled bool, sentCount int, errorMessage string) (string, []string) {
 	if actionStarted {
-		// 外部接口没有可依赖的幂等键。结果未知时重放当前游标可能重复发卡、
-		// 发消息或确认发货，因此后端也必须拒绝 retry，不能只依赖前端警告。
+		// 外部接口没有可依赖的幂等键。结果未知时禁止 retry；未知发卡且后续需要确认时还禁止 continue。
+		if !automationUnknownActionCanContinue(rawEventJSON, actionCursor) {
+			return "external_result_unknown", []string{"cancel"}
+		}
 		return "external_result_unknown", []string{"continue", "cancel"}
 	}
 	// raw 用于本次流程后续判断的原始
@@ -213,6 +231,34 @@ func automationIssuePolicy(rawEventJSON string, actionStarted, ruleEnabled bool,
 		return "partial_failure", []string{"continue", "retry", "cancel"}
 	}
 	return "execution_failed", []string{"retry", "cancel"}
+}
+
+// automationUnknownActionCanContinue 判断结果未知的当前动作是否可以由人工确认后跳过。
+func automationUnknownActionCanContinue(rawEventJSON string, actionCursor int) bool {
+	// snapshot 保存恢复策略所需的冻结动作快照。
+	var snapshot automationRecoverySnapshot
+	if json.Unmarshal([]byte(rawEventJSON), &snapshot) != nil || strings.TrimSpace(snapshot.AccountID) == "" && strings.TrimSpace(snapshot.LegacyAccountID) == "" {
+		return false
+	}
+	if actionCursor < 0 || actionCursor >= len(snapshot.ActionPlan) {
+		return false
+	}
+	// actionType 保存结果未知的当前动作类型。
+	actionType := strings.TrimSpace(snapshot.ActionPlan[actionCursor].ActionType)
+	if actionType == "send_card" || actionType == "send_template" {
+		for /* action 保存当前动作之后的冻结动作。 */ _, action := range snapshot.ActionPlan[actionCursor+1:] {
+			if strings.TrimSpace(action.ActionType) == "confirm_shipment" {
+				return false
+			}
+		}
+		return true
+	}
+	switch actionType {
+	case "confirm_shipment", "send_text", "adjust_price":
+		return true
+	default:
+		return false
+	}
 }
 
 // containsString 封装containsString业务协调。
@@ -511,35 +557,77 @@ func createAutomationRuleTx(ctx context.Context, tx *sql.Tx, dialect Dialect, in
 	}
 	// id、err 用于本次流程后续判断的id、err
 	id, err := insertReturningID(ctx, tx, dialect, `
-INSERT INTO automation_rules (user_id,cookie_id,item_id,name,trigger_type,enabled,priority,config_json)
-VALUES (?,?,?,?,?,?,?,?)`,
-		in.UserID, in.CookieID, in.ItemID, in.Name, in.TriggerType, boolToInt(in.Enabled), in.Priority, validJSON(in.ConfigJSON))
+INSERT INTO automation_rules (user_id,cookie_id,item_id,name,trigger_type,enabled,priority,config_json,sku_migration_status)
+VALUES (?,?,?,?,?,?,?,?,?)`,
+		in.UserID, in.CookieID, in.ItemID, in.Name, in.TriggerType, boolToInt(in.Enabled), in.Priority, validJSON(in.ConfigJSON), readySKUMigrationStatus(in.SKUMigrationStatus))
 	if err != nil {
 		return 0, err
 	}
 	// act 表示当前遍历过程中的act
 	for _, act := range in.Actions {
 		if // err 用于本次流程后续判断的err
-		err := insertAutomationActionTx(ctx, tx, id, act); err != nil {
+		_, err := insertAutomationActionTx(ctx, tx, dialect, id, act); err != nil {
 			return 0, err
 		}
 	}
 	return id, nil
 }
 
-// insertAutomationActionTx 封装insert自动化动作Tx业务协调。
-func insertAutomationActionTx(ctx context.Context, tx *sql.Tx, ruleID int64, act AutomationActionInput) error {
+// readySKUMigrationStatus 将空状态归一为新规则的已校验状态。
+func readySKUMigrationStatus(status string) string {
+	if status == "" {
+		return "ready"
+	}
+	return status
+}
+
+// insertAutomationActionTx 写入动作及其模板变量绑定，并返回动作主键。
+func insertAutomationActionTx(ctx context.Context, tx *sql.Tx, dialect Dialect, ruleID int64, act AutomationActionInput) (int64, error) {
 	if act.DeliveryCount <= 0 {
 		act.DeliveryCount = 1
 	}
-	// err 用于本次流程后续判断的err
-	_, err := tx.ExecContext(ctx, `
+	// configJSON 保存含有自定义变量的动作配置快照。
+	configJSON := validJSON(act.ConfigJSON)
+	if act.CustomVariables != nil {
+		// config 保存原有动作配置对象，避免覆盖规格和延迟设置。
+		config := make(map[string]any)
+		// err 保存动作配置 JSON 解码错误。
+		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+			return 0, err
+		}
+		// customVariables 保存待写回动作快照的自定义字符串键值表。
+		customVariables := make(map[string]string, len(act.CustomVariables))
+		for /* key 表示自定义变量键；value 表示自定义字符串。 */ key, value := range act.CustomVariables {
+			customVariables[key] = value
+		}
+		config["custom_variables"] = customVariables
+		// encodedConfig、encodeErr 保存写回动作配置的 JSON 文本和编码错误。
+		encodedConfig, encodeErr := json.Marshal(config)
+		if encodeErr != nil {
+			return 0, encodeErr
+		}
+		configJSON = string(encodedConfig)
+	}
+	// id、err 保存新动作主键和动作写入错误。
+	id, err := insertReturningID(ctx, tx, dialect, `
 INSERT INTO automation_rule_actions
-    (rule_id,action_type,card_id,delivery_count,message_template,delay_seconds,config_json,enabled,sort_order)
-VALUES (?,?,?,?,?,?,?,?,?)`,
+	    (rule_id,action_type,card_id,delivery_count,message_template,delay_seconds,config_json,enabled,sort_order,delivery_template_id)
+VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		ruleID, act.ActionType, nullInt64(act.CardID), act.DeliveryCount, act.MessageTemplate,
-		act.DelaySeconds, validJSON(act.ConfigJSON), boolToInt(act.Enabled), act.SortOrder)
-	return err
+		act.DelaySeconds, configJSON, boolToInt(act.Enabled), act.SortOrder, nullInt64(act.DeliveryTemplateID))
+	if err != nil {
+		return 0, err
+	}
+	for /* binding 表示当前动作的模板变量绑定。 */ _, binding := range act.TemplateBindings {
+		if binding.DeliveryCount <= 0 {
+			binding.DeliveryCount = 1
+		}
+		// err 保存模板变量绑定写入错误。
+		if _, err := tx.ExecContext(ctx, `INSERT INTO automation_action_template_bindings (action_id,variable_key,card_id,delivery_count) VALUES (?,?,?,?)`, id, binding.VariableKey, binding.CardID, binding.DeliveryCount); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 // nullInt64 封装nullInt64业务协调。

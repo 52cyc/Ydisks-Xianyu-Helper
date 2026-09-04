@@ -31,8 +31,8 @@ type automationRunCoordinator struct {
 	deferTask func(context.Context, Task, int64) error
 	// prepareAction 在动作检查点前补齐需要买家确认的输入，waiting 表示应持久化等待。
 	prepareAction func(context.Context, Task, int64, db.AutomationAction) (prepared Task, waiting bool, err error)
-	// executeAction 执行一个已经通过账号门禁的具体外部动作。
-	executeAction func(context.Context, Task, db.AutomationAction) (int, error)
+	// executeAction 执行一个已经通过账号门禁的具体外部动作，并返回当前运行内的短暂发货凭证。
+	executeAction func(context.Context, Task, db.AutomationAction, shipmentDeliveryProof) (actionExecutionResult, error)
 	// hasNotifier 判断当前是否注入了结果通知器。
 	hasNotifier func() bool
 	// notifyResult 将运行结果转换为用户可见的、按运行终态幂等的通知。
@@ -253,6 +253,11 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Task, ruleID int64, run *db.AutomationRun, actions []db.AutomationAction, skipDelays bool) (int, bool, error) {
 	// sent 保存本次运行已经确认完成的动作数量。
 	sent := run.SentCount
+	// deliveryProof 保存本次运行已经成功投递的卡密文本和图片，并从数据库检查点恢复。
+	deliveryProof := shipmentDeliveryProof{
+		tradeText: run.DeliveryProof.TradeText,
+		picList:   append([]string(nil), run.DeliveryProof.PicList...),
+	}
 	// cursor 表示当前动作在计划中的位置。
 	for cursor := run.ActionCursor; cursor < len(actions); cursor++ {
 		// action 是当前待执行的动作定义。
@@ -316,7 +321,9 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 			return sent, false, err
 		}
 		// n 保存外部动作明确成功产生的结果数量。
-		n, actionErr := r.executeActionNow(ctx, task, action)
+		actionResult, actionErr := r.executeActionNow(ctx, task, action, deliveryProof)
+		// n 表示本动作已明确完成的外部结果数量。
+		n := actionResult.sent
 		if actionErr != nil {
 			// uncertain 标记外部系统可能已经执行动作但本地无法确认的错误。
 			var uncertain *uncertainActionError
@@ -324,7 +331,16 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 				// reason 说明外部动作结果未知时为何必须隔离运行。
 				reason := "外部动作可能已部分或全部执行，已禁止自动重放，请人工核对: " + actionErr.Error()
 				// quarantineErr 保存外部动作结果未知的人工核对状态。
-				if quarantineErr := r.store.Automation.QuarantineRunResult(ctx, run.ID, run.AttemptCount, sent+n, reason); quarantineErr != nil {
+				// quarantineProof 合并运行既有、已确认及结果不确定的发货凭证，供人工核对远端状态。
+				quarantineProof := mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
+				quarantineProof = mergeShipmentDeliveryProof(quarantineProof, actionResult.reviewProof)
+				// proofInput 保存需要加密写入人工核对记录的凭证。
+				var proofInput *db.AutomationDeliveryProof
+				if quarantineProof.tradeText != "" || len(quarantineProof.picList) > 0 {
+					proofInput = &db.AutomationDeliveryProof{TradeText: quarantineProof.tradeText, PicList: append([]string(nil), quarantineProof.picList...)}
+				}
+				// quarantineErr 保存人工核对状态写入错误。
+				if quarantineErr := r.store.Automation.QuarantineRunResultWithProof(ctx, run.ID, run.AttemptCount, sent+n, reason, proofInput); quarantineErr != nil {
 					r.logger.Error("保存不确定动作人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
 					return sent + n, false, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
 				}
@@ -342,8 +358,25 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 			}
 			return sent, false, actionErr
 		}
+		// nextProof 是本动作成功后应持久化的完整凭证，避免延迟或重启后丢失已发送内容。
+		nextProof := deliveryProof
+		// proofChanged 表示本动作产生了需要持久化的新凭证。
+		proofChanged := actionResult.proof.tradeText != "" || len(actionResult.proof.picList) > 0
+		if proofChanged {
+			nextProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
+		}
+		// advance 描述外部动作完成后的原子检查点更新，凭证和游标必须在同一条 UPDATE 中推进。
+		advance := db.AutomationRunActionAdvance{RunID: run.ID, Attempt: run.AttemptCount, Cursor: cursor, SentDelta: n}
+		if proofChanged {
+			// persistedProof 是数据库仓储使用的导出凭证模型。
+			persistedProof := db.AutomationDeliveryProof{TradeText: nextProof.tradeText, PicList: append([]string(nil), nextProof.picList...)}
+			advance.DeliveryProof = &persistedProof
+		}
+		if action.ActionType == ActionConfirmShipment {
+			advance.ClearDeliveryProof = true
+		}
 		// err 表示外部动作完成后推进检查点的数据库错误；失败时必须隔离运行避免重复执行。
-		if err := r.store.Automation.AdvanceRunAction(ctx, run.ID, run.AttemptCount, cursor, n); err != nil {
+		if err := r.store.Automation.AdvanceRunAction(ctx, advance); err != nil {
 			// quarantineErr 保存检查点失败后的人工核对状态。
 			if quarantineErr := r.store.Automation.QuarantineRun(ctx, run.ID, run.AttemptCount, "动作已执行但检查点保存失败，请人工核对，禁止自动重放: "+err.Error()); quarantineErr != nil {
 				r.logger.Error("保存检查点异常的人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
@@ -352,6 +385,12 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 			return sent + n, false, fmt.Errorf("%w: %v", errAutomationNeedsReview, err)
 		}
 		sent += n
+		if proofChanged {
+			deliveryProof = nextProof
+		}
+		if action.ActionType == ActionConfirmShipment {
+			deliveryProof = shipmentDeliveryProof{}
+		}
 		if task.Raw != nil {
 			delete(task.Raw, "automation_delay_cursor")
 		}
@@ -359,26 +398,33 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 	return sent, false, nil
 }
 
-// executeActionNow 在动作真正触达外部系统前执行账号门禁。
-func (r automationRunCoordinator) executeActionNow(ctx context.Context, task Task, action db.AutomationAction) (int, error) {
+// executeActionNow 在动作真正触达外部系统前执行账号门禁，并把前序发卡动作的凭证传给当前动作。
+func (r automationRunCoordinator) executeActionNow(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
 	// allowed 表示账号当前是否允许继续执行自动化动作。
 	allowed, err := r.accountAutomationAllowed(ctx, task.AccountID)
 	if err != nil {
-		return 0, err
+		return actionExecutionResult{}, err
 	}
 	if !allowed {
-		return 0, fmt.Errorf("账号已暂停或停用，取消自动化动作")
+		return actionExecutionResult{}, fmt.Errorf("账号已暂停或停用，取消自动化动作")
 	}
 	if actionNeedsOnlineSender(action) && r.accountSenderReady != nil && !r.accountSenderReady(task.AccountID) {
-		return 0, fmt.Errorf("%w: 账号 %s 的 WebSocket 尚未就绪，未执行消息或卡密动作", ErrMessageNotSent, task.AccountID)
+		return actionExecutionResult{}, fmt.Errorf("%w: 账号 %s 的 WebSocket 尚未就绪，未执行消息或卡密动作", ErrMessageNotSent, task.AccountID)
 	}
-	return r.executeAction(ctx, task, action)
+	return r.executeAction(ctx, task, action, proof)
+}
+
+// mergeShipmentDeliveryProof 合并连续发卡动作的已投递凭证，保持文本和图片的发送顺序。
+func mergeShipmentDeliveryProof(current, next shipmentDeliveryProof) shipmentDeliveryProof {
+	current.tradeText = appendTradeText(current.tradeText, next.tradeText)
+	current.picList = append(current.picList, next.picList...)
+	return current
 }
 
 // actionNeedsOnlineSender 判断动作是否会向买家发送消息；这类动作必须先确认账号 WebSocket 已就绪，避免 API 卡密已领取但无法投递。
 func actionNeedsOnlineSender(action db.AutomationAction) bool {
 	switch action.ActionType {
-	case ActionSendCard, ActionSendText:
+	case ActionSendCard, ActionSendTemplate, ActionSendText:
 		return true
 	default:
 		return false

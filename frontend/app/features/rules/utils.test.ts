@@ -13,6 +13,7 @@ cardActionsForTrigger,
 defaultRuleName,
 emptyVariant,
 fulfillmentGoodsID,
+hasCompleteTemplateBindings,
 isValidAdjustPrice,
 isValidNonNegativeMoney,
 isValidProfitRate,
@@ -165,5 +166,17 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(fulfillmentGoodsID('https://vip.zhikefa.com/goods?id=40863')).toBe(40863);
     expect(fulfillmentGoodsID('https://example.com/goods/40863/')).toBe(40863);
     expect(fulfillmentGoodsID('goods')).toBe(0);
+  });
+
+  test('严格校验模板卡密变量绑定，包括零变量模板', /* 当前回调覆盖模板绑定完整性和非法键拒绝。 */ () => {
+    expect(hasCompleteTemplateBindings([], [])).toBe(true);
+    expect(hasCompleteTemplateBindings(['main'], [{ variable_key: 'main', card_id: 1, delivery_count: 1 }])).toBe(true);
+    expect(hasCompleteTemplateBindings(['main'], [])).toBe(false);
+    expect(hasCompleteTemplateBindings(['main'], [{ variable_key: 'main', card_id: 0, delivery_count: 1 }])).toBe(false);
+    expect(hasCompleteTemplateBindings(['main'], [{ variable_key: 'other', card_id: 1, delivery_count: 1 }])).toBe(false);
+    expect(hasCompleteTemplateBindings(['main'], [
+      { variable_key: 'main', card_id: 1, delivery_count: 1 },
+      { variable_key: 'main', card_id: 2, delivery_count: 1 },
+    ])).toBe(false);
   });
 });

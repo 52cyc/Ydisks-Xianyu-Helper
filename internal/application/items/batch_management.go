@@ -5,8 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+)
+
+var (
+	// readBatchLeaseRandomBytes 是批次租约令牌的随机读取器；测试可替换它验证降级令牌语义。
+	readBatchLeaseRandomBytes = rand.Read
 )
 
 var (
@@ -131,7 +137,20 @@ func (s *BatchManagementService) StartBatch(ctx context.Context, userID int64, b
 		return "", err
 	}
 	if len(pending) == 0 {
-		_, _, _ = s.repository.FinalizeBatch(ctx, batch.ID, workerToken)
+		// finalStatus、finished 和 finalizeErr 保存空批次终态收口结果；收口失败不得伪装成仅无可处理行。
+		_, finished, finalizeErr := s.repository.FinalizeBatch(ctx, batch.ID, workerToken)
+		if finalizeErr != nil {
+			// primaryErr 保存空批次收口错误，租约释放失败时与补偿错误一并返回。
+			primaryErr := fmt.Errorf("收口空批次: %w", finalizeErr)
+			// releaseErr 保存空批次收口失败后的租约释放错误。
+			if releaseErr := s.releaseClaim(ctx, batch.ID, workerToken); releaseErr != nil {
+				return "", errors.Join(primaryErr, releaseErr)
+			}
+			return "", primaryErr
+		}
+		if !finished {
+			return "", ErrBatchLeaseLost
+		}
 		return "", ErrBatchNoRows
 	}
 	if s.runtime == nil {
@@ -307,7 +326,20 @@ func (s *BatchManagementService) RetryFailedBatch(ctx context.Context, userID in
 		return "", err
 	}
 	if len(pending) == 0 {
-		_, _, _ = s.repository.FinalizeBatch(ctx, batchID, workerToken)
+		// finalStatus、finished 和 finalizeErr 保存重试入口空批次的终态收口结果。
+		_, finished, finalizeErr := s.repository.FinalizeBatch(ctx, batchID, workerToken)
+		if finalizeErr != nil {
+			// primaryErr 保存重试空批次收口错误，租约释放失败时保留两项诊断。
+			primaryErr := fmt.Errorf("收口重试空批次: %w", finalizeErr)
+			// releaseErr 保存重试空批次收口失败后的租约释放错误。
+			if releaseErr := s.releaseClaim(ctx, batchID, workerToken); releaseErr != nil {
+				return "", errors.Join(primaryErr, releaseErr)
+			}
+			return "", primaryErr
+		}
+		if !finished {
+			return "", ErrBatchLeaseLost
+		}
 		return "", ErrBatchNoRows
 	}
 	if s.runtime != nil {
@@ -328,8 +360,11 @@ func (s *BatchManagementService) releaseClaim(ctx context.Context, batchID, work
 	if s == nil || s.repository == nil {
 		return errors.New("批次管理 repository 未初始化")
 	}
+	// statusCtx、statusCancel 让请求取消后的租约补偿仍有独立且受限的执行窗口。
+	statusCtx, statusCancel := statusContext(ctx)
+	defer statusCancel()
 	// _, releaseErr 保存租约释放调用的结果；布尔值仅表示是否成功匹配租约。
-	_, releaseErr := s.repository.FailClaimedBatch(ctx, batchID, workerToken)
+	_, releaseErr := s.repository.FailClaimedBatch(statusCtx, batchID, workerToken)
 	return releaseErr
 }
 
@@ -338,7 +373,7 @@ func randomBatchToken() string {
 	// bytes 保存租约令牌的随机字节，令牌不携带用户或商品信息。
 	bytes := make([]byte, 16)
 	// _, err 保存随机源读取结果；系统随机源失败时回退到时间戳以保持旧接口可用。
-	if _, err := rand.Read(bytes); err == nil {
+	if _, err := readBatchLeaseRandomBytes(bytes); err == nil {
 		return hex.EncodeToString(bytes)
 	}
 	return time.Now().UTC().Format("20060102150405.000000000")

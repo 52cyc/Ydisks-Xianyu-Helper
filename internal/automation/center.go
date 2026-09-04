@@ -233,7 +233,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		accountSenderReady:           center.accountSenderReady,
 		deferTask:                    center.deferTask,
 		prepareAction:                center.prepareRechargeChatInput,
-		executeAction:                center.executeAction,
+		executeAction:                center.executeActionWithProof,
 		hasNotifier:                  func() bool { return center.dependencies.notifier != nil },
 		notifyResult:                 center.notifyResult,
 		notifyExternalFailure:        center.sendExternalFulfillmentFailureNotice,
@@ -593,6 +593,9 @@ func (c *Center) notifyRunNeedsReview(ctx context.Context, run db.AutomationRun,
 // delay_override 字段时自动使用卡密上的默认延时。
 // actionDelaySeconds 封装动作延迟秒数业务协调。
 func (c *Center) actionDelaySeconds(ctx context.Context, action db.AutomationAction) (int, error) {
+	if action.ActionType == ActionSendTemplate {
+		return action.DelaySeconds, nil
+	}
 	if action.ActionType != ActionSendCard || action.CardID <= 0 {
 		return action.DelaySeconds, nil
 	}
@@ -617,6 +620,11 @@ func (c *Center) actionDelaySeconds(ctx context.Context, action db.AutomationAct
 
 // prepareTask 封装prepare任务业务协调。
 func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
+	// task、err 分别表示补全买家信息后的任务快照与准备阶段错误。
+	task, err := c.prepareBuyerNickname(ctx, task)
+	if err != nil {
+		return task, err
+	}
 	if task.OrderID == "" {
 		return task, nil
 	}
@@ -722,6 +730,11 @@ func (c *Center) executeAction(ctx context.Context, task Task, action db.Automat
 	return c.actions.executeAction(ctx, task, action)
 }
 
+// executeActionWithProof 执行动作并把当前运行内已成功投递的凭证传给确认发货动作。
+func (c *Center) executeActionWithProof(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
+	return c.actions.executeActionWithProof(ctx, task, action, proof)
+}
+
 // confirmShipment 将确认发货委托给发货动作执行器。
 func (c *Center) confirmShipment(ctx context.Context, task Task) error {
 	return c.actions.confirmShipment(ctx, task)
@@ -778,21 +791,4 @@ func (c *Center) sendImage(ctx context.Context, task Task, imageURL string, card
 // cookieValue 读取账号 Cookie 的兼容入口。
 func (c *Center) cookieValue(ctx context.Context, cookieID string) (string, error) {
 	return c.actions.cookieValue(ctx, cookieID)
-}
-
-// buildTriggerKey 封装buildTriggerKey业务协调。
-func buildTriggerKey(task Task) string {
-	if task.TriggerType == TriggerReviewMissingTimeout && task.OrderID != "" {
-		if // attempt、ok 用于本次流程后续判断的attempt、ok
-		attempt, ok := task.Raw["attempt"]; ok {
-			return fmt.Sprintf("%s:%s:%v", task.TriggerType, task.OrderID, attempt)
-		}
-	}
-	if task.OrderID != "" {
-		return task.TriggerType + ":" + task.OrderID
-	}
-	if task.UpdateKey != "" {
-		return task.TriggerType + ":" + task.UpdateKey
-	}
-	return ""
 }

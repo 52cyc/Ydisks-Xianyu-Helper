@@ -202,6 +202,12 @@ type chatSessionPageResponse struct {
 	HasMore bool `json:"has_more"`
 	// NextCursor 是下一页游标。
 	NextCursor int64 `json:"next_cursor,omitempty"`
+	// NextStoredCursor 是继续读取本地缓存下一页所需的不透明键集游标。
+	NextStoredCursor string `json:"next_stored_cursor,omitempty"`
+	// PlatformHasMore 表示平台联系人游标是否仍有下一页。
+	PlatformHasMore bool `json:"platform_has_more"`
+	// StoredHasMore 表示本地缓存会话是否仍有下一页。
+	StoredHasMore bool `json:"stored_has_more"`
 }
 
 // chatMessageEnvelope 是发送聊天消息接口的具名响应 DTO。
@@ -478,28 +484,16 @@ type itemPageSyncResponse struct {
 	SavedCount int `json:"saved_count"`
 }
 
-// automationActionResponse 是自动化规则动作的具名响应 DTO。
-type automationActionResponse struct {
-	// ID 是动作稳定标识。
-	ID int64 `json:"id"`
-	// ActionType 是动作类型。
-	ActionType string `json:"action_type"`
-	// CardID 是动作关联卡券组标识。
+// automationTemplateBindingResponse 是自动化规则响应中的模板绑定 DTO。
+type automationTemplateBindingResponse struct {
+	// VariableKey 是模板变量键；响应字段必须与 OpenAPI 的 variable_key 保持一致。
+	VariableKey string `json:"variable_key"`
+	// CardID 是绑定卡密组标识。
 	CardID int64 `json:"card_id"`
-	// CardName 是动作关联卡券组名称。
+	// CardName 是绑定卡密组名称。
 	CardName string `json:"card_name"`
-	// DeliveryCount 是动作发送数量。
+	// DeliveryCount 是每件商品准备的卡密份数。
 	DeliveryCount int `json:"delivery_count"`
-	// MessageTemplate 是动作消息模板。
-	MessageTemplate string `json:"message_template"`
-	// DelaySeconds 是动作延迟秒数。
-	DelaySeconds int `json:"delay_seconds"`
-	// ConfigJSON 是动作扩展配置 JSON。
-	ConfigJSON string `json:"config_json"`
-	// Enabled 表示动作是否启用。
-	Enabled bool `json:"enabled"`
-	// SortOrder 是动作执行顺序。
-	SortOrder int `json:"sort_order"`
 }
 
 // automationRuleResponse 是自动化规则的具名响应 DTO。
@@ -522,6 +516,8 @@ type automationRuleResponse struct {
 	Priority int `json:"priority"`
 	// ConfigJSON 是规则扩展配置 JSON。
 	ConfigJSON string `json:"config_json"`
+	// SKUMigrationStatus 是规则当前多 SKU 契约状态。
+	SKUMigrationStatus string `json:"sku_migration_status"`
 	// Actions 是规则动作列表。
 	Actions []automationActionResponse `json:"actions"`
 	// CreatedAt 是规则创建时间。

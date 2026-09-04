@@ -64,10 +64,22 @@ func Open(ctx context.Context, dbURL string) (*sql.DB, Dialect, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	// db、err 用于本次流程后续判断的db、err
-	db, err := sql.Open(string(driver), dsn)
-	if err != nil {
-		return nil, "", fmt.Errorf("打开数据库: %w", err)
+	// db 保存打开的数据库连接池。
+	var db *sql.DB
+	if driver == driverPgx {
+		// connector、connectorErr 保存使用 pgx 结构化配置的连接器及解析错误。
+		connector, connectorErr := newPgxCompatConnector(dsn)
+		if connectorErr != nil {
+			return nil, "", fmt.Errorf("解析 PostgreSQL 连接: %w", connectorErr)
+		}
+		db = sql.OpenDB(connector)
+	} else {
+		// openErr 保存非 PostgreSQL 驱动初始化错误。
+		var openErr error
+		db, openErr = sql.Open(string(driver), dsn)
+		if openErr != nil {
+			return nil, "", fmt.Errorf("打开数据库: %w", openErr)
+		}
 	}
 
 	// 连接池参数按 driver 调整：SQLite 写串行，单写多读；MySQL/PG 可多写并发。
@@ -145,11 +157,18 @@ func sqliteDSN(path string) string {
 // mysqlDSN 封装mysqlDSN业务协调。
 func mysqlDSN(dsn string) string {
 	dsn = forceMySQLBoolParam(dsn, "multiStatements")
-	return forceMySQLBoolParam(dsn, "clientFoundRows")
+	dsn = forceMySQLBoolParam(dsn, "clientFoundRows")
+	// MySQL 的 TIMESTAMP 默认受会话时区影响；固定会话为 UTC，保证跨机器读取历史订单时间一致。
+	return forceMySQLParam(dsn, "time_zone", "%27%2B00%3A00%27")
 }
 
 // forceMySQLBoolParam 封装forceMySQLBoolParam业务协调。
 func forceMySQLBoolParam(dsn, key string) string {
+	return forceMySQLParam(dsn, key, "true")
+}
+
+// forceMySQLParam 强制设置 MySQL DSN 参数并保留其他连接选项。
+func forceMySQLParam(dsn, key, value string) string {
 	// base、rawQuery、hasQuery 用于本次流程后续判断的base、rawQuery、has查询
 	base, rawQuery, hasQuery := strings.Cut(dsn, "?")
 	// parts 用于本次流程后续判断的parts
@@ -166,7 +185,7 @@ func forceMySQLBoolParam(dsn, key string) string {
 			name, _, _ := strings.Cut(part, "=")
 			if name == key {
 				if !found {
-					parts = append(parts, key+"=true")
+					parts = append(parts, key+"="+value)
 					found = true
 				}
 				continue
@@ -175,7 +194,7 @@ func forceMySQLBoolParam(dsn, key string) string {
 		}
 	}
 	if !found {
-		parts = append(parts, key+"=true")
+		parts = append(parts, key+"="+value)
 	}
 	return base + "?" + strings.Join(parts, "&")
 }
@@ -204,6 +223,10 @@ func Migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if // err 用于本次流程后续判断的err
 	err := goose.Up(db, "migrations/"+subdir); err != nil {
 		return fmt.Errorf("执行迁移: %w", err)
+	}
+	// err 保存自动化规则规格迁移错误。
+	if err := migratePendingAutomationSKURules(ctx, db); err != nil {
+		return fmt.Errorf("迁移自动化多 SKU 规则: %w", err)
 	}
 	return nil
 }

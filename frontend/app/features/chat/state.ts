@@ -58,16 +58,30 @@ export const mergeLiveMessage = (current: ChatMessage[], incoming: ChatMessage):
   return current.map(/* 当前回调处理集合中的单个元素。 */ (message, currentIndex) => currentIndex === index ? incoming : message);
 };
 
+/** 合并联系人分页结果，重复会话优先保留更晚时间；同时间时采用新响应以补全展示身份。 */
+export const mergeChatSessions = (current: ChatSession[], incoming: ChatSession[]): ChatSession[] => {
+  // sessions 保存按会话标识去重后的最新展示摘要。
+  const sessions = new Map<string, ChatSession>();
+  for (const /* session 表示来自既有列表或新分页响应的会话摘要。 */ session of [...current, ...incoming]) {
+    // previous 保存同一会话在此前合并阶段保留的摘要。
+    const previous = sessions.get(session.chat_id);
+    if (!previous || session.last_message_at >= previous.last_message_at) sessions.set(session.chat_id, session);
+  }
+  return [...sessions.values()].sort(/* left 和 right 按稳定的会话排序键比较。 */ (left, right) => (
+    right.last_message_at - left.last_message_at || right.chat_id.localeCompare(left.chat_id)
+  ));
+};
+
 /** 买家普通入站消息到达时，把此前同会话的已发送出站消息同步为已读。 */
 export const markOutgoingMessagesReadByIncoming = (current: ChatMessage[], incoming: ChatMessage): ChatMessage[] => {
-  if (incoming.direction !== 'incoming' || incoming.message_type === 'system') return current;
-  // readAt 保存平台入站消息时间，缺失时使用本机时间作为 UI 增量更新回退值。
-  const readAt = incoming.sent_at > 0 ? incoming.sent_at : Date.now();
+  if (incoming.direction !== 'incoming' || incoming.message_type === 'system' || incoming.sent_at <= 0) return current;
+  // readAt 保存平台提供的有效入站消息时间，避免用本机时钟对乱序消息做错误已读推断。
+  const readAt = incoming.sent_at;
   return current.map(/* 当前回调把已被买家后续消息确认的出站消息更新为已读。 */ message => (
     message.chat_id === incoming.chat_id
     && message.direction === 'outgoing'
     && message.status === 'sent'
-    && message.sent_at <= incoming.sent_at
+    && message.sent_at <= readAt
       ? { ...message, read_status: 2, read_at: readAt }
       : message
   ));

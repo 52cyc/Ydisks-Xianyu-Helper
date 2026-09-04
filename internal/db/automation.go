@@ -16,6 +16,32 @@ import (
 type AutomationRules struct {
 	DB      *sql.DB
 	Dialect Dialect
+	// codec 负责自动化运行中卡密凭证的静态加密，避免凭证以明文落库。
+	codec *secretCodec
+}
+
+// AutomationDeliveryProof 保存确认发货需要的已投递文本和图片凭证。
+type AutomationDeliveryProof struct {
+	// TradeText 是已发送给买家的文本凭证，多个动作按顺序合并。
+	TradeText string `json:"trade_text"`
+	// PicList 是已发送给买家的图片地址，顺序与消息发送顺序一致。
+	PicList []string `json:"pic_list"`
+}
+
+// AutomationRunActionAdvance 描述动作成功后的原子检查点更新。
+type AutomationRunActionAdvance struct {
+	// RunID 是待推进的自动化运行标识。
+	RunID int64
+	// Attempt 是当前运行租约代次，防止旧 worker 覆盖新 worker。
+	Attempt int
+	// Cursor 是动作执行前的游标位置。
+	Cursor int
+	// SentDelta 是本动作明确成功的外部结果数量。
+	SentDelta int
+	// DeliveryProof 是动作完成后应保留的完整凭证；为空指针表示保持已有值。
+	DeliveryProof *AutomationDeliveryProof
+	// ClearDeliveryProof 表示动作成功后应立即清除凭证。
+	ClearDeliveryProof bool
 }
 
 // ExistsPublishRule 判断指定发布自动化规则是否已经存在，避免重复创建同一规则。
@@ -44,24 +70,11 @@ type AutomationRule struct {
 	Enabled     bool
 	Priority    int
 	ConfigJSON  string
-	CreatedAt   string
-	UpdatedAt   string
-	Actions     []AutomationAction
-}
-
-// AutomationAction 是规则下的一步动作。
-type AutomationAction struct {
-	ID              int64
-	RuleID          int64
-	ActionType      string
-	CardID          int64
-	CardName        string
-	DeliveryCount   int
-	MessageTemplate string
-	DelaySeconds    int
-	ConfigJSON      string
-	Enabled         bool
-	SortOrder       int
+	// SKUMigrationStatus 表示规则是否已通过当前多 SKU 契约迁移。
+	SKUMigrationStatus string
+	CreatedAt          string
+	UpdatedAt          string
+	Actions            []AutomationAction
 }
 
 // AutomationRun 是一次自动化执行记录。trigger_key 是持久化防重键。
@@ -86,6 +99,8 @@ type AutomationRun struct {
 	NextRetryAt    int64
 	ActionCursor   int
 	ActionStarted  bool
+	// DeliveryProof 是恢复确认发货所需的短期敏感凭证，仅在数据库仓储和自动化执行器之间流转。
+	DeliveryProof AutomationDeliveryProof
 }
 
 // ErrAutomationRunLeaseLost 表示自动化运行已被更高 attempt_count 的 worker 接管。
@@ -140,7 +155,9 @@ type AutomationRuleInput struct {
 	Enabled     bool
 	Priority    int
 	ConfigJSON  string
-	Actions     []AutomationActionInput
+	// SKUMigrationStatus 表示写入规则时使用的多 SKU 契约状态。
+	SKUMigrationStatus string
+	Actions            []AutomationActionInput
 }
 
 // AutomationRuleListFilter 是自动化规则列表的筛选和分页条件。
@@ -182,18 +199,6 @@ func automationRuleWhere(f AutomationRuleListFilter) (string, []any) {
 		args = append(args, pattern, pattern, pattern)
 	}
 	return strings.Join(where, " AND "), args
-}
-
-// AutomationActionInput 是创建动作的输入。
-type AutomationActionInput struct {
-	ActionType      string
-	CardID          int64
-	DeliveryCount   int
-	MessageTemplate string
-	DelaySeconds    int
-	ConfigJSON      string
-	Enabled         bool
-	SortOrder       int
 }
 
 // ListForUser 返回用户下全部自动化规则和动作。
@@ -238,66 +243,6 @@ SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.t
 		out = append(out, rule)
 	}
 	return out, rows.Err()
-}
-
-// ListPageForUser 按用户隔离筛选并分页查询自动化规则和动作。
-func (a *AutomationRules) ListPageForUser(ctx context.Context, f AutomationRuleListFilter) ([]AutomationRule, int, error) {
-	// whereSQL、args 用于本次流程后续判断的whereSQL、args
-	whereSQL, args := automationRuleWhere(f)
-
-	// total 用于本次流程后续判断的总数
-	var total int
-	if // err 用于本次流程后续判断的err
-	err := a.DB.QueryRowContext(ctx, `
-SELECT COUNT(*)
-  FROM automation_rules r
-	  LEFT JOIN item_info i ON i.cookie_id=r.cookie_id AND i.item_id=r.item_id AND i.deleted_at IS NULL
- WHERE `+whereSQL, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	// queryArgs 用于本次流程后续判断的查询Args
-	queryArgs := append([]any{}, args...)
-	// limitSQL 用于本次流程后续判断的上限SQL
-	limitSQL := ""
-	if f.Limit > 0 {
-		limitSQL = " LIMIT ? OFFSET ?"
-		queryArgs = append(queryArgs, f.Limit, f.Offset)
-	}
-	// rows、err 用于本次流程后续判断的rows、err
-	rows, err := a.DB.QueryContext(ctx, `
-SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.trigger_type,r.enabled,
-       r.priority,r.config_json,r.created_at,r.updated_at
-  FROM automation_rules r
-	  LEFT JOIN item_info i ON i.cookie_id=r.cookie_id AND i.item_id=r.item_id AND i.deleted_at IS NULL
-	WHERE `+whereSQL+`
-	ORDER BY r.created_at DESC,r.id DESC`+limitSQL, queryArgs...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	// out 用于本次流程后续判断的out
-	out := []AutomationRule{}
-	for rows.Next() {
-		// r 用于本次流程后续判断的r
-		var r AutomationRule
-		// enabled 用于本次流程后续判断的启用状态
-		var enabled int
-		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&r.ID, &r.UserID, &r.CookieID, &r.ItemID, &r.ItemTitle, &r.Name, &r.TriggerType,
-			&enabled, &r.Priority, &r.ConfigJSON, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, 0, err
-		}
-		r.Enabled = enabled != 0
-		// acts、err 用于本次流程后续判断的acts、err
-		acts, err := a.Actions(ctx, r.ID)
-		if err != nil {
-			return nil, 0, err
-		}
-		r.Actions = acts
-		out = append(out, r)
-	}
-	return out, total, rows.Err()
 }
 
 // CountByTriggerForUser 返回同一筛选条件下各触发类型的规则数量。
@@ -363,11 +308,11 @@ func (a *AutomationRules) Get(ctx context.Context, ruleID int64) (*AutomationRul
 	// err 用于本次流程后续判断的err
 	err := a.DB.QueryRowContext(ctx, `
 SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.trigger_type,r.enabled,
-       r.priority,r.config_json,r.created_at,r.updated_at
+       r.priority,r.config_json,r.sku_migration_status,r.created_at,r.updated_at
   FROM automation_rules r
 	  LEFT JOIN item_info i ON i.cookie_id=r.cookie_id AND i.item_id=r.item_id AND i.deleted_at IS NULL
 	 WHERE r.id=? AND r.deleted_at IS NULL`, ruleID).Scan(&rule.ID, &rule.UserID, &rule.CookieID, &rule.ItemID, &rule.ItemTitle,
-		&rule.Name, &rule.TriggerType, &enabled, &rule.Priority, &rule.ConfigJSON, &rule.CreatedAt, &rule.UpdatedAt)
+		&rule.Name, &rule.TriggerType, &enabled, &rule.Priority, &rule.ConfigJSON, &rule.SKUMigrationStatus, &rule.CreatedAt, &rule.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -384,7 +329,7 @@ func (a *AutomationRules) matchScope(ctx context.Context, cookieID, itemID, trig
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := a.DB.QueryContext(ctx, `
 SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.trigger_type,r.enabled,
-       r.priority,r.config_json,r.created_at,r.updated_at
+       r.priority,r.config_json,r.sku_migration_status,r.created_at,r.updated_at
   FROM automation_rules r
   LEFT JOIN item_info i ON i.cookie_id=r.cookie_id AND i.item_id=r.item_id AND i.deleted_at IS NULL
  WHERE r.deleted_at IS NULL
@@ -392,12 +337,12 @@ SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.t
 	AND r.cookie_id=?
 	AND r.trigger_type=?
 	AND r.item_id=?
+	AND r.sku_migration_status='ready'
 	ORDER BY r.priority ASC, r.id ASC`, cookieID, triggerType, itemID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	// out 用于本次流程后续判断的out
+	// out 保存游标关闭后再加载动作的规则基础字段。
 	out := []AutomationRule{}
 	for rows.Next() {
 		// r 用于本次流程后续判断的r
@@ -406,19 +351,31 @@ SELECT r.id,r.user_id,r.cookie_id,r.item_id,COALESCE(i.item_title,''),r.name,r.t
 		var enabled int
 		if // err 用于本次流程后续判断的err
 		err := rows.Scan(&r.ID, &r.UserID, &r.CookieID, &r.ItemID, &r.ItemTitle, &r.Name, &r.TriggerType,
-			&enabled, &r.Priority, &r.ConfigJSON, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&enabled, &r.Priority, &r.ConfigJSON, &r.SKUMigrationStatus, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Enabled = enabled != 0
-		// acts、err 用于本次流程后续判断的acts、err
-		acts, err := a.Actions(ctx, r.ID)
+		out = append(out, r)
+	}
+	// rowsErr 保存规则匹配游标遍历错误。
+	rowsErr := rows.Err()
+	// closeErr 保存规则匹配游标关闭错误。
+	closeErr := rows.Close()
+	if rowsErr != nil {
+		return nil, rowsErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	for /* index 表示当前待加载动作的规则位置。 */ index := range out {
+		// acts、err 保存当前匹配规则的动作列表及加载错误。
+		acts, err := a.Actions(ctx, out[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		r.Actions = acts
-		out = append(out, r)
+		out[index].Actions = acts
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Create 创建规则和动作。
@@ -429,6 +386,10 @@ func (a *AutomationRules) Create(ctx context.Context, in AutomationRuleInput) (i
 		return 0, err
 	}
 	defer tx.Rollback()
+	// err 保存模板锁定及变量契约复核错误，规则写入必须与该校验处于同一事务。
+	if err := validateAutomationTemplateContractsTx(ctx, tx, a.Dialect, in.UserID, in.Actions, nil); err != nil {
+		return 0, err
+	}
 	// id、err 用于本次流程后续判断的id、err
 	id, err := createAutomationRuleTx(ctx, tx, a.Dialect, in)
 	if err != nil {
@@ -449,12 +410,21 @@ func (a *AutomationRules) Update(ctx context.Context, userID, ruleID int64, in A
 		return err
 	}
 	defer tx.Rollback()
+	// retainedTemplateIDs 保存更新前规则已引用的模板，允许其停用后继续保留。
+	retainedTemplateIDs, lockErr := lockAutomationRuleAndTemplateRefsTx(ctx, tx, a.Dialect, userID, ruleID)
+	if lockErr != nil {
+		return lockErr
+	}
+	// err 保存新动作模板锁定及变量契约复核错误，必须先于旧动作删除执行。
+	if err := validateAutomationTemplateContractsTx(ctx, tx, a.Dialect, userID, in.Actions, retainedTemplateIDs); err != nil {
+		return err
+	}
 	// res、err 用于本次流程后续判断的res、err
 	res, err := tx.ExecContext(ctx, `
 UPDATE automation_rules
-   SET cookie_id=?,item_id=?,name=?,trigger_type=?,enabled=?,priority=?,config_json=?,updated_at=CURRENT_TIMESTAMP
+   SET cookie_id=?,item_id=?,name=?,trigger_type=?,enabled=?,priority=?,config_json=?,sku_migration_status=?,updated_at=CURRENT_TIMESTAMP
 	 WHERE id=? AND user_id=? AND deleted_at IS NULL`,
-		in.CookieID, in.ItemID, in.Name, in.TriggerType, boolToInt(in.Enabled), in.Priority, validJSON(in.ConfigJSON), ruleID, userID)
+		in.CookieID, in.ItemID, in.Name, in.TriggerType, boolToInt(in.Enabled), in.Priority, validJSON(in.ConfigJSON), readySKUMigrationStatus(in.SKUMigrationStatus), ruleID, userID)
 	if err != nil {
 		return err
 	}
@@ -469,7 +439,7 @@ UPDATE automation_rules
 	// act 表示当前遍历过程中的act
 	for _, act := range in.Actions {
 		if // err 用于本次流程后续判断的err
-		err := insertAutomationActionTx(ctx, tx, ruleID, act); err != nil {
+		_, err := insertAutomationActionTx(ctx, tx, a.Dialect, ruleID, act); err != nil {
 			return err
 		}
 	}
@@ -510,16 +480,17 @@ func (a *AutomationRules) Actions(ctx context.Context, ruleID int64) ([]Automati
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := a.DB.QueryContext(ctx, `
 SELECT a.id,a.rule_id,a.action_type,COALESCE(a.card_id,0),COALESCE(c.name,''),a.delivery_count,
-       a.message_template,a.delay_seconds,a.config_json,a.enabled,a.sort_order
+       a.message_template,a.delay_seconds,a.config_json,a.enabled,a.sort_order,
+       COALESCE(a.delivery_template_id,0),COALESCE(t.name,'')
   FROM automation_rule_actions a
   LEFT JOIN cards c ON c.id=a.card_id
+  LEFT JOIN delivery_templates t ON t.id=a.delivery_template_id
  WHERE a.rule_id=?
  ORDER BY a.sort_order ASC,a.id ASC`, ruleID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	// out 用于本次流程后续判断的out
+	// out 保存游标关闭后再加载模板动作详情的动作基础字段。
 	out := []AutomationAction{}
 	for rows.Next() {
 		// act 用于本次流程后续判断的act
@@ -529,13 +500,31 @@ SELECT a.id,a.rule_id,a.action_type,COALESCE(a.card_id,0),COALESCE(c.name,''),a.
 		if // err 用于本次流程后续判断的err
 		err := rows.Scan(&act.ID, &act.RuleID, &act.ActionType, &act.CardID, &act.CardName,
 			&act.DeliveryCount, &act.MessageTemplate, &act.DelaySeconds, &act.ConfigJSON, &enabled,
-			&act.SortOrder); err != nil {
+			&act.SortOrder, &act.DeliveryTemplateID, &act.DeliveryTemplateName); err != nil {
 			return nil, err
 		}
 		act.Enabled = enabled != 0
 		out = append(out, act)
 	}
-	return out, rows.Err()
+	// rowsErr 保存动作基础游标遍历错误。
+	rowsErr := rows.Err()
+	// closeErr 保存动作基础游标关闭错误。
+	closeErr := rows.Close()
+	if rowsErr != nil {
+		return nil, rowsErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	for /* index 表示当前待加载模板详情的动作位置。 */ index := range out {
+		if out[index].DeliveryTemplateID > 0 {
+			// err 保存模板动作详情加载错误。
+			if err := a.loadTemplateAction(ctx, &out[index]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
 }
 
 // TryStartRun 以 UNIQUE(rule_id, trigger_key) 作为持久化防重。
@@ -551,11 +540,11 @@ func (a *AutomationRules) TryStartRun(ctx context.Context, run AutomationRun) (i
 	}
 	// query 用于本次流程后续判断的查询
 	query := dialectInsertIgnorePrefix(a.Dialect) + ` INTO automation_runs
-	    (rule_id,cookie_id,item_id,order_id,buyer_id,chat_id,trigger_type,trigger_key,status,raw_event_json,lease_expires_at,attempt_count,next_retry_at)
-	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)` + dialectInsertIgnore(a.Dialect, []string{"rule_id", "trigger_key"})
+	    (rule_id,cookie_id,item_id,order_id,buyer_id,chat_id,trigger_type,trigger_key,status,raw_event_json,delivery_proof,lease_expires_at,attempt_count,next_retry_at)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)` + dialectInsertIgnore(a.Dialect, []string{"rule_id", "trigger_key"})
 	// args 用于本次流程后续判断的args
 	args := []any{run.RuleID, run.CookieID, run.ItemID, run.OrderID, run.BuyerID, run.ChatID,
-		run.TriggerType, run.TriggerKey, "running", validJSON(run.RawEventJSON), leaseExpiresAt, 1, 0}
+		run.TriggerType, run.TriggerKey, "running", validJSON(run.RawEventJSON), "", leaseExpiresAt, 1, 0}
 
 	if a.Dialect == DialectPostgres {
 		// pgx 不支持 LastInsertId；用 RETURNING id。ON CONFLICT DO NOTHING 冲突时无行返回 → 未启动。
@@ -614,26 +603,6 @@ func (a *AutomationRules) reclaimRun(ctx context.Context, ruleID int64, triggerK
 	return id, true, nil
 }
 
-// GetRun 返回自动化运行及动作检查点。
-func (a *AutomationRules) GetRun(ctx context.Context, id int64) (*AutomationRun, error) {
-	// run 用于本次流程后续判断的运行
-	var run AutomationRun
-	// actionStarted 用于本次流程后续判断的动作Started
-	var actionStarted int
-	// err 用于本次流程后续判断的err
-	err := a.DB.QueryRowContext(ctx, `SELECT id,rule_id,cookie_id,item_id,order_id,buyer_id,chat_id,trigger_type,trigger_key,
-		status,sent_count,error_message,raw_event_json,lease_expires_at,attempt_count,next_retry_at,action_cursor,action_started
-		FROM automation_runs WHERE id=?`, id).Scan(&run.ID, &run.RuleID, &run.CookieID, &run.ItemID, &run.OrderID,
-		&run.BuyerID, &run.ChatID, &run.TriggerType, &run.TriggerKey, &run.Status, &run.SentCount,
-		&run.ErrorMessage, &run.RawEventJSON, &run.LeaseExpiresAt, &run.AttemptCount, &run.NextRetryAt,
-		&run.ActionCursor, &actionStarted)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	run.ActionStarted = actionStarted != 0
-	return &run, err
-}
-
 // StartRunAction 在外部副作用前持久化 started；崩溃恢复看到 started 时不会盲目重放。
 func (a *AutomationRules) StartRunAction(ctx context.Context, runID int64, attempt, cursor int, leaseExpiresAt int64) (bool, error) {
 	// res、err 用于本次流程后续判断的res、err
@@ -645,18 +614,6 @@ func (a *AutomationRules) StartRunAction(ctx context.Context, runID int64, attem
 	// n、err 用于本次流程后续判断的n、err
 	n, err := res.RowsAffected()
 	return err == nil && n == 1, err
-}
-
-// AdvanceRunAction 在动作明确成功后推进游标并累计已发送数量。
-func (a *AutomationRules) AdvanceRunAction(ctx context.Context, runID int64, attempt, cursor, sentDelta int) error {
-	// res、err 用于本次流程后续判断的res、err
-	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
-		SET action_cursor=?,action_started=0,sent_count=sent_count+?,updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND attempt_count=? AND status='running' AND action_cursor=? AND action_started=1`, cursor+1, sentDelta, runID, attempt, cursor)
-	if err != nil {
-		return err
-	}
-	return requireAutomationRunOwner(res)
 }
 
 // AbortRunAction 封装Abort运行动作业务协调。
@@ -695,10 +652,28 @@ func (a *AutomationRules) QuarantineRun(ctx context.Context, runID int64, attemp
 
 // QuarantineRunResult 封装Quarantine运行结果业务协调。
 func (a *AutomationRules) QuarantineRunResult(ctx context.Context, runID int64, attempt, sentCount int, reason string) error {
-	// res、err 用于本次流程后续判断的res、err
-	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
-		SET status='needs_review',sent_count=?,error_message=?,lease_expires_at=0,next_retry_at=0,updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND attempt_count=? AND status IN ('running','failed')`, sentCount, reason, runID, attempt)
+	return a.QuarantineRunResultWithProof(ctx, runID, attempt, sentCount, reason, nil)
+}
+
+// QuarantineRunResultWithProof 将不确定动作及其已发送凭证原子移入人工核对状态。
+func (a *AutomationRules) QuarantineRunResultWithProof(ctx context.Context, runID int64, attempt, sentCount int, reason string, proof *AutomationDeliveryProof) error {
+	// assignments、args 保存人工核对状态更新列及参数。
+	assignments := "status='needs_review',sent_count=?,error_message=?,lease_expires_at=0,next_retry_at=0,updated_at=CURRENT_TIMESTAMP"
+	// args 保存人工核对更新语句的参数。
+	args := []any{sentCount, reason}
+	if proof != nil {
+		// encryptedProof 保存按运行作用域加密后的人工核对凭证。
+		encryptedProof, err := a.encodeDeliveryProof(runID, *proof)
+		if err != nil {
+			return err
+		}
+		assignments = "delivery_proof=?," + assignments
+		args = append([]any{encryptedProof}, args...)
+	}
+	args = append(args, runID, attempt)
+	// res、err 保存人工核对状态更新结果及数据库错误。
+	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs SET `+assignments+`
+		WHERE id=? AND attempt_count=? AND status IN ('running','failed')`, args...)
 	if err != nil {
 		return err
 	}
@@ -747,11 +722,15 @@ func (a *AutomationRules) FinishRun(ctx context.Context, id int64, attempt int, 
 	} else if status == "failed" && attempt < 3 && (strings.HasPrefix(errMsg, SafeRetryErrorPrefix) || sentCount == 0 && !strings.HasPrefix(errMsg, NoRetryErrorPrefix)) {
 		nextRetryAt = time.Now().UTC().Add(time.Minute).Unix()
 	}
+	// clearProof 表示本次终态不会再自动恢复，因此应立即清理敏感发货凭证。
+	clearProof := nextRetryAt == 0
 	// res、err 用于本次流程后续判断的res、err
-	res, err := a.DB.ExecContext(ctx, `
+	query := `
 UPDATE automation_runs
-	   SET status=?,sent_count=?,error_message=?,lease_expires_at=0,next_retry_at=?,updated_at=CURRENT_TIMESTAMP
-	 WHERE id=? AND attempt_count=? AND status='running'`, status, sentCount, errMsg, nextRetryAt, id, attempt)
+	   SET status=?,sent_count=?,error_message=?,lease_expires_at=0,next_retry_at=?,delivery_proof=CASE WHEN ? THEN '' ELSE delivery_proof END,updated_at=CURRENT_TIMESTAMP
+	 WHERE id=? AND attempt_count=? AND status='running'`
+	// res、err 保存运行终态更新结果及数据库错误。
+	res, err := a.DB.ExecContext(ctx, query, status, sentCount, errMsg, nextRetryAt, clearProof, id, attempt)
 	if err != nil {
 		return err
 	}

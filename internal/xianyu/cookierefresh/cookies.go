@@ -467,18 +467,12 @@ func ChangedSnapshotLabels(before, after []BrowserCookie) []string {
 	key := func(c BrowserCookie) string {
 		// path 用于本次流程后续判断的路径
 		path := c.Path
-		if path == "" {
-			path = "/"
-		}
 		return c.Name + "|" + c.Domain + "|" + path + "|" + c.PartitionKey
 	}
 	// label 用于本次流程后续判断的label
 	label := func(c BrowserCookie) string {
 		// path 用于本次流程后续判断的路径
 		path := c.Path
-		if path == "" {
-			path = "/"
-		}
 		if c.Domain != "" {
 			// out 用于本次流程后续判断的out
 			out := c.Name + "@" + c.Domain + path
@@ -629,11 +623,8 @@ func MetadataWithSnapshot(metadata string, cookies []BrowserCookie) string {
 	}
 	delete(m, legacyMetadataSnapshot)
 	m[metadataSnapshotKey] = NormalizeSnapshot(cookies)
-	// b、err 用于本次流程后续判断的b、err
-	b, err := json.Marshal(m)
-	if err != nil {
-		return metadata
-	}
+	// b 保存已合并 Cookie 快照的 metadata JSON；m 来自 JSON 或固定可序列化字段，编码不会失败。
+	b, _ := json.Marshal(m)
 	return string(b)
 }
 
@@ -650,10 +641,7 @@ func MetadataWithoutSnapshot(metadata string) string {
 	}
 	delete(m, metadataSnapshotKey)
 	delete(m, legacyMetadataSnapshot)
-	// b、err 用于本次流程后续判断的b、err
-	b, err := json.Marshal(m)
-	if err != nil {
-		return metadata
-	}
+	// b 保存移除 Cookie 快照后的 metadata JSON；m 只包含 JSON 可表达的值。
+	b, _ := json.Marshal(m)
 	return string(b)
 }

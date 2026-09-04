@@ -38,6 +38,8 @@ type RefreshSoldOrder struct {
 	ItemID string
 	// BuyerID 是买家标识。
 	BuyerID string
+	// CreatedAt 是平台记录的买家下单时间。
+	CreatedAt string
 	// OrderStatus 是归一化后的订单状态。
 	OrderStatus string
 	// Quantity 是购买数量。
@@ -449,10 +451,6 @@ func (s *RefreshService) Refresh(ctx context.Context, userID int64, cookieID, st
 	}
 	// currentCookieID、targets 保存当前账号及其详情目标。
 	for currentCookieID, targets := range ordersByCookie {
-		// blocked 表示账号是否因会话过期而跳过详情。
-		if _, blocked := sessionExpiredAccounts[currentCookieID]; blocked {
-			continue
-		}
 		// accountExpired 表示当前账号是否因会话过期而停止处理。
 		accountExpired := false
 		// chunk 是当前账号的详情请求分片。
@@ -598,6 +596,10 @@ func (s *RefreshService) persistSoldOrders(ctx context.Context, cookieID string,
 	for _, remote := range normalizedRemoteOrders {
 		// existing、exists 保存当前订单的本地实体及存在标记。
 		existing, exists := existingOrders[remote.OrderID]
+		if exists && remote.CreatedAt == "" {
+			// 缺少平台时间时沿用已有订单创建时间，避免详情补全把它改成同步时间。
+			remote.CreatedAt = existing.CreatedAt
+		}
 		// changed 表示远端订单字段是否发生变化。
 		changed := !exists || refreshSoldOrderChanged(existing, remote)
 		// status 保存待写入的订单状态。
@@ -612,7 +614,7 @@ func (s *RefreshService) persistSoldOrders(ctx context.Context, cookieID string,
 			value := true
 			bargain = &value
 		}
-		batchRows = append(batchRows, RefreshOrderWrite{OrderID: remote.OrderID, Options: UpsertOptions{ItemID: remote.ItemID, BuyerID: remote.BuyerID, CookieID: cookieID, OrderStatus: status, Quantity: remote.Quantity, Amount: remote.Amount, ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity, IsBargain: bargain}})
+		batchRows = append(batchRows, RefreshOrderWrite{OrderID: remote.OrderID, Options: UpsertOptions{ItemID: remote.ItemID, BuyerID: remote.BuyerID, CookieID: cookieID, CreatedAt: remote.CreatedAt, OrderStatus: status, Quantity: remote.Quantity, Amount: remote.Amount, ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity, IsBargain: bargain}})
 		if !exists {
 			discovered++
 			newOrderIDs[remote.OrderID] = struct{}{}

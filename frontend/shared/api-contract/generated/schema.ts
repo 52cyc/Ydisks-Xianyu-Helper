@@ -470,6 +470,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/delivery-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1DeliveryTemplates */
+        get: operations["getApiV1DeliveryTemplates"];
+        put?: never;
+        /** postApiV1DeliveryTemplates */
+        post: operations["postApiV1DeliveryTemplates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/delivery-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1DeliveryTemplatesBytemplate_id */
+        get: operations["getApiV1DeliveryTemplatesBytemplate_id"];
+        /** putApiV1DeliveryTemplatesBytemplate_id */
+        put: operations["putApiV1DeliveryTemplatesBytemplate_id"];
+        post?: never;
+        /** deleteApiV1DeliveryTemplatesBytemplate_id */
+        delete: operations["deleteApiV1DeliveryTemplatesBytemplate_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation-rules": {
         parameters: {
             query?: never;
@@ -2223,6 +2260,38 @@ export interface components {
         ApiResponse: {
             success: boolean;
         };
+        DeliveryTemplateMessageRequest: {
+            content: string;
+        };
+        DeliveryTemplateRequest: {
+            name: string;
+            enabled?: boolean;
+            messages: components["schemas"]["DeliveryTemplateMessageRequest"][];
+        };
+        DeliveryTemplateMessage: {
+            id: number;
+            sort_order: number;
+            content: string;
+        };
+        DeliveryTemplate: {
+            id: number;
+            name: string;
+            enabled: boolean;
+            messages: components["schemas"]["DeliveryTemplateMessage"][];
+            keys: string[];
+            custom_keys: string[];
+            created_at: string;
+            updated_at: string;
+        };
+        DeliveryTemplateListResponse: {
+            success: boolean;
+            data: components["schemas"]["DeliveryTemplate"][];
+        };
+        DeliveryTemplateResponse: components["schemas"]["DeliveryTemplate"];
+        DeliveryTemplateMutationResponse: {
+            success: boolean;
+            id?: number;
+        };
         NotificationUncertainOutboxItem: {
             id: number;
             channel_id: number;
@@ -2260,6 +2329,42 @@ export interface components {
             runs: components["schemas"]["AutomationRunIssue"][];
             pending_tasks: components["schemas"]["DeferredAutomationIssue"][];
         };
+        AutomationTemplateBinding: {
+            variable_key: string;
+            card_id: number;
+            delivery_count: number;
+        };
+        AutomationTemplateBindingRequest: {
+            key: string;
+            card_id: number;
+            delivery_count: number;
+        };
+        AutomationActionRequest: {
+            id?: number;
+            action_type: string;
+            card_id: number;
+            delivery_count: number;
+            message_template: string;
+            delay_seconds: number;
+            config_json: string;
+            enabled: boolean;
+            sort_order: number;
+            delivery_template_id: number;
+            template_bindings: components["schemas"]["AutomationTemplateBindingRequest"][];
+            custom_variables: {
+                [key: string]: string;
+            };
+        };
+        AutomationRuleRequest: {
+            cookie_id: string;
+            item_id: string;
+            name: string;
+            trigger_type: string;
+            enabled: boolean;
+            priority: number;
+            config_json: string;
+            actions: components["schemas"]["AutomationActionRequest"][];
+        };
         AutomationActionResponse: {
             id: number;
             action_type: string;
@@ -2271,6 +2376,13 @@ export interface components {
             config_json: string;
             enabled: boolean;
             sort_order: number;
+            delivery_template_id: number;
+            delivery_template_name: string;
+            template_keys: string[];
+            template_bindings: components["schemas"]["AutomationTemplateBinding"][];
+            custom_variables: {
+                [key: string]: string;
+            };
         };
         AutomationRuleResponse: {
             id: number;
@@ -2282,6 +2394,8 @@ export interface components {
             enabled: boolean;
             priority: number;
             config_json: string;
+            /** @enum {string} */
+            sku_migration_status: "pending" | "ready" | "needs_reconfiguration";
             actions: components["schemas"]["AutomationActionResponse"][];
             created_at: string;
             updated_at: string;
@@ -2956,6 +3070,9 @@ export interface components {
             sessions: components["schemas"]["ChatSession"][];
             has_more: boolean;
             next_cursor?: number;
+            next_stored_cursor?: string;
+            platform_has_more: boolean;
+            stored_has_more: boolean;
         };
         ChatMessagePage: {
             messages: components["schemas"]["ChatMessage"][];
@@ -2965,6 +3082,16 @@ export interface components {
         };
         ChatMessageEnvelope: {
             message: components["schemas"]["ChatMessage"];
+        };
+        ChatSendErrorResponse: {
+            code: string;
+            message: string;
+            request_id?: string;
+            details?: {
+                outgoing_message?: components["schemas"]["ChatMessage"];
+            };
+        } & {
+            [key: string]: unknown;
         };
         ChatReadyEvent: {
             /** @enum {string} */
@@ -3037,7 +3164,9 @@ export interface components {
             receiver_phone?: string;
             receiver_address?: string;
             receiver_city?: string;
+            /** Format: date-time */
             created_at: string;
+            /** Format: date-time */
             updated_at?: string;
         };
         OrderListResponse: {
@@ -5599,6 +5728,300 @@ export interface operations {
             };
         };
     };
+    getApiV1DeliveryTemplates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTemplateListResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1DeliveryTemplates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTemplateMutationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1DeliveryTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTemplateResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1DeliveryTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTemplateMutationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 发货模板变量已被自动化规则引用，不能不兼容修改 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApiV1DeliveryTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTemplateMutationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 发货模板仍被自动化规则引用 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getApiV1AutomationRules: {
         parameters: {
             query?: {
@@ -5678,7 +6101,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationRuleRequest"];
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {
@@ -5725,7 +6152,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description AI 议价与固定规则改价配置冲突 */
+            /** @description 配置冲突或发货模板状态已变化 */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5754,7 +6181,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationRuleRequest"];
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {
@@ -5801,7 +6232,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description AI 议价与固定规则改价配置冲突 */
+            /** @description 配置冲突或发货模板状态已变化 */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6623,13 +7054,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description 统一错误响应 */
+            /** @description 消息已发送但本地状态收口失败，或其他统一错误响应 */
             500: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
+                };
+            };
+            /** @description 平台发送失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
                 };
             };
         };
@@ -7081,13 +7521,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description 统一错误响应 */
+            /** @description 消息已发送但本地状态收口失败，或其他统一错误响应 */
             500: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
+                };
+            };
+            /** @description 平台发送失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
                 };
             };
         };
@@ -7166,6 +7615,7 @@ export interface operations {
             query: {
                 account_id: string;
                 cursor?: number;
+                stored_cursor?: string;
                 refresh?: 0 | 1;
                 limit?: number;
             };
@@ -7222,6 +7672,15 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 平台联系人刷新失败 */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

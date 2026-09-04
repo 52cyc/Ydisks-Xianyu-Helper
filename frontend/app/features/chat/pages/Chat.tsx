@@ -6,6 +6,7 @@ import React from 'react';
 import Lightbox from 'yet-another-react-lightbox';
 import 'yet-another-react-lightbox/styles.css';
 import { AudioMessage } from '../components/AudioMessage';
+import BrowserNotificationToggle from '../components/BrowserNotificationToggle';
 import ChatMetadataFeature from '../components/ChatMetadataFeature';
 import { useChat } from '../hooks';
 import { unreadBadgeClassName,unreadBadgeLabel } from '../state';
@@ -16,7 +17,7 @@ const Chat: React.FC = () => {
   const {
     accounts, activeAccountID, activeChatID, activeAccount, selectedSession, filteredSessions,
     messages, search, unreadOnly, draft, loading, messagesLoading, olderLoading, hasOlder, contactsLoading,
-    hasMoreContacts, emojiOpen, sending, error, liveState, pendingImage, scrollRef, imageInputRef, setActiveAccountID,
+    hasMoreContacts, emojiOpen, sending, error, sendNotice, liveState, pendingImage, scrollRef, imageInputRef, setActiveAccountID,
     setActiveChatID, setSearch, setUnreadOnly, setDraft, setEmojiOpen, reloadSessions, loadMoreContacts,
     loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable,
     unreadForAccount, emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
@@ -46,9 +47,12 @@ const Chat: React.FC = () => {
             <h2 className="text-xl font-black tracking-tight text-slate-950">在线聊天</h2>
             <p className="mt-0.5 text-xs font-medium text-slate-500">复用账号实时连接，消息按账号完全隔离</p>
           </div>
-          <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold ${liveState === 'online' ? 'bg-emerald-50 text-emerald-700' : liveState === 'connecting' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
-            {liveState === 'online' ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-            {liveState === 'online' ? '实时同步中' : liveState === 'connecting' ? '正在连接' : '连接已断开'}
+          <div className="flex items-center gap-2">
+            <BrowserNotificationToggle />
+            <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold ${liveState === 'online' ? 'bg-emerald-50 text-emerald-700' : liveState === 'connecting' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
+              {liveState === 'online' ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+              {liveState === 'online' ? '实时同步中' : liveState === 'connecting' ? '正在连接' : '连接已断开'}
+            </div>
           </div>
         </div>
         <div className="flex gap-1 overflow-x-auto pb-0" role="tablist" aria-label="聊天账号">
@@ -159,7 +163,7 @@ const Chat: React.FC = () => {
                     if (system) {
                       return (
                         <div key={message.message_key} className="flex justify-center py-1">
-                          <div className="max-w-[82%] rounded-xl border border-slate-200 bg-slate-100 px-4 py-2 text-center text-xs leading-5 text-slate-500">
+                          <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-100 px-4 py-2 text-center text-xs leading-5 text-slate-500">
                             {renderXianyuText(message.content)}
                             <div className="mt-1 text-[10px] text-slate-400">{messageTime(message.sent_at)}</div>
                           </div>
@@ -182,7 +186,7 @@ const Chat: React.FC = () => {
                           ) : message.message_type === 'audio' ? (
                             <AudioMessage messageKey={message.message_key} src={message.content} outgoing={outgoing} initialDuration={message.media_duration} />
                           ) : (
-                            <div className={`rounded-2xl px-4 py-2.5 text-sm leading-6 shadow-sm ${outgoing ? 'rounded-br-md bg-sky-500 text-white' : 'rounded-bl-md border border-slate-200 bg-white text-slate-800'}`}>{renderXianyuText(message.content)}</div>
+                            <div className={`whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-6 shadow-sm ${outgoing ? 'rounded-br-md bg-sky-500 text-white' : 'rounded-bl-md border border-slate-200 bg-white text-slate-800'}`}>{renderXianyuText(message.content)}</div>
                           )}
                           <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-400">
                             {messageTime(message.sent_at)}
@@ -198,6 +202,7 @@ const Chat: React.FC = () => {
                   </>}
                 </div>
                 {error && <div className="flex items-center justify-between gap-3 border-t border-red-100 bg-red-50 px-5 py-2 text-xs font-medium text-red-700"><span>{error}</span>{retryAvailable && <button type="button" className="font-bold underline" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void retrySend()}>重试发送</button>}</div>}
+                {sendNotice && <div className="border-t border-amber-100 bg-amber-50 px-5 py-2 text-xs font-medium text-amber-800">{sendNotice}</div>}
                 <div className="relative z-10 shrink-0 border-t border-slate-200 bg-white p-4 shadow-chat-input">
                   <div className="mb-2 flex items-center gap-1">
                     <div className="relative">

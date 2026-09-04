@@ -22,8 +22,12 @@ type fakeMTop struct {
 	consignCalls    int
 	consignCookieIn string
 	consignOrderIn  string
-	consignCookies  []string
-	consignResults  []fakeConsignResult
+	// consignTradeTextIn 记录确认发货请求携带的文本凭证。
+	consignTradeTextIn string
+	// consignPicListIn 记录确认发货请求携带的图片凭证。
+	consignPicListIn []string
+	consignCookies   []string
+	consignResults   []fakeConsignResult
 	// consignStarted 通知测试外部 Consign 调用已经开始。
 	consignStarted chan struct{}
 	// consignRelease 控制测试外部 Consign 调用何时返回。
@@ -100,6 +104,11 @@ func (f *fakeMTop) AdjustOrderPriceContext(_ context.Context, cookiesStr, orderI
 
 // ConsignContext 封装Consign上下文业务协调。
 func (f *fakeMTop) ConsignContext(_ context.Context, cookiesStr, orderID string) (bool, []string, string, error) {
+	return f.ConsignContextWithDelivery(context.Background(), cookiesStr, orderID, "", nil)
+}
+
+// ConsignContextWithDelivery 返回测试预置的确认发货结果并记录发货凭证。
+func (f *fakeMTop) ConsignContextWithDelivery(_ context.Context, cookiesStr, orderID, tradeText string, picList []string) (bool, []string, string, error) {
 	if f.consignStarted != nil {
 		close(f.consignStarted)
 	}
@@ -109,6 +118,8 @@ func (f *fakeMTop) ConsignContext(_ context.Context, cookiesStr, orderID string)
 	f.consignCalls++
 	f.consignCookieIn = cookiesStr
 	f.consignOrderIn = orderID
+	f.consignTradeTextIn = tradeText
+	f.consignPicListIn = append([]string(nil), picList...)
 	f.consignCookies = append(f.consignCookies, cookiesStr)
 	if len(f.consignResults) > 0 {
 		// result 用于本次流程后续判断的结果
@@ -338,6 +349,123 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingCard(t *testing.T) 
 	if mtopMock.consignCalls != 2 {
 		t.Fatalf("consign calls=%d want 2", mtopMock.consignCalls)
 	}
+	if mtopMock.consignTradeTextIn != "ONLY-ONCE" {
+		t.Fatalf("恢复确认发货未携带已发送卡密凭证: %q", mtopMock.consignTradeTextIn)
+	}
+	// runAfterRecovery 保存恢复任务完成后的运行状态，用于确认敏感凭证已清除。
+	var runAfterRecovery db.AutomationRun
+	// err 保存恢复运行状态读取错误。
+	if err := store.DB.QueryRowContext(ctx, `SELECT status,sent_count FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&runAfterRecovery.Status, &runAfterRecovery.SentCount); err != nil {
+		t.Fatal(err)
+	}
+	if runAfterRecovery.Status != "success" || runAfterRecovery.SentCount != 1 {
+		t.Fatalf("恢复运行状态异常: status=%q sent=%d", runAfterRecovery.Status, runAfterRecovery.SentCount)
+	}
+	// rawProof 保存恢复成功后的数据库凭证，确认终态不会继续保留敏感内容。
+	var rawProof string
+	// err 保存恢复成功后凭证读取错误。
+	if err := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&rawProof); err != nil {
+		t.Fatal(err)
+	}
+	if rawProof != "" {
+		t.Fatalf("恢复成功后应清除发货凭证: %q", rawProof)
+	}
+}
+
+// TestConfirmShipmentRetriesFromCheckpointWithoutResendingTemplate 验证模板发货凭证可在确认重试时恢复且模板不会重复发送。
+func TestConfirmShipmentRetriesFromCheckpointWithoutResendingTemplate(t *testing.T) {
+	// store、cleanup 保存模板恢复测试使用的数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存创建模板和卡密组所需的用户。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID、cardErr 保存模板绑定的文本卡密组。
+	cardID, cardErr := store.Cards.Create(ctx, &db.CardFull{Name: "template-recovery-card", Type: "text", TextContent: "TEMPLATE-ONCE", Enabled: true, UserID: admin.ID})
+	if cardErr != nil {
+		t.Fatal(cardErr)
+	}
+	// templateID、templateErr 保存带订单字段和卡密变量的模板。
+	templateID, templateErr := store.DeliveryTemplates.Create(ctx, db.DeliveryTemplateInput{
+		UserID: admin.ID, Name: "template-recovery", Enabled: true, Messages: []string{"订单 {{order_id}} 卡密 {{cards.code}}"},
+	})
+	if templateErr != nil {
+		t.Fatal(templateErr)
+	}
+	// ruleID、ruleErr 保存模板动作和确认发货动作组成的规则。
+	_, ruleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "cid", ItemID: "template-recovery-item", Name: "template-recovery-rule", TriggerType: TriggerOrderPaid, Enabled: true,
+		Actions: []db.AutomationActionInput{
+			{ActionType: ActionSendTemplate, DeliveryTemplateID: templateID, ConfigJSON: `{}`, TemplateBindings: []db.DeliveryTemplateBinding{{VariableKey: "code", CardID: cardID, DeliveryCount: 1}}, Enabled: true, SortOrder: 1},
+			{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: 2},
+		},
+	})
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// mtopMock 用于本次流程后续判断的mtopMock
+	mtopMock := &fakeMTop{consignResults: []fakeConsignResult{
+		{ret: []string{"FAIL_SYS_SESSION_EXPIRED::Session过期"}},
+		{ok: true, ret: []string{"SUCCESS::调用成功"}},
+	}}
+	// recoverer 保存第一次失败、恢复任务时成功的凭证恢复器。
+	recoverer := &fakeCredentialRecoverer{store: store, fail: true}
+	// sender 保存模板实际发送给买家的消息。
+	sender := &testSender{}
+	// center 保存模板恢复测试使用的自动化中心。
+	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: mtopMock, OrderDetailFetcher: recoverer})
+	// task 保存模板恢复测试的订单任务。
+	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "template-recovery-order", ItemID: "template-recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
+	// firstErr 保存首次确认发货因凭证恢复失败而返回的错误。
+	firstErr := center.HandleTask(ctx, task)
+	if firstErr == nil {
+		t.Fatal("首次模板确认发货应因 Session 恢复失败而返回错误")
+	}
+	// status、sent、cursor 保存首次失败后的运行检查点。
+	var status string
+	// sent、cursor 保存首次失败后的已发送数量和动作游标。
+	var sent, cursor int
+	// scanErr 保存首次失败后运行检查点读取错误。
+	if scanErr := store.DB.QueryRowContext(ctx, `SELECT status,sent_count,action_cursor FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&status, &sent, &cursor); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if status != "failed" || sent != 1 || cursor != 1 {
+		t.Fatalf("模板恢复检查点错误: status=%q sent=%d cursor=%d", status, sent, cursor)
+	}
+	// rawProof 保存首次失败时的凭证密文，确认重试前凭证必须仍存在。
+	var rawProof string
+	// scanErr 保存首次失败后凭证读取错误。
+	if scanErr := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&rawProof); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if rawProof == "" {
+		t.Fatal("模板发送成功后安全重试前必须保留凭证")
+	}
+	recoverer.fail = false
+	// updateErr 保存立即唤醒恢复任务的更新错误。
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET next_retry_at=0 WHERE order_id=?`, task.OrderID); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	NewScheduler(center).runRecoveryTasks(ctx)
+	if len(sender.texts) != 1 || sender.texts[0] != "订单 template-recovery-order 卡密 TEMPLATE-ONCE" {
+		t.Fatalf("恢复模板不得重复发送: %v", sender.texts)
+	}
+	if mtopMock.consignCalls != 2 || mtopMock.consignTradeTextIn != "订单 template-recovery-order 卡密 TEMPLATE-ONCE" {
+		t.Fatalf("恢复确认发货凭证错误: calls=%d trade_text=%q", mtopMock.consignCalls, mtopMock.consignTradeTextIn)
+	}
+	// clearedProof 保存恢复成功后的凭证值，确认终态必须清除敏感内容。
+	var clearedProof string
+	// scanErr 保存恢复成功后凭证读取错误。
+	if scanErr := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&clearedProof); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if clearedProof != "" {
+		t.Fatalf("模板确认成功后凭证未清除: %q", clearedProof)
+	}
 }
 
 // TestConfirmShipmentRecoversExpiredSessionAndRetriesOnlyConsign 封装TestConfirmShipmentRecoversExpired会话AndRetriesOnlyConsign业务协调。
@@ -449,6 +577,69 @@ func TestCenterConfirmShipment_MockMTopConsigError(t *testing.T) {
 	store.DB.QueryRowContext(ctx, `SELECT status FROM automation_runs WHERE order_id='order-mock2'`).Scan(&runStatus)
 	if runStatus != "failed" {
 		t.Fatalf("ok=false 应记 failed，got %q", runStatus)
+	}
+}
+
+// TestPaidTemplateWithZeroRenderedMessagesDoesNotConfirmShipment 验证模板渲染零消息时不会推进到确认发货动作。
+func TestPaidTemplateWithZeroRenderedMessagesDoesNotConfirmShipment(t *testing.T) {
+	// store、cleanup 保存本次付款规则流程使用的数据库及清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存规则创建、任务执行和运行状态读取共用的上下文。
+	ctx := context.Background()
+	// admin、adminErr 保存创建发货模板所需的用户。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// templateID、templateErr 保存只引用缺失买家昵称变量的合法模板。
+	templateID, templateErr := store.DeliveryTemplates.Create(ctx, db.DeliveryTemplateInput{
+		UserID: admin.ID, Name: "零消息模板", Enabled: true, Messages: []string{"{{buyer_nickname}}"},
+	})
+	if templateErr != nil {
+		t.Fatal(templateErr)
+	}
+	// ruleID、ruleErr 保存模板动作后接确认发货动作的付款规则。
+	ruleID, ruleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "cid", ItemID: "zero-message-item", Name: "零消息规则",
+		TriggerType: TriggerOrderPaid, Enabled: true, Actions: []db.AutomationActionInput{
+			{ActionType: ActionSendTemplate, DeliveryTemplateID: templateID, Enabled: true, SortOrder: 1},
+			{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: 2},
+		},
+	})
+	if ruleErr != nil || ruleID == 0 {
+		t.Fatalf("create zero-message rule id=%d err=%v", ruleID, ruleErr)
+	}
+	// sender 记录模板消息发送次数，确认发货没有发送器副作用。
+	sender := &testSender{}
+	// mtopMock 记录确认发货调用次数，正常情况下不应被调用。
+	mtopMock := &fakeMTop{consignOk: true, consignRet: []string{"SUCCESS"}}
+	// center 是注入测试发送器和 MTOP 客户端的自动化中心。
+	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{
+		MTop:               mtopMock,
+		OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.9"}},
+	})
+	// task 是缺少买家昵称、会把模板渲染为空的付款订单任务。
+	task := Task{Source: "ws", AccountID: "cid", CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
+		ChatID: "chat-zero", OrderID: "order-zero-message", ItemID: "zero-message-item", BuyerID: "buyer-zero", Quantity: "1"}
+	// runErr 保存规则执行错误；零消息是确定未发送，应允许安全重试而不确认发货。
+	runErr := center.HandleTask(ctx, task)
+	if runErr == nil || !errors.Is(runErr, ErrMessageNotSent) {
+		t.Fatalf("零消息模板应返回确定未发送错误：%v", runErr)
+	}
+	if len(sender.texts) != 0 || mtopMock.consignCalls != 0 {
+		t.Fatalf("零消息模板不应产生发送或确认副作用：texts=%v consign=%d", sender.texts, mtopMock.consignCalls)
+	}
+	// status、errMessage、cursor 保存失败运行的可重试状态和动作检查点。
+	var status, errMessage string
+	// cursor 保存失败时停留在模板动作之前的动作游标。
+	var cursor int
+	// scanErr 保存失败运行状态读取错误。
+	if scanErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,action_cursor FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&status, &errMessage, &cursor); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if status != "failed" || !strings.HasPrefix(errMessage, db.SafeRetryErrorPrefix) || cursor != 0 {
+		t.Fatalf("零消息运行状态错误：status=%q error=%q cursor=%d", status, errMessage, cursor)
 	}
 }
 

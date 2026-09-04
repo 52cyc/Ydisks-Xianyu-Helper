@@ -31,6 +31,7 @@ import type {
   AutomationTriggerType,
   Card,
   DefaultReplyForm,
+  DeliveryTemplate,
   Item,
   ReplyRule,
   RulesProps,
@@ -46,6 +47,7 @@ import {
   cardActionsForTrigger,
   defaultRuleName,
   emptyVariant,
+  hasCompleteTemplateBindings,
   isValidAdjustPrice,
   isValidProfitRate,
   parseJSONObject,
@@ -63,6 +65,8 @@ export interface RuleActionsOptions {
   setActiveTab: Dispatch<SetStateAction<RulesTab>>;
   // items 保存规则编辑器可绑定的商品列表。
   items: Item[];
+  // deliveryTemplates 保存发货模板编辑器可选的模板列表。
+  deliveryTemplates?: DeliveryTemplate[];
   // setAutomationRules 写入外部联动场景加载的自动化规则。
   setAutomationRules: Dispatch<SetStateAction<ShippingRule[]>>;
   // setCards 写入外部联动场景加载的卡密库存。
@@ -191,6 +195,7 @@ export const useRuleActions = ({
   setSelectedAccountId,
   setActiveTab,
   items,
+  deliveryTemplates = [],
   setAutomationRules,
   setCards,
   setItems,
@@ -613,17 +618,35 @@ export const useRuleActions = ({
         : [];
       if (trigger !== "review_missing_timeout" && trigger !== "order_created") {
         if (!variants.length) return alert("请至少添加一条发货内容");
-        if (
-          variants.some(
-            /* localVariantValidator 校验本地来源已选择卡密组。 */ (variant) =>
-              variant.source_type !== "external" && !variant.card_id,
-          )
-        )
+        if (variants.some((variant) =>
+          variant.delivery_mode === "template"
+            ? !variant.delivery_template_id
+            : variant.source_type !== "external" && !variant.card_id,
+        ))
           return alert(
             trigger === "buyer_reviewed"
-              ? "请选择评价赠品卡密库存"
-              : "请选择发货卡密库存",
+              ? "请选择评价赠品卡密库存或发货模板"
+              : "请选择发货卡密库存或发货模板",
           );
+        if (variants.some((variant) => {
+          if (variant.delivery_mode !== "template") return false;
+          const template = deliveryTemplates.find(
+            (candidate) => candidate.id === variant.delivery_template_id,
+          );
+          return !template || !hasCompleteTemplateBindings(
+            template.keys,
+            variant.template_bindings,
+          );
+        })) return alert("请为发货模板的每个变量绑定卡密库存");
+        if (variants.some((variant) => {
+          if (variant.delivery_mode !== "template") return false;
+          const template = deliveryTemplates.find(
+            (candidate) => candidate.id === variant.delivery_template_id,
+          );
+          return (template?.custom_keys || []).some(
+            (key) => !variant.custom_variables?.[key]?.trim(),
+          );
+        })) return alert("请填写发货模板要求的全部自定义变量");
         if (
           variants.some(
             /* externalVariantValidator 校验外部来源的实例和商品已远程确认。 */ (
@@ -637,7 +660,7 @@ export const useRuleActions = ({
         )
           return alert("请先完成每条外部货源商品的校验");
         for (const variant /* variant 是当前待校验直充 JSON 的发货内容。 */ of variants) {
-          if (variant.source_type !== "external") continue;
+          if (variant.delivery_mode === "template" || variant.source_type !== "external") continue;
           if (variant.price_sync_enabled) {
             // profitRate 是当前外部发货内容配置的售价利润率百分比。
             const profitRate = String(variant.profit_rate || "");
@@ -764,6 +787,7 @@ export const useRuleActions = ({
     },
     [
       automationSubmitState,
+      deliveryTemplates,
       editingAutomationRule,
       isMultiSpecRule,
       loadAutomationRules,

@@ -42,11 +42,13 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"item_info", "multi_quantity_delivery"},
 		{"item_info", "deleted_at"},
 		{"automation_rules", "deleted_at"},
+		{"automation_rules", "sku_migration_status"},
 		{"default_replies", "reply_once"},
 		{"default_reply_records", "status"},
 		{"default_reply_records", "text_sent"},
 		{"automation_runs", "action_cursor"},
 		{"automation_runs", "action_started"},
+		{"automation_runs", "delivery_proof"},
 		{"default_reply_records", "image_sent"},
 		{"users", "is_admin"},
 		{"sessions", "session_id"},
@@ -112,8 +114,77 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 	db2.Close()
 }
 
+// TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof 验证已有自动化运行升级后获得非 NULL 空凭证。
+func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
+	// tmpDir 保存隔离的历史数据库目录，测试结束后由 testing 清理。
+	tmpDir := t.TempDir()
+	// dbPath 指向模拟已运行至 00038 的 SQLite 文件。
+	dbPath := filepath.Join(tmpDir, "automation-v38.db")
+	// rawDB、openErr 保存历史数据库连接和打开错误。
+	rawDB, openErr := sql.Open("sqlite", sqliteDSN(dbPath))
+	if openErr != nil {
+		t.Fatalf("open legacy database: %v", openErr)
+	}
+	defer rawDB.Close()
+	// dialectErr 保存 Goose SQLite 方言设置错误。
+	if dialectErr := goose.SetDialect("sqlite3"); dialectErr != nil {
+		t.Fatal(dialectErr)
+	}
+	goose.SetBaseFS(migrationsFS)
+	// upErr 保存历史数据库推进到 00038 的错误。
+	if upErr := goose.UpTo(rawDB, "migrations/sqlite", 38); upErr != nil {
+		t.Fatalf("apply v38 migrations: %v", upErr)
+	}
+	// userResult、userErr 保存历史用户写入结果。
+	userResult, userErr := rawDB.Exec(`INSERT INTO users (username,email,password_hash) VALUES ('migration-user','migration@example.com','hash')`)
+	if userErr != nil {
+		t.Fatal(userErr)
+	}
+	// userID、idErr 保存历史用户主键。
+	userID, idErr := userResult.LastInsertId()
+	if idErr != nil {
+		t.Fatal(idErr)
+	}
+	// cookieErr 保存历史账号写入错误。
+	if _, cookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id) VALUES ('migration-cookie','cv',?)`, userID); cookieErr != nil {
+		t.Fatal(cookieErr)
+	}
+	// ruleResult、ruleErr 保存历史自动化规则写入结果。
+	ruleResult, ruleErr := rawDB.Exec(`INSERT INTO automation_rules (user_id,cookie_id,item_id,name,trigger_type,enabled,priority,config_json) VALUES (?,?,?,?,?,1,100,'{}')`, userID, "migration-cookie", "migration-item", "migration-rule", "paid")
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// ruleID、ruleIDErr 保存历史规则主键。
+	ruleID, ruleIDErr := ruleResult.LastInsertId()
+	if ruleIDErr != nil {
+		t.Fatal(ruleIDErr)
+	}
+	// runErr 保存没有 delivery_proof 列时写入历史运行的错误。
+	if _, runErr := rawDB.Exec(`INSERT INTO automation_runs (rule_id,cookie_id,item_id,order_id,trigger_type,trigger_key,status) VALUES (?,?,?,?,?,?,?)`, ruleID, "migration-cookie", "migration-item", "migration-order", "paid", "migration-key", "running"); runErr != nil {
+		t.Fatal(runErr)
+	}
+	// migrateErr 保存从 00038 升级到最新版本的错误。
+	if migrateErr := Migrate(context.Background(), rawDB, DialectSQLite); migrateErr != nil {
+		t.Fatalf("upgrade v38 database: %v", migrateErr)
+	}
+	// varProof、scanErr 保存升级后历史运行的凭证值和扫描错误。
+	var varProof string
+	// scanErr 保存升级后历史运行凭证读取错误。
+	if scanErr := rawDB.QueryRow(`SELECT delivery_proof FROM automation_runs WHERE trigger_key='migration-key'`).Scan(&varProof); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if varProof != "" {
+		t.Fatalf("历史运行凭证应为空: %q", varProof)
+	}
+	// finalVersion、versionErr 保存升级后的 Goose 版本和读取错误。
+	finalVersion, versionErr := goose.GetDBVersion(rawDB)
+	if versionErr != nil || finalVersion != 45 {
+		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
+	}
+}
+
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到包含快捷回复和买家备注的 00036 最终版本。
+// 聊天迁移可以原样升级到包含会话软隐藏列的 00045 最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -139,26 +210,32 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续 dev 00031 至 00036 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至当前 00045 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
 	if !tableExists(t, rawDB, "order_reconciliations") {
 		t.Fatal("order_reconciliations should be created by the dev schema baseline migration")
 	}
-	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") {
-		t.Fatal("chat read tracking and media presentation columns should remain after dev schema baseline upgrade")
+	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") {
+		t.Fatal("chat read tracking, media presentation, and session visibility columns should remain after dev schema baseline upgrade")
 	}
 	if !tableExists(t, rawDB, "chat_quick_replies") || !tableExists(t, rawDB, "chat_buyer_notes") {
 		t.Fatal("chat quick reply and buyer note tables should be created by the latest migration")
 	}
-	// finalVersion 验证迁移账本已推进到包含外部货源订单级跟价快照的最新版本。
+	if !tableExists(t, rawDB, "delivery_templates") || !tableExists(t, rawDB, "delivery_template_messages") || !tableExists(t, rawDB, "automation_action_template_bindings") {
+		t.Fatal("delivery template tables should be created by the latest migration")
+	}
+	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
+		t.Fatal("automation_rule_actions should reference delivery templates")
+	}
+	// finalVersion 验证迁移账本已推进到包含外部货源跟价和会话软隐藏列的最新 schema 版本。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 41 {
-		t.Fatalf("final migration version=%d, want 41", finalVersion)
+	if finalVersion != 45 {
+		t.Fatalf("final migration version=%d, want 45", finalVersion)
 	}
 }
 
@@ -246,6 +323,9 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 	if columnExists(t, d, "item_publish_batches", "location_json") {
 		t.Fatal("item_publish_batches.location_json should be removed after migration 28 down")
 	}
+	if columnExists(t, d, "automation_runs", "delivery_proof") {
+		t.Fatal("automation_runs.delivery_proof should be removed after migration 39 down")
+	}
 	// table 表示当前遍历过程中的table
 	for _, table := range []string{"account_task_settings", "account_task_runs", "chat_sessions", "chat_messages"} {
 		if tableExists(t, d, table) {
@@ -282,6 +362,7 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 		{"chat_messages", "read_at"},
 		{"chat_messages", "media_duration"},
 		{"notification_outbox", "uncertain_at"},
+		{"automation_runs", "delivery_proof"},
 	} {
 		if !columnExists(t, d, c.table, c.col) {
 			t.Fatalf("column missing after re-up: %s.%s", c.table, c.col)

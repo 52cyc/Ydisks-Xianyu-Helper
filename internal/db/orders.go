@@ -158,17 +158,30 @@ type BatchOrderUpsert struct {
 	Options OrderUpsertOpts
 }
 
-// UpsertMany 使用单条多值 UPSERT 写入一批订单，避免详情分片逐订单往返数据库。
+// UpsertMany 使用最多两条多值 UPSERT 写入一批订单，并保证分组写入的原子性。
 func (o *Orders) UpsertMany(ctx context.Context, rows []BatchOrderUpsert) error {
-	return upsertManyOrders(ctx, o.DB, o.Dialect, rows)
+	if len(rows) == 0 {
+		return nil
+	}
+	// tx、err 保存混合 CreatedAt 批次共用的事务及开启错误，避免第二组写入失败留下半批数据。
+	tx, err := o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// err 保存批量订单分组写入错误。
+	if err := upsertManyOrders(ctx, tx, o.Dialect, rows); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// UpsertManyTx 在调用方事务内使用单条多值 UPSERT 写入一批订单。
+// UpsertManyTx 在调用方事务内使用最多两条多值 UPSERT 写入一批订单。
 func (o *Orders) UpsertManyTx(ctx context.Context, tx *sql.Tx, rows []BatchOrderUpsert) error {
 	return upsertManyOrders(ctx, tx, o.Dialect, rows)
 }
 
-// upsertManyOrders 构造跨 SQLite/MySQL/Postgres 的多值订单 UPSERT。
+// upsertManyOrders 校验批量订单并按 CreatedAt 是否存在分组执行跨方言 UPSERT。
 func upsertManyOrders(ctx context.Context, execer sqlQueryExecer, dialect Dialect, rows []BatchOrderUpsert) error {
 	if len(rows) == 0 {
 		return nil
@@ -231,21 +244,71 @@ func upsertManyOrders(ctx context.Context, execer sqlQueryExecer, dialect Dialec
 		}
 	}
 
-	// columns 保存多值 INSERT 的公共列集合。
-	columns := []string{"order_id", "item_id", "buyer_id", "cookie_id", "order_status", "is_bargain", "spec_name", "spec_value", "quantity", "amount", "receiver_name", "receiver_phone", "receiver_address", "receiver_city", "version"}
-	// values 保存多行占位符和参数。
-	values := make([]string, 0, len(normalizedRows))
-	// args 保存批量插入参数。
-	args := make([]any, 0, len(normalizedRows)*len(columns))
-	// row 是当前待插入的批量订单。
+	// rowsWithCreatedAt 和 rowsWithoutCreatedAt 分别保存有、无平台创建时间的订单组。
+	rowsWithCreatedAt := make([]BatchOrderUpsert, 0, len(normalizedRows))
+	// rowsWithoutCreatedAt 保存未提供平台创建时间的订单组。
+	rowsWithoutCreatedAt := make([]BatchOrderUpsert, 0, len(normalizedRows))
+	// row 表示当前待按创建时间分组的订单。
 	for _, row := range normalizedRows {
-		values = append(values, "("+strings.TrimRight(strings.Repeat("?,", len(columns)), ",")+")")
+		if row.Options.CreatedAt == "" {
+			rowsWithoutCreatedAt = append(rowsWithoutCreatedAt, row)
+			continue
+		}
+		rowsWithCreatedAt = append(rowsWithCreatedAt, row)
+	}
+	if len(rowsWithoutCreatedAt) > 0 {
+		// err 保存无平台创建时间订单组的 UPSERT 错误。
+		if err := upsertManyOrderGroup(ctx, execer, dialect, rowsWithoutCreatedAt, false); err != nil {
+			return err
+		}
+	}
+	if len(rowsWithCreatedAt) > 0 {
+		// err 保存显式平台创建时间订单组的 UPSERT 错误。
+		if err := upsertManyOrderGroup(ctx, execer, dialect, rowsWithCreatedAt, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// upsertManyOrderGroup 为同一 CreatedAt 语义的订单组构造多值 UPSERT。
+func upsertManyOrderGroup(ctx context.Context, execer sqlQueryExecer, dialect Dialect, rows []BatchOrderUpsert, includeCreatedAt bool) error {
+	// columns 保存多值 INSERT 的公共列集合；无平台时间时省略 created_at 以保留已有值和数据库默认值。
+	columns := []string{"order_id", "item_id", "buyer_id", "cookie_id"}
+	if includeCreatedAt {
+		columns = append(columns, "created_at")
+	}
+	columns = append(columns, "order_status", "is_bargain", "spec_name", "spec_value", "quantity", "amount", "receiver_name", "receiver_phone", "receiver_address", "receiver_city", "version")
+	// values 保存多行占位符和参数。
+	values := make([]string, 0, len(rows))
+	// args 保存批量插入参数。
+	args := make([]any, 0, len(rows)*len(columns))
+	// row 是当前待插入的批量订单。
+	for _, row := range rows {
+		// valueExpressions 保存当前批量行的 SQL 占位表达式。
+		valueExpressions := make([]string, len(columns))
+		// columnIndex 表示当前 SQL 占位表达式在订单列集合中的下标。
+		for columnIndex := range valueExpressions {
+			valueExpressions[columnIndex] = "?"
+		}
+		values = append(values, "("+strings.Join(valueExpressions, ",")+")")
 		// isBargain 保存批量订单是否包含砍价标记。
 		isBargain := 0
 		if row.Options.IsBargain != nil && *row.Options.IsBargain {
 			isBargain = 1
 		}
-		args = append(args, row.OrderID, row.Options.ItemID, row.Options.BuyerID, row.Options.CookieID, row.Options.OrderStatus, isBargain, row.Options.SpecName, row.Options.SpecValue, row.Options.Quantity, row.Options.Amount, row.Options.ReceiverName, row.Options.ReceiverPhone, row.Options.ReceiverAddr, row.Options.ReceiverCity, 1)
+		args = append(args, row.OrderID, row.Options.ItemID, row.Options.BuyerID, row.Options.CookieID)
+		if includeCreatedAt {
+			args = append(args, row.Options.CreatedAt)
+		}
+		args = append(args, row.Options.OrderStatus, isBargain, row.Options.SpecName, row.Options.SpecValue, row.Options.Quantity, row.Options.Amount, row.Options.ReceiverName, row.Options.ReceiverPhone, row.Options.ReceiverAddr, row.Options.ReceiverCity, 1)
+	}
+	// currentColumn 返回冲突更新时目标表已有列的表达式；PostgreSQL 需要表限定，其他方言保留原列名兼容语法。
+	currentColumn := func(column string) string {
+		if dialect == DialectPostgres {
+			return "orders." + column
+		}
+		return column
 	}
 	// excludedValue 返回当前数据库方言读取插入候选值的表达式。
 	excludedValue := func(column string) string {
@@ -258,12 +321,16 @@ func upsertManyOrders(ctx context.Context, execer sqlQueryExecer, dialect Dialec
 	mergeValue := func(column string) string {
 		// incoming 保存当前列候选值表达式。
 		incoming := excludedValue(column)
-		return "CASE WHEN " + incoming + " IS NOT NULL AND " + incoming + "<>'' THEN " + incoming + " ELSE " + column + " END"
+		// current 保存冲突更新时目标表当前列的限定表达式，供候选值为空时保留原值。
+		current := currentColumn(column)
+		return "CASE WHEN " + incoming + " IS NOT NULL AND " + incoming + "<>'' THEN " + incoming + " ELSE " + current + " END"
 	}
 	// incomingStatus 保存候选订单状态表达式。
 	incomingStatus := excludedValue("order_status")
+	// currentStatus 保存冲突更新时目标表已有订单状态；PostgreSQL 需要使用 orders.order_status 消除列名歧义。
+	currentStatus := currentColumn("order_status")
 	// statusAssignment 保存防止状态倒退的跨方言状态表达式。
-	statusAssignment := "CASE WHEN " + incomingStatus + " IS NULL OR " + incomingStatus + "='' OR (" + incomingStatus + "='unknown' AND order_status<>'unknown') THEN order_status WHEN order_status='unknown' OR order_status=" + incomingStatus + " THEN " + incomingStatus + " WHEN " + incomingStatus + " IN ('processing','pending_ship') AND order_status IN ('shipped','completed','refunding','cancelled') THEN order_status WHEN " + incomingStatus + "='shipped' AND order_status IN ('completed','cancelled') THEN order_status ELSE " + incomingStatus + " END"
+	statusAssignment := "CASE WHEN " + incomingStatus + " IS NULL OR " + incomingStatus + "='' OR (" + incomingStatus + "='unknown' AND " + currentStatus + "<>'unknown') THEN " + currentStatus + " WHEN " + currentStatus + "='unknown' OR " + currentStatus + "=" + incomingStatus + " THEN " + incomingStatus + " WHEN " + incomingStatus + " IN ('processing','pending_ship') AND " + currentStatus + " IN ('shipped','completed','refunding','cancelled') THEN " + currentStatus + " WHEN " + incomingStatus + "='shipped' AND " + currentStatus + " IN ('completed','cancelled') THEN " + currentStatus + " ELSE " + incomingStatus + " END"
 	// incomingBargain 保存候选订单砍价标记表达式。
 	incomingBargain := excludedValue("is_bargain")
 	// assignments 保存批量 UPSERT 的更新列表达式。
@@ -272,7 +339,7 @@ func upsertManyOrders(ctx context.Context, execer sqlQueryExecer, dialect Dialec
 		"buyer_id":         mergeValue("buyer_id"),
 		"cookie_id":        mergeValue("cookie_id"),
 		"order_status":     statusAssignment,
-		"is_bargain":       "CASE WHEN " + incomingBargain + "=1 THEN 1 ELSE is_bargain END",
+		"is_bargain":       "CASE WHEN " + incomingBargain + "=1 THEN 1 ELSE " + currentColumn("is_bargain") + " END",
 		"spec_name":        mergeValue("spec_name"),
 		"spec_value":       mergeValue("spec_value"),
 		"quantity":         mergeValue("quantity"),
@@ -282,8 +349,14 @@ func upsertManyOrders(ctx context.Context, execer sqlQueryExecer, dialect Dialec
 		"receiver_address": mergeValue("receiver_address"),
 		"receiver_city":    mergeValue("receiver_city"),
 		"deleted_at":       "NULL",
-		"version":          "version+1",
+		"version":          currentColumn("version") + "+1",
 		"updated_at":       "CURRENT_TIMESTAMP",
+	}
+	if includeCreatedAt {
+		// created_at 仅在平台提供时间的批次中参与更新，避免详情补全覆盖原有创建时间。
+		// incomingCreatedAt 保存显式时间批次中的候选创建时间表达式；时间类型不能与空字符串比较。
+		incomingCreatedAt := excludedValue("created_at")
+		assignments["created_at"] = "CASE WHEN " + incomingCreatedAt + " IS NOT NULL THEN " + incomingCreatedAt + " ELSE " + currentColumn("created_at") + " END"
 	}
 	// query 保存多值 UPSERT SQL。
 	query := "INSERT INTO orders (" + strings.Join(columns, ",") + ") VALUES " + strings.Join(values, ",") + dialectUpsert(dialect, []string{"order_id"}, assignments)
@@ -439,6 +512,7 @@ func orderUpsertAssignments(opts OrderUpsertOpts) ([]string, []any) {
 	add("item_id", opts.ItemID, opts.ItemID != "")
 	add("buyer_id", opts.BuyerID, opts.BuyerID != "")
 	add("cookie_id", opts.CookieID, opts.CookieID != "")
+	add("created_at", opts.CreatedAt, opts.CreatedAt != "")
 	add("order_status", opts.OrderStatus, opts.OrderStatus != "")
 	add("spec_name", opts.SpecName, opts.SpecName != "")
 	add("spec_value", opts.SpecValue, opts.SpecValue != "")
@@ -502,9 +576,11 @@ func shouldUpdateOrderStatus(current, incoming string) bool {
 
 // OrderUpsertOpts Upsert 的可选字段。
 type OrderUpsertOpts struct {
-	ItemID        string
-	BuyerID       string
-	CookieID      string
+	ItemID   string
+	BuyerID  string
+	CookieID string
+	// CreatedAt 是平台订单创建时间；为空时不覆盖数据库已有时间。
+	CreatedAt     string
 	OrderStatus   string
 	SpecName      string
 	SpecValue     string
@@ -563,7 +639,7 @@ func (o *Orders) FindByIDs(ctx context.Context, orderIDs []string) (map[string]*
 		}
 		// query 保存当前批量订单查询 SQL。
 		query := `SELECT order_id,item_id,buyer_id,quantity,amount,order_status,cookie_id,is_bargain,
-		        receiver_name,receiver_phone,receiver_address,receiver_city
+		        receiver_name,receiver_phone,receiver_address,receiver_city,created_at
 		 FROM orders WHERE order_id IN (` + strings.Join(placeholders, ",") + `) AND deleted_at IS NULL`
 		// rows 保存当前批量订单查询结果集。
 		rows, err := o.DB.QueryContext(ctx, query, args...)
@@ -572,17 +648,17 @@ func (o *Orders) FindByIDs(ctx context.Context, orderIDs []string) (map[string]*
 		}
 		// rowOrder 保存当前结果集扫描出的订单。
 		for rows.Next() {
-			// orderIDValue、itemID、buyerID、quantity、amount、status、cookieID、receiverName、receiverPhone、receiverAddr、receiverCity 保存可空订单文本字段。
-			var orderIDValue, itemID, buyerID, quantity, amount, status, cookieID, receiverName, receiverPhone, receiverAddr, receiverCity sql.NullString
+			// orderIDValue、itemID、buyerID、quantity、amount、status、cookieID、receiverName、receiverPhone、receiverAddr、receiverCity、createdAt 保存可空订单文本字段。
+			var orderIDValue, itemID, buyerID, quantity, amount, status, cookieID, receiverName, receiverPhone, receiverAddr, receiverCity, createdAt sql.NullString
 			// isBargain 保存当前订单砍价标记。
 			var isBargain sql.NullInt64
 			// scanErr 保存当前订单行扫描错误。
-			if scanErr := rows.Scan(&orderIDValue, &itemID, &buyerID, &quantity, &amount, &status, &cookieID, &isBargain, &receiverName, &receiverPhone, &receiverAddr, &receiverCity); scanErr != nil {
+			if scanErr := rows.Scan(&orderIDValue, &itemID, &buyerID, &quantity, &amount, &status, &cookieID, &isBargain, &receiverName, &receiverPhone, &receiverAddr, &receiverCity, &createdAt); scanErr != nil {
 				_ = rows.Close()
 				return nil, scanErr
 			}
 			// rowOrder 保存当前结果集扫描出的订单。
-			rowOrder := &Order{OrderID: orderIDValue.String, ItemID: itemID.String, BuyerID: buyerID.String, Quantity: quantity.String, Amount: amount.String, OrderStatus: status.String, CookieID: cookieID.String, IsBargain: int(isBargain.Int64), ReceiverName: receiverName.String, ReceiverPhone: receiverPhone.String, ReceiverAddr: receiverAddr.String, ReceiverCity: receiverCity.String}
+			rowOrder := &Order{OrderID: orderIDValue.String, ItemID: itemID.String, BuyerID: buyerID.String, Quantity: quantity.String, Amount: amount.String, OrderStatus: status.String, CookieID: cookieID.String, IsBargain: int(isBargain.Int64), ReceiverName: receiverName.String, ReceiverPhone: receiverPhone.String, ReceiverAddr: receiverAddr.String, ReceiverCity: receiverCity.String, CreatedAt: createdAt.String}
 			result[rowOrder.OrderID] = rowOrder
 		}
 		// rowsErr 保存当前批量订单结果集遍历错误。

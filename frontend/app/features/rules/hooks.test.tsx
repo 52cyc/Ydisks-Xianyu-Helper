@@ -7,6 +7,7 @@ getAccountDetails,
 getAutomationIssues,
 getCards,
 getDefaultReplies,
+getDeliveryTemplates,
 getItems,
 getReplyRules,
 getShippingRulesPage,
@@ -18,6 +19,7 @@ vi.mock('./api', /* rulesApiMockFactory 提供规则数据 Hook 的确定性 API
   getAutomationIssues: vi.fn(),
   getCards: vi.fn(),
   getDefaultReplies: vi.fn(),
+  getDeliveryTemplates: vi.fn(),
   getItems: vi.fn(),
   getReplyRules: vi.fn(),
   getShippingRulesPage: vi.fn(),
@@ -31,6 +33,8 @@ const issuesMock = vi.mocked(getAutomationIssues);
 const cardsMock = vi.mocked(getCards);
 // defaultsMock 是默认回复请求的可控替身。
 const defaultsMock = vi.mocked(getDefaultReplies);
+// deliveryTemplatesMock 是发货模板参考数据请求的可控替身。
+const deliveryTemplatesMock = vi.mocked(getDeliveryTemplates);
 // itemsMock 是商品参考数据请求的可控替身。
 const itemsMock = vi.mocked(getItems);
 // repliesMock 是关键词回复规则请求的可控替身。
@@ -58,6 +62,7 @@ describe('useRulesData', /* 当前回调处理规则页参考数据、分页和�
     cardsMock.mockResolvedValue([cardFixture]);
     itemsMock.mockResolvedValue([itemFixture]);
     defaultsMock.mockResolvedValue({ 'account-1': defaultReplyFixture });
+    deliveryTemplatesMock.mockResolvedValue([]);
     issuesMock.mockResolvedValue({ runs: [], pending_tasks: [] });
     repliesMock.mockResolvedValue([replyFixture]);
     shippingPageMock.mockResolvedValue({ success: true, data: [shippingFixture], total: 1, page: 1, page_size: 10, total_pages: 1, trigger_counts: { order_paid: 1 } });
@@ -166,6 +171,37 @@ describe('useRulesData', /* 当前回调处理规则页参考数据、分页和�
     );
     expect(setSelectedAccountId).toHaveBeenCalledWith(expect.any(Function));
     hook.unmount();
+  });
+
+  test('参考数据部分失败时仍保留账号，刷新时重新读取账号列表', /* 当前回调验证 Issue #20 的账号显示和刷新回归场景。 */ async () => {
+    // setSelectedAccountId 是规则页刷新首个账号选择的状态替身。
+    const setSelectedAccountId = vi.fn();
+    // refreshedAccount 是账号管理页新增或登录后，刷新规则页应显示的新账号。
+    const refreshedAccount = { ...accountFixture, id: 'account-2', nickname: '账号二' };
+    // consoleLog 是参考数据部分失败日志的可控替身。
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(/* errorLogger 屏蔽测试日志输出。 */ () => undefined);
+    accountsMock.mockResolvedValueOnce([accountFixture]).mockResolvedValueOnce([refreshedAccount]);
+    cardsMock.mockRejectedValueOnce(new Error('卡密参考接口失败'));
+    // hook 是自动化页参考数据和规则刷新的真实 Hook 实例。
+    const hook = renderHook(
+      // issue20HookFactory 创建 Issue #20 的部分参考请求失败场景。
+      () => useRulesData({ activeTab: 'automation', selectedAccountId: '', automationTriggerFilter: '', automationStatusFilter: 'all', debouncedAutomationSearch: '', automationPage: 1, automationPageSize: 10, setSelectedAccountId }),
+    );
+    await act(/* 当前回调等待首次参考数据请求完成并保留可观察的失败结果。 */ async () => {
+      // referenceAction 首次加载参考数据，卡密失败不应阻断账号列表收口。
+      await hook.result.current.loadReferenceData();
+    });
+    expect(hook.result.current.accounts).toEqual([accountFixture]);
+    expect(consoleLog).toHaveBeenCalledWith('规则异常');
+
+    await act(
+      // refreshAction 验证页面刷新会重新读取账号，并继续刷新自动化规则。
+      async () => hook.result.current.refresh(),
+    );
+    expect(accountsMock).toHaveBeenCalledTimes(2);
+    expect(hook.result.current.accounts).toEqual([refreshedAccount]);
+    hook.unmount();
+    consoleLog.mockRestore();
   });
 
   test('带分页回调的规则 Hook 入口保持数据契约', /* 当前回调验证分页兼容入口委托到统一规则 Hook。 */ async () => {

@@ -22,6 +22,7 @@ import (
 	cardsapp "xianyu-go/internal/application/cards"
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
+	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
@@ -113,6 +114,8 @@ type Services struct {
 	automationIssues *automationapp.IssueService
 	// automationRules 是自动化规则校验、分页和持久化应用服务。
 	automationRules *automationapp.RuleService
+	// deliveryTemplates 是发货模板 CRUD 应用服务。
+	deliveryTemplates *deliveryapp.Service
 	// cards 是卡券 CRUD、输入校验和所有权编排应用服务。
 	cards *cardsapp.Service
 	// fulfillment 是卡速售 v2 多实例和订单履约应用服务。
@@ -315,6 +318,7 @@ type TransportPorts struct {
 	Analytics                   *analyticsapp.Service
 	AutomationIssues            *automationapp.IssueService
 	AutomationRules             *automationapp.RuleService
+	DeliveryTemplates           *deliveryapp.Service
 	Cards                       *cardsapp.Service
 	// Fulfillment 是外部货源履约用例。
 	Fulfillment *fulfillmentapp.Service
@@ -343,7 +347,7 @@ func (services *Services) TransportPorts() TransportPorts {
 		AccountLongLogin: services.accountLongLogin, AccountSettings: services.accountSettings, AccountRuntime: services.accountRuntime,
 		AccountSummaries: services.accountSummaries, AccountTasks: services.accountTasks, Chat: services.chat,
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
-		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules,
+		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
 		Cards: services.cards, Fulfillment: services.fulfillment, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
 		Keywords: services.keywords, Settings: services.settings, Admin: services.admin,
 	}
@@ -507,6 +511,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		notificationChannels:   dependencies.TransportApplications.NotificationChannels,
 		analytics:              dependencies.TransportApplications.Analytics,
 		automationRules:        dependencies.TransportApplications.AutomationRules,
+		deliveryTemplates:      dependencies.TransportApplications.DeliveryTemplates,
 		cards:                  dependencies.TransportApplications.Cards,
 		fulfillment:            dependencies.TransportApplications.Fulfillment,
 		apiCardTester:          dependencies.TransportApplications.APICardTester,

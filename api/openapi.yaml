@@ -1658,6 +1658,144 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/delivery-templates":
+    get:
+      operationId: getApiV1DeliveryTemplates
+      summary: getApiV1DeliveryTemplates
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryTemplateListResponse'
+        '400':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '401':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '500':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    post:
+      operationId: postApiV1DeliveryTemplates
+      summary: postApiV1DeliveryTemplates
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeliveryTemplateRequest'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryTemplateMutationResponse'}
+        '400':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '401':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '500':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+  "/api/v1/delivery-templates/{template_id}":
+    get:
+      operationId: getApiV1DeliveryTemplatesBytemplate_id
+      summary: getApiV1DeliveryTemplatesBytemplate_id
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryTemplateResponse'}
+        '400':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '401':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '404':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '500':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    put:
+      operationId: putApiV1DeliveryTemplatesBytemplate_id
+      summary: putApiV1DeliveryTemplatesBytemplate_id
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeliveryTemplateRequest'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryTemplateMutationResponse'}
+        '400':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '401':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '404':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '409':
+          description: 发货模板变量已被自动化规则引用，不能不兼容修改
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '500':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    delete:
+      operationId: deleteApiV1DeliveryTemplatesBytemplate_id
+      summary: deleteApiV1DeliveryTemplatesBytemplate_id
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryTemplateMutationResponse'}
+        '400':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '401':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '404':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '409':
+          description: 发货模板仍被自动化规则引用
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+        '500':
+          description: 统一错误响应
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
   "/api/v1/automation-rules":
     get:
       operationId: getApiV1AutomationRules
@@ -1729,6 +1867,12 @@ paths:
       operationId: postApiV1AutomationRules
       summary: postApiV1AutomationRules
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomationRuleRequest'
       responses:
         '200':
           description: 成功
@@ -1761,7 +1905,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: AI 议价与固定规则改价配置冲突
+          description: 配置冲突或发货模板状态已变化
           content:
             application/json:
               schema:
@@ -1830,6 +1974,12 @@ paths:
             schema:
               type: string
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomationRuleRequest'
       responses:
         '200':
           description: 成功
@@ -1862,7 +2012,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: AI 议价与固定规则改价配置冲突
+          description: 配置冲突或发货模板状态已变化
           content:
             application/json:
               schema:
@@ -2402,11 +2552,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: 统一错误响应
+          description: 消息已发送但本地状态收口失败，或其他统一错误响应
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ChatSendErrorResponse'
+        '502':
+          description: 平台发送失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSendErrorResponse'
   "/api/v1/chat/quick-replies":
     get:
       operationId: getApiV1ChatQuickReplies
@@ -2632,11 +2788,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: 统一错误响应
+          description: 消息已发送但本地状态收口失败，或其他统一错误响应
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ChatSendErrorResponse'
+        '502':
+          description: 平台发送失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSendErrorResponse'
   "/api/v1/chat/read":
     post:
       operationId: postApiV1ChatRead
@@ -2699,6 +2861,10 @@ paths:
           in: query
           required: false
           schema: {type: integer}
+        - name: stored_cursor
+          in: query
+          required: false
+          schema: {type: string}
         - name: refresh
           in: query
           required: false
@@ -2740,6 +2906,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: 平台联系人刷新失败
           content:
             application/json:
               schema:
@@ -7194,6 +7366,54 @@ components:
         success:
           type: boolean
       description: 统一响应的稳定字段；业务成功字段由各阶段 operation schema 收紧。
+    DeliveryTemplateMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string}
+    DeliveryTemplateRequest:
+      type: object
+      required: [name, messages]
+      properties:
+        name: {type: string}
+        enabled: {type: boolean}
+        messages:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/DeliveryTemplateMessageRequest'}
+    DeliveryTemplateMessage:
+      type: object
+      required: [id, sort_order, content]
+      properties:
+        id: {type: integer}
+        sort_order: {type: integer}
+        content: {type: string}
+    DeliveryTemplate:
+      type: object
+      required: [id, name, enabled, messages, keys, custom_keys, created_at, updated_at]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        enabled: {type: boolean}
+        messages: {type: array, items: {$ref: '#/components/schemas/DeliveryTemplateMessage'}}
+        keys: {type: array, items: {type: string}}
+        custom_keys: {type: array, items: {type: string}}
+        created_at: {type: string}
+        updated_at: {type: string}
+    DeliveryTemplateListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean}
+        data: {type: array, items: {$ref: '#/components/schemas/DeliveryTemplate'}}
+    DeliveryTemplateResponse:
+      $ref: '#/components/schemas/DeliveryTemplate'
+    DeliveryTemplateMutationResponse:
+      type: object
+      required: [success]
+      properties:
+        success: {type: boolean}
+        id: {type: integer}
     NotificationUncertainOutboxItem:
       type: object
       required: [id, channel_id, event_type, attempt_count, uncertain_at, has_error]
@@ -7241,9 +7461,51 @@ components:
       properties:
         runs: {type: array, items: {$ref: '#/components/schemas/AutomationRunIssue'}}
         pending_tasks: {type: array, items: {$ref: '#/components/schemas/DeferredAutomationIssue'}}
+    AutomationTemplateBinding:
+      type: object
+      required: [variable_key, card_id, delivery_count]
+      properties:
+        variable_key: {type: string}
+        card_id: {type: integer}
+        delivery_count: {type: integer}
+    AutomationTemplateBindingRequest:
+      type: object
+      required: [key, card_id, delivery_count]
+      properties:
+        key: {type: string}
+        card_id: {type: integer}
+        delivery_count: {type: integer}
+    AutomationActionRequest:
+      type: object
+      required: [action_type, card_id, delivery_count, message_template, delay_seconds, config_json, enabled, sort_order, delivery_template_id, template_bindings, custom_variables]
+      properties:
+        id: {type: integer}
+        action_type: {type: string}
+        card_id: {type: integer}
+        delivery_count: {type: integer}
+        message_template: {type: string}
+        delay_seconds: {type: integer}
+        config_json: {type: string}
+        enabled: {type: boolean}
+        sort_order: {type: integer}
+        delivery_template_id: {type: integer}
+        template_bindings: {type: array, items: {$ref: '#/components/schemas/AutomationTemplateBindingRequest'}}
+        custom_variables: {type: object, additionalProperties: {type: string}}
+    AutomationRuleRequest:
+      type: object
+      required: [cookie_id, item_id, name, trigger_type, enabled, priority, config_json, actions]
+      properties:
+        cookie_id: {type: string}
+        item_id: {type: string}
+        name: {type: string}
+        trigger_type: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer}
+        config_json: {type: string}
+        actions: {type: array, items: {$ref: '#/components/schemas/AutomationActionRequest'}}
     AutomationActionResponse:
       type: object
-      required: [id, action_type, card_id, card_name, delivery_count, message_template, delay_seconds, config_json, enabled, sort_order]
+      required: [id, action_type, card_id, card_name, delivery_count, message_template, delay_seconds, config_json, enabled, sort_order, delivery_template_id, delivery_template_name, template_keys, template_bindings, custom_variables]
       properties:
         id: {type: integer}
         action_type: {type: string}
@@ -7255,9 +7517,14 @@ components:
         config_json: {type: string}
         enabled: {type: boolean}
         sort_order: {type: integer}
+        delivery_template_id: {type: integer}
+        delivery_template_name: {type: string}
+        template_keys: {type: array, items: {type: string}}
+        template_bindings: {type: array, items: {$ref: '#/components/schemas/AutomationTemplateBinding'}}
+        custom_variables: {type: object, additionalProperties: {type: string}}
     AutomationRuleResponse:
       type: object
-      required: [id, cookie_id, item_id, item_title, name, trigger_type, enabled, priority, config_json, actions, created_at, updated_at]
+      required: [id, cookie_id, item_id, item_title, name, trigger_type, enabled, priority, config_json, sku_migration_status, actions, created_at, updated_at]
       properties:
         id: {type: integer}
         cookie_id: {type: string}
@@ -7268,6 +7535,7 @@ components:
         enabled: {type: boolean}
         priority: {type: integer}
         config_json: {type: string}
+        sku_migration_status: {type: string, enum: [pending, ready, needs_reconfiguration]}
         actions: {type: array, items: {$ref: '#/components/schemas/AutomationActionResponse'}}
         created_at: {type: string}
         updated_at: {type: string}
@@ -8245,11 +8513,14 @@ components:
         sent_at: {type: integer}
     ChatSessionPage:
       type: object
-      required: [sessions, has_more]
+      required: [sessions, has_more, platform_has_more, stored_has_more]
       properties:
         sessions: {type: array, items: {$ref: '#/components/schemas/ChatSession'}}
         has_more: {type: boolean}
         next_cursor: {type: integer}
+        next_stored_cursor: {type: string}
+        platform_has_more: {type: boolean}
+        stored_has_more: {type: boolean}
     ChatMessagePage:
       type: object
       required: [messages, has_more]
@@ -8263,6 +8534,18 @@ components:
       required: [message]
       properties:
         message: {$ref: '#/components/schemas/ChatMessage'}
+    ChatSendErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}
+        details:
+          type: object
+          properties:
+            outgoing_message: {$ref: '#/components/schemas/ChatMessage'}
+      additionalProperties: true
     ChatReadyEvent:
       type: object
       required: [type, at]
@@ -8354,8 +8637,8 @@ components:
         receiver_phone: {type: string}
         receiver_address: {type: string}
         receiver_city: {type: string}
-        created_at: {type: string}
-        updated_at: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     OrderListResponse:
       type: object
       required: [success, data, total, page, page_size, total_pages]

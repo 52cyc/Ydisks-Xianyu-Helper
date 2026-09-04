@@ -32,6 +32,147 @@ func TestFetchOrderDetailSuccessWithSpecAndStatus(t *testing.T) {
 	}
 }
 
+// TestFetchOrderDetailSuccessWithCombinedSKUText 验证多规格订单以 skuText 返回时仍能提取规则匹配字段。
+func TestFetchOrderDetailSuccessWithCombinedSKUText(t *testing.T) {
+	// server 返回闲鱼多规格订单详情的组合 SKU 文本形状。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// w、r 分别用于写回本地订单详情响应和读取测试请求。
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"components":[{"render":"orderInfoVO","data":{"itemInfo":{"buyAmount":"1","skuInfo":{"skuText":"总量：月卡"}},"priceInfo":{"amount":{"value":"9.90"}}}}]}}`)
+	}))
+	defer server.Close()
+
+	// client 使用本地服务替代闲鱼接口，验证解析逻辑而不触发真实平台请求。
+	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
+	// result、err 保存订单详情解析结果及错误。
+	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if result.SpecName != "总量" || result.SpecValue != "月卡" {
+		t.Fatalf("spec=(%q,%q) want (总量,月卡)", result.SpecName, result.SpecValue)
+	}
+}
+
+// TestFetchOrderDetailSupportsObjectComponentsAndEncodedItemInfo 验证组件对象及二次编码商品节点仍能提取多规格订单。
+func TestFetchOrderDetailSupportsObjectComponentsAndEncodedItemInfo(t *testing.T) {
+	// server 返回平台把 components 改成对象、itemInfo 改成 JSON 文本时的详情响应。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"utArgs":{"orderStatus":"2"},"components":{"orderInfo":{"render":"orderInfoVO","data":{"itemInfo":"{\"buyAmount\":\"1\",\"skuInfo\":{\"skuProperties\":[{\"name\":\"时长\",\"value\":\"周卡\"},{\"name\":\"等级\",\"value\":\"初级会员\"}]}}","priceInfo":{"amount":{"value":"0.10"}}}}}}}`)
+	}))
+	defer server.Close()
+
+	// client 使用本地 HTTP 服务替代闲鱼详情接口，隔离真实账号和平台请求。
+	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
+	// result、err 保存兼容新响应结构后的订单详情结果及错误。
+	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if result.Quantity != "1" || result.SpecName != "时长；等级" || result.SpecValue != "周卡；初级会员" ||
+		result.OrderStatus != "2" || result.Amount != "0.10" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+// TestOrderSpecFromItemInfoSupportsPlatformShapes 验证订单规格解析兼容平台字段、嵌套对象和空格格式。
+func TestOrderSpecFromItemInfoSupportsPlatformShapes(t *testing.T) {
+	// cases 覆盖当前订单详情接口已知的规格字段形状及无效文本。
+	cases := []struct {
+		name     string
+		itemInfo map[string]any
+		wantName string
+		wantVal  string
+	}{
+		{name: "explicit fields", itemInfo: map[string]any{"specName": "总量", "specValue": "年卡"}, wantName: "总量", wantVal: "年卡"},
+		{name: "explicit partial plus combined text prefers complete", itemInfo: map[string]any{"specName": "颜色", "specValue": "红色", "skuText": "颜色：红色；尺码：M"}, wantName: "颜色；尺码", wantVal: "红色；M"},
+		{name: "snake case fields", itemInfo: map[string]any{"spec_name": "总量", "spec_value": "永久"}, wantName: "总量", wantVal: "永久"},
+		{name: "sku text", itemInfo: map[string]any{"skuText": "总量:月卡"}, wantName: "总量", wantVal: "月卡"},
+		{name: "nested sku", itemInfo: map[string]any{"skuInfo": map[string]any{"skuText": "总量 月卡"}}, wantName: "总量", wantVal: "月卡"},
+		{name: "nested sku text", itemInfo: map[string]any{"skuInfo": "时长:周卡;等级:初级会员"}, wantName: "时长；等级", wantVal: "周卡；初级会员"},
+		{name: "partial top nested complete", itemInfo: map[string]any{"specName": "颜色", "skuInfo": map[string]any{"skuText": "尺码：M"}}, wantName: "尺码", wantVal: "M"},
+		{name: "multiple specs preserve every pair", itemInfo: map[string]any{"skuText": "颜色：红色；尺码：M"}, wantName: "颜色；尺码", wantVal: "红色；M"},
+		{name: "mixed delimiters preserve pair order", itemInfo: map[string]any{"skuText": "颜色=红色,尺码:M|版本：专业"}, wantName: "颜色；尺码；版本", wantVal: "红色；M；专业"},
+		{name: "structured sku properties", itemInfo: map[string]any{"skuProperties": []any{map[string]any{"name": "颜色", "value": "红色"}, map[string]any{"spec_name": "尺码", "spec_value": "M"}}}, wantName: "颜色；尺码", wantVal: "红色；M"},
+		{name: "nested structured sku properties", itemInfo: map[string]any{"skuInfo": []any{map[string]any{"name": "颜色", "value": "红色"}, map[string]any{"name": "尺码", "value": "M"}}}, wantName: "颜色；尺码", wantVal: "红色；M"},
+		{name: "structured invalid entries skipped", itemInfo: map[string]any{"skuProps": []any{map[string]any{"name": "颜色"}, map[string]any{"name": "尺码", "value": "M"}}}, wantName: "尺码", wantVal: "M"},
+		{name: "embedded comma remains in value", itemInfo: map[string]any{"skuText": "套餐：红,蓝；时长：一年"}, wantName: "套餐；时长", wantVal: "红,蓝；一年"},
+		{name: "embedded colon remains after first separator", itemInfo: map[string]any{"skuText": "区域：华东:上海；版本：标准"}, wantName: "区域；版本", wantVal: "华东:上海；标准"},
+		{name: "malformed segment does not erase valid pairs", itemInfo: map[string]any{"skuText": "颜色：红色；无效；尺码：M"}, wantName: "颜色；尺码", wantVal: "红色；M"},
+		{name: "slash remains value", itemInfo: map[string]any{"skuText": "套餐:S/M"}, wantName: "套餐", wantVal: "S/M"},
+		{name: "partial values do not match", itemInfo: map[string]any{"specName": "颜色", "skuText": "尺码："}, wantName: "颜色", wantVal: ""},
+		{name: "invalid text", itemInfo: map[string]any{"skuText": "月卡"}},
+	}
+	// tc 表示当前规格解析测试场景。
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// gotName、gotValue 保存当前响应形状解析出的规格名称和值。
+			gotName, gotValue := orderSpecFromItemInfo(tc.itemInfo)
+			if gotName != tc.wantName || gotValue != tc.wantVal {
+				t.Fatalf("spec=(%q,%q) want (%q,%q)", gotName, gotValue, tc.wantName, tc.wantVal)
+			}
+		})
+	}
+}
+
+// TestOrderSpecFromItemInfoHandlesNilInput 验证缺少商品信息时不产生虚假规格。
+func TestOrderSpecFromItemInfoHandlesNilInput(t *testing.T) {
+	// gotName、gotValue 保存空商品信息的规格解析结果。
+	gotName, gotValue := orderSpecFromItemInfo(nil)
+	if gotName != "" || gotValue != "" {
+		t.Fatalf("nil item info=(%q,%q)", gotName, gotValue)
+	}
+}
+
+// TestFetchOrderDetailSessionExpired 验证平台明确要求重新登录时不进入 token 重试。
+func TestFetchOrderDetailSessionExpired(t *testing.T) {
+	// server 返回平台会话过期响应。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ret":["FAIL_SYS_SESSION_EXPIRED::会话过期"]}`)
+	}))
+	defer server.Close()
+	// client 使用本地服务替代闲鱼详情接口。
+	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL}
+	// _, err 保存会话过期处理结果。
+	_, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
+	if err == nil || !strings.Contains(err.Error(), "订单详情接口") {
+		t.Fatalf("session expired error=%v", err)
+	}
+}
+
+// TestSplitOrderSpecTextHandlesSegments 验证组合规格文本覆盖分隔符、组合维度和异常片段。
+func TestSplitOrderSpecTextHandlesSegments(t *testing.T) {
+	// cases 保存组合规格文本及预期拆分结果。
+	cases := []struct {
+		// name 是子测试名称。
+		name string
+		// raw 是平台返回的组合规格文本。
+		raw string
+		// wantName 是预期的规格名称。
+		wantName string
+		// wantValue 是预期的规格值。
+		wantValue string
+	}{
+		{name: "semicolon", raw: "颜色；尺码：M", wantName: "尺码", wantValue: "M"},
+		{name: "comma", raw: "颜色,尺码=42", wantName: "尺码", wantValue: "42"},
+		{name: "all pairs", raw: "颜色:红;尺码=M\n版本=专业", wantName: "颜色；尺码；版本", wantValue: "红；M；专业"},
+		{name: "value contains comma", raw: "套餐:红,蓝；时长:一年", wantName: "套餐；时长", wantValue: "红,蓝；一年"},
+		{name: "value contains slash", raw: "套餐:S/M；时长:一年", wantName: "套餐；时长", wantValue: "S/M；一年"},
+		{name: "malformed middle", raw: "颜色:红；错误；尺码:M", wantName: "颜色；尺码", wantValue: "红；M"},
+		{name: "empty", raw: "  ", wantName: "", wantValue: ""},
+		{name: "invalid", raw: "没有分隔符", wantName: "", wantValue: ""},
+		{name: "blank sides", raw: ":值", wantName: "", wantValue: ""},
+	}
+	for /* item 表示当前组合规格解析场景。 */ _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			// gotName、gotValue 保存当前组合规格拆分结果。
+			gotName, gotValue := splitOrderSpecText(item.raw)
+			if gotName != item.wantName || gotValue != item.wantValue {
+				t.Fatalf("splitOrderSpecText(%q)=(%q,%q), want (%q,%q)", item.raw, gotName, gotValue, item.wantName, item.wantValue)
+			}
+		})
+	}
+}
+
 // TestFetchOrderDetailMissingBuyAmountDefaultsTo1: components 无 buyAmount 时 Quantity 默认 "1"。
 func TestFetchOrderDetailMissingBuyAmountDefaultsTo1(t *testing.T) {
 	// server 用于本次流程后续判断的server

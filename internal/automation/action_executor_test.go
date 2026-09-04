@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -298,6 +299,111 @@ func TestSendAPICardDeliversEachUnit(t *testing.T) {
 		if request.UnitIndex != index+1 || request.TotalUnits != 4 {
 			t.Fatalf("单位上下文错误 index=%d request=%+v", index, request)
 		}
+	}
+}
+
+// TestSendTemplateRendersBoundCards 验证模板变量按订单数量展开并按消息顺序发送。
+func TestSendTemplateRendersBoundCards(t *testing.T) {
+	// store、cleanup 保存模板动作测试使用的数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存模板动作共用的测试上下文。
+	ctx := context.Background()
+	// admin 保存创建测试卡密组所需的用户。
+	admin, err := store.Users.GetByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cardID 保存模板变量绑定的文本卡密组。
+	cardID, err := store.Cards.Create(ctx, &db.CardFull{Name: "模板文本库存", Type: "text", TextContent: "授权码", Enabled: true, UserID: admin.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sender 保存模板动作实际发出的消息。
+	sender := &testSender{}
+	// executor 是注入测试数据库和消息发送器的执行器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}}
+	// action 保存包含订单、库存和规则变量的两条模板消息动作。
+	action := db.AutomationAction{ActionType: ActionSendTemplate, ConfigJSON: "{}", TemplateMessages: []string{"第一条 {{buyer_nickname}}/{{order_id}}/{{buyer_id}}/{{card_name}} {{cards.code}}", "第二条 {{custom.remark}} {{cards.code}}"}, TemplateBindings: []db.DeliveryTemplateBinding{{VariableKey: "code", CardID: cardID, CardName: "模板文本库存", DeliveryCount: 1}}, CustomVariables: map[string]string{"remark": "规则备注"}}
+	// result、sendErr 保存模板消息执行统计、确认凭证和错误。
+	result, sendErr := executor.sendTemplate(ctx, Task{AccountID: "cid", OrderID: "order", ChatID: "chat", BuyerID: "buyer", BuyerNickname: "小鱼", Quantity: "2", TriggerType: TriggerOrderPaid}, action)
+	if sendErr != nil || result.sent != 2 || len(sender.texts) != 2 || sender.texts[0] != "第一条 小鱼/order/buyer/模板文本库存 授权码\n授权码" || sender.texts[1] != "第二条 规则备注 授权码\n授权码" {
+		t.Fatalf("模板动作渲染错误 sent=%d texts=%v err=%v", result.sent, sender.texts, sendErr)
+	}
+	if result.proof.tradeText != sender.texts[0]+"\n"+sender.texts[1] {
+		t.Fatalf("template proof order mismatch: %q", result.proof.tradeText)
+	}
+}
+
+// TestSendTemplateRendersBoundAPICard 验证模板变量可以复用 API 卡密发货能力并把多个单位合并进消息。
+func TestSendTemplateRendersBoundAPICard(t *testing.T) {
+	// store、cleanup 保存 API 模板动作测试使用的数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存数据库与执行器共用的测试上下文。
+	ctx := context.Background()
+	// admin 保存创建测试 API 卡密组所需的用户。
+	admin, err := store.Users.GetByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cardID 保存模板变量绑定的 API 卡密组。
+	cardID, err := store.Cards.Create(ctx, &db.CardFull{Name: "模板 API 库存", Type: "api", APIConfig: `{"url":"https://example.test/card","method":"GET"}`, Enabled: true, UserID: admin.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fetcher 记录模板动作发起的 API 取卡单位请求。
+	fetcher := &apiCardFetcherStub{}
+	// sender 保存模板渲染后实际发送给买家的消息。
+	sender := &testSender{}
+	// executor 是注入 API 客户端、测试数据库和消息发送器的模板执行器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}, apiFetcher: func() APICardFetcher { return fetcher }}
+	// action 保存绑定 API 卡密且每个订单取两份的模板动作。
+	action := db.AutomationAction{ID: 12, ActionType: ActionSendTemplate, ConfigJSON: "{}", TemplateMessages: []string{"卡密：{{cards.code}}"}, TemplateBindings: []db.DeliveryTemplateBinding{{VariableKey: "code", CardID: cardID, CardName: "模板 API 库存", DeliveryCount: 2}}}
+	// result、sendErr 保存模板 API 发货的执行统计、确认凭证和错误。
+	result, sendErr := executor.sendTemplate(ctx, Task{AccountID: "cid", OrderID: "order-api-template", ChatID: "chat", BuyerID: "buyer", Quantity: "1", TriggerType: TriggerOrderPaid}, action)
+	if sendErr != nil || result.sent != 1 || len(fetcher.requests) != 2 || len(sender.texts) != 1 || sender.texts[0] != "卡密：API-CODE-1\nAPI-CODE-2" || result.proof.tradeText != sender.texts[0] {
+		t.Fatalf("模板 API 卡密渲染错误：result=%+v requests=%d texts=%v err=%v", result, len(fetcher.requests), sender.texts, sendErr)
+	}
+	// request 保存 API 取卡请求，用于确认模板变量保留订单与数量上下文。
+	for requestIndex, request := range fetcher.requests {
+		if request.ActionID != action.ID || request.CardID != cardID || request.UnitIndex != requestIndex+1 || request.TotalUnits != 2 || request.OrderID != "order-api-template" {
+			t.Fatalf("模板 API 请求上下文错误 index=%d request=%+v", requestIndex, request)
+		}
+	}
+}
+
+// TestSendDataCardProofUsesRenderedContent 验证数据卡实际发送文本与确认发货凭证使用同一份渲染结果。
+func TestSendDataCardProofUsesRenderedContent(t *testing.T) {
+	// store、cleanup 保存数据卡动作测试使用的数据库和清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存数据卡动作共用的测试上下文。
+	ctx := context.Background()
+	// admin 保存创建测试数据卡所需的用户。
+	admin, err := store.Users.GetByUsername(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cardID 保存包含订单占位符的数据卡组标识。
+	cardID, err := store.Cards.Create(ctx, &db.CardFull{
+		Name: "rendered-data", Type: "data", DataContent: "密钥-{order_id}-{buyer_id}", Enabled: true, UserID: admin.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sender 保存数据卡实际发送给买家的文本。
+	sender := &testSender{}
+	// executor 是绑定测试数据库和发送器的数据卡执行器。
+	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}}
+	// task 保存用于替换数据卡占位符的订单上下文。
+	task := Task{AccountID: "cid", OrderID: "order-42", BuyerID: "buyer-7", ChatID: "chat", TriggerType: TriggerOrderPaid}
+	// result、sendErr 保存数据卡执行结果和发送错误。
+	result, sendErr := executor.sendCardWithProof(ctx, task, db.AutomationAction{ActionType: ActionSendCard, CardID: cardID, DeliveryCount: 1, ConfigJSON: "{}"})
+	// want 保存买家实际收到的最终文本。
+	want := "密钥-order-42-buyer-7"
+	if sendErr != nil || result.sent != 1 || len(sender.texts) != 1 || sender.texts[0] != want || result.proof.tradeText != want || strings.Contains(result.proof.tradeText, "{order_id}") {
+		t.Fatalf("数据卡发送与凭证不一致：result=%+v texts=%v err=%v", result, sender.texts, sendErr)
 	}
 }
 

@@ -23,6 +23,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AutomationIssuePanel } from "../components/AutomationIssuePanel";
 import ExternalPriceMessageEditor from "../components/ExternalPriceMessageEditor";
+import TemplateVariantEditor from "../components/TemplateVariantEditor";
 import {
   getFulfillmentProduct,
   listFulfillmentInstances,
@@ -115,6 +116,7 @@ const Rules: React.FC<RulesProps> = ({
     defaultReplies,
     accounts,
     cards,
+    deliveryTemplates,
     items,
     loading,
     setLoading,
@@ -137,6 +139,7 @@ const Rules: React.FC<RulesProps> = ({
     setSelectedAccountId,
     setActiveTab,
     items,
+    deliveryTemplates,
     setAutomationRules,
     setCards,
     setItems,
@@ -1372,13 +1375,14 @@ const Rules: React.FC<RulesProps> = ({
                                 <div className="mb-2 text-xs font-bold text-gray-600">
                                   发货来源
                                 </div>
-                                <div className="grid gap-2 sm:grid-cols-2">
+                                <div className="grid gap-2 sm:grid-cols-3">
                                   <button
                                     type="button"
                                     onClick={
                                       /* localSourceHandler 切换到本地卡密来源。 */ () =>
                                         updateVariant(index, {
                                           source_type: "local",
+                                          delivery_mode: "card",
                                           product_verified: false,
                                         })
                                     }
@@ -1388,10 +1392,25 @@ const Rules: React.FC<RulesProps> = ({
                                   </button>
                                   <button
                                     type="button"
+                                    onClick={() =>
+                                      updateVariant(index, {
+                                        source_type: "local",
+                                        delivery_mode: "template",
+                                        card_id: 0,
+                                        product_verified: false,
+                                      })
+                                    }
+                                    className={`min-h-11 rounded-xl border px-4 text-sm font-bold ${variant.delivery_mode === "template" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+                                  >
+                                    发货模板
+                                  </button>
+                                  <button
+                                    type="button"
                                     onClick={
                                       /* externalSourceHandler 切换到外部货源。 */ () =>
                                         updateVariant(index, {
                                           source_type: "external",
+                                          delivery_mode: "card",
                                           card_id: 0,
                                         })
                                     }
@@ -1402,7 +1421,15 @@ const Rules: React.FC<RulesProps> = ({
                                 </div>
                               </div>
 
-                              {variant.source_type === "external" ? (
+                              {variant.delivery_mode === "template" ? (
+                                <TemplateVariantEditor
+                                  index={index}
+                                  variant={variant}
+                                  cards={cards}
+                                  deliveryTemplates={deliveryTemplates}
+                                  updateVariant={updateVariant}
+                                />
+                              ) : variant.source_type === "external" ? (
                                 <div className="space-y-3 rounded-xl border border-violet-100 bg-violet-50/40 p-4">
                                   <div className="grid gap-3 md:grid-cols-[1fr_1.3fr_auto]">
                                     <label className="text-xs font-bold text-gray-600">

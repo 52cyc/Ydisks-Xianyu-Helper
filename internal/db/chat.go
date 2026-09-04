@@ -25,6 +25,25 @@ type ChatSession struct {
 	UnreadCount   int    `json:"unread_count"`
 }
 
+// ChatSessionCursor 是聊天会话稳定键集分页的最后一条排序键。
+// LastMessageAt 与 ChatID 必须同时使用，避免相同消息时间的会话翻页时重复或遗漏。
+type ChatSessionCursor struct {
+	// LastMessageAt 是上一页末尾会话的最后消息毫秒时间戳。
+	LastMessageAt int64
+	// ChatID 是同一时间戳下用于稳定排序和翻页的会话标识。
+	ChatID string
+}
+
+// ChatSessionPage 是本地聊天会话键集分页查询结果。
+type ChatSessionPage struct {
+	// Sessions 是按最后消息时间和会话标识倒序排列的当前页结果。
+	Sessions []ChatSession
+	// HasMore 表示本地缓存中是否还有下一页会话。
+	HasMore bool
+	// NextCursor 是继续读取下一页所需的最后排序键；没有下一页时为 nil。
+	NextCursor *ChatSessionCursor
+}
+
 // ChatMessage 用于本次流程后续判断的聊天消息
 type ChatMessage struct {
 	ID          int64  `json:"id"`
@@ -76,11 +95,22 @@ func (s *ChatStore) UpsertSession(ctx context.Context, session ChatSession) erro
 		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,
 		last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
 		last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
-		unread_count=CASE WHEN ?>unread_count THEN ? ELSE unread_count END,updated_at=?
+		unread_count=CASE WHEN ?>unread_count THEN ? ELSE unread_count END,is_visible=?,updated_at=?
 		WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName,
 		session.BuyerAvatar, session.BuyerAvatar, session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL,
 		session.LastMessageAt, session.LastMessage, session.LastMessageAt, session.LastMessageAt,
-		session.UnreadCount, session.UnreadCount, now, session.CookieID, session.ChatID)
+		session.UnreadCount, session.UnreadCount, true, now, session.CookieID, session.ChatID)
+	return err
+}
+
+// SetSessionVisible 更新平台会话是否出现在本地列表中。
+// ctx 控制数据库更新生命周期；cookieID 和 chatID 定位非敏感会话；visible=false 只软隐藏会话并保留全部消息。
+func (s *ChatStore) SetSessionVisible(ctx context.Context, cookieID, chatID string, visible bool) error {
+	// visibleValue 使用跨 SQLite、MySQL 和 PostgreSQL 驱动均可绑定的布尔值。
+	visibleValue := visible
+	// err 保存可见状态更新失败；会话不存在时保持幂等成功。
+	_, err := s.DB.ExecContext(ctx, `UPDATE chat_sessions SET is_visible=?,updated_at=? WHERE cookie_id=? AND chat_id=?`,
+		visibleValue, time.Now().UTC().Unix(), cookieID, chatID)
 	return err
 }
 
@@ -145,6 +175,33 @@ func (s *ChatStore) LatestUnmaskedPeerName(ctx context.Context, cookieID, chatID
 		return "", nil
 	}
 	return strings.TrimSpace(name), err
+}
+
+// BuyerNicknameForAutomation 返回自动化模板可使用的买家昵称，并优先回退到未遮罩的历史消息昵称。
+func (s *ChatStore) BuyerNicknameForAutomation(ctx context.Context, cookieID, chatID string) (string, error) {
+	// name 保存会话摘要中的买家昵称。
+	var name string
+	// err 保存会话摘要查询错误。
+	err := s.DB.QueryRowContext(ctx, `SELECT buyer_name FROM chat_sessions WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.LatestUnmaskedPeerName(ctx, cookieID, chatID)
+	}
+	if err != nil {
+		return "", err
+	}
+	name = strings.TrimSpace(name)
+	if name != "" && !strings.Contains(name, "***") {
+		return name, nil
+	}
+	// fallback 保存消息历史中可直接展示的昵称。
+	fallback, fallbackErr := s.LatestUnmaskedPeerName(ctx, cookieID, chatID)
+	if fallbackErr != nil {
+		return "", fallbackErr
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return name, nil
 }
 
 // SaveMessage inserts a message idempotently and updates its conversation only
@@ -243,11 +300,11 @@ func (s *ChatStore) SaveMessage(ctx context.Context, session ChatSession, messag
 		_, err := tx.ExecContext(ctx, `UPDATE chat_sessions SET buyer_id=CASE WHEN ?<>'' THEN ? ELSE buyer_id END,
 			buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,buyer_avatar_url=CASE WHEN ?<>'' THEN ? ELSE buyer_avatar_url END,
 			item_id=CASE WHEN ?<>'' THEN ? ELSE item_id END,item_title=CASE WHEN ?<>'' THEN ? ELSE item_title END,
-			item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
-			last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
-			unread_count=unread_count+?,updated_at=?
+		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
+		last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
+		unread_count=unread_count+?,is_visible=?,updated_at=?
 			WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName, session.BuyerAvatar, session.BuyerAvatar,
-			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL, message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta, now,
+			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL, message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta, true, now,
 			session.CookieID, session.ChatID); err != nil {
 			return nil, false, fmt.Errorf("更新聊天会话: %w", err)
 		}
@@ -303,7 +360,7 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 	rows, err := s.DB.QueryContext(ctx, `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
 		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
-		WHERE c.user_id=? AND cs.cookie_id=? ORDER BY cs.last_message_at DESC LIMIT ?`, userID, cookieID, limit)
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? ORDER BY cs.last_message_at DESC,cs.chat_id DESC LIMIT ?`, userID, cookieID, true, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -321,6 +378,61 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// ListSessionPage 按用户归属读取本地聊天会话的稳定键集分页结果。
+// cursor 为空时读取首页；limit 的默认值和最大值均为 200，避免单次列表过大。
+func (s *ChatStore) ListSessionPage(ctx context.Context, userID int64, cookieID string, cursor *ChatSessionCursor, limit int) (ChatSessionPage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	// query 保存归属过滤、可选键集条件和稳定排序共同构成的会话分页 SQL。
+	query := `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=?`
+	// args 保存与会话分页 SQL 占位符严格对应的非敏感查询参数。
+	args := []any{userID, cookieID, true}
+	if cursor != nil {
+		query += ` AND (cs.last_message_at<? OR (cs.last_message_at=? AND cs.chat_id<?))`
+		args = append(args, cursor.LastMessageAt, cursor.LastMessageAt, cursor.ChatID)
+	}
+	query += ` ORDER BY cs.last_message_at DESC,cs.chat_id DESC LIMIT ?`
+	args = append(args, limit+1)
+	// rows 和 queryErr 保存数据库游标及执行键集查询时的错误。
+	rows, queryErr := s.DB.QueryContext(ctx, query, args...)
+	if queryErr != nil {
+		return ChatSessionPage{}, queryErr
+	}
+	defer rows.Close()
+	// sessions 保存最多 limit 加一条的扫描结果，用额外记录判断是否还有下一页。
+	sessions := make([]ChatSession, 0, limit+1)
+	for rows.Next() {
+		// session 保存当前扫描出的单个聊天会话非敏感摘要。
+		var session ChatSession
+		// scanErr 保存当前数据库行映射到会话摘要时的错误。
+		if scanErr := rows.Scan(&session.CookieID, &session.ChatID, &session.BuyerID, &session.BuyerName, &session.BuyerAvatar,
+			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount); scanErr != nil {
+			return ChatSessionPage{}, scanErr
+		}
+		sessions = append(sessions, session)
+	}
+	// iterationErr 保存数据库驱动在耗尽行流时报告的错误，不能把不完整页面视为成功。
+	if iterationErr := rows.Err(); iterationErr != nil {
+		return ChatSessionPage{}, iterationErr
+	}
+	// page 保存裁剪额外探测行后的分页响应。
+	page := ChatSessionPage{Sessions: sessions}
+	if len(sessions) > limit {
+		page.HasMore = true
+		page.Sessions = sessions[:limit]
+	}
+	if len(page.Sessions) > 0 && page.HasMore {
+		// last 保存当前页最后一条会话，其排序键作为下一页的不透明游标来源。
+		last := page.Sessions[len(page.Sessions)-1]
+		page.NextCursor = &ChatSessionCursor{LastMessageAt: last.LastMessageAt, ChatID: last.ChatID}
+	}
+	return page, nil
 }
 
 // ListMessages 读取消息列表。

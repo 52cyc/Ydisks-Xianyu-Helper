@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// TestSecretCodecWithoutConfiguredKeyRemainsUninitialized 验证缺少持久化密钥时编解码器不会生成临时密钥。
+func TestSecretCodecWithoutConfiguredKeyRemainsUninitialized(t *testing.T) {
+	// codec 保存未配置密钥时的静态编解码器。
+	codec := secretCodecFromEnvironment()
+	if codec.currentAEAD() != nil {
+		t.Fatal("未配置数据密钥时不应生成临时加密实例")
+	}
+}
+
 // TestReadSensitiveSettingForAccountAuditsWithoutSecret 验证账号运行时读取系统秘密前会审计且审计记录不含秘密值。
 func TestReadSensitiveSettingForAccountAuditsWithoutSecret(t *testing.T) {
 	t.Setenv("XIANYU_DATA_KEY", "audited-setting-key")
