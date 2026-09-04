@@ -9,9 +9,11 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -519,10 +521,22 @@ func TestUploadPublishImageSuccess(t *testing.T) {
 	// dt 用于本次流程后续判断的dt
 	dt := &dispatchTransport{handlers: map[string]http.HandlerFunc{
 		"_upload": func(w http.ResponseWriter, r *http.Request) {
-			// 验证 multipart 包含文件
+			// contentType 保存图片上传请求使用的 multipart 类型。
 			ct := r.Header.Get("content-type")
 			if !strings.HasPrefix(ct, "multipart/form-data") {
 				t.Errorf("content-type=%q", ct)
+			}
+			// file、fileHeader 和 fileErr 保存平台实际收到的图片部分及随机文件名。
+			file, fileHeader, fileErr := r.FormFile("file")
+			if fileErr != nil {
+				t.Errorf("读取上传图片失败: %v", fileErr)
+			} else {
+				defer file.Close()
+				// matched 表示上传边界是否已将来源名称替换为短随机 PNG 文件名。
+				matched := regexp.MustCompile(`^item-[0-9a-f]{16}\.png$`).MatchString(fileHeader.Filename)
+				if !matched {
+					t.Errorf("随机图片文件名不符合预期: %q", fileHeader.Filename)
+				}
 			}
 			fmt.Fprint(w, `{"object":{"url":"https://cdn/x.jpg","pix":"640x480"}}`)
 		},
@@ -1043,6 +1057,32 @@ func TestEscapeMultipartFilename(t *testing.T) {
 	if // got 用于本次流程后续判断的got
 	got := escapeMultipartFilename("normal"); got != "normal" {
 		t.Fatalf("got=%q", got)
+	}
+}
+
+// TestRandomPublishImageFilename 验证随机图片名保持固定短格式并根据媒体类型选择后缀。
+func TestRandomPublishImageFilename(t *testing.T) {
+	// randomSource 提供确定性的八字节随机输入，避免测试依赖真实随机结果。
+	randomSource := bytes.NewReader([]byte{0, 1, 2, 3, 4, 5, 6, 7})
+	// filename、filenameErr 保存 PNG 媒体类型生成的短文件名和错误。
+	filename, filenameErr := randomPublishImageFilename(randomSource, "image/png; charset=binary", nil)
+	if filenameErr != nil || filename != "item-0001020304050607.png" {
+		t.Fatalf("filename=%q err=%v", filename, filenameErr)
+	}
+	// shortSourceErr 是随机源不足八字节时必须返回的明确错误。
+	_, shortSourceErr := randomPublishImageFilename(bytes.NewReader([]byte{1}), "image/jpeg", nil)
+	if !errors.Is(shortSourceErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("short random source err=%v", shortSourceErr)
+	}
+	// detectedExtension 是缺少可靠响应类型时从图片字节识别的后缀。
+	detectedExtension := publishImageExtension("application/octet-stream", tinyPNG(t))
+	if detectedExtension != ".png" {
+		t.Fatalf("detected extension=%q", detectedExtension)
+	}
+	// unknownExtension 是非图片类型使用的安全兜底后缀。
+	unknownExtension := publishImageExtension("text/plain", []byte("not an image"))
+	if unknownExtension != ".bin" {
+		t.Fatalf("unknown extension=%q", unknownExtension)
 	}
 }
 
