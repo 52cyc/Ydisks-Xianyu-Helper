@@ -15,8 +15,11 @@ func publishLabels(category map[string]any) []any {
 		if cardData == nil {
 			continue
 		}
-		// values 保存平台返回的可选属性；字段缺失、为 null 或类型变化时安全跳过该卡片。
-		values, _ := cardData["valuesList"].([]any)
+		// values 用于读取当前属性卡片的候选值；平台省略或返回 null 时跳过异常卡片，避免发布流程 panic。
+		values, ok := cardData["valuesList"].([]any)
+		if !ok || values == nil {
+			continue
+		}
 		// rawValue 是当前属性候选值。
 		for _, rawValue := range values {
 			// value 是标准化后的候选属性值。

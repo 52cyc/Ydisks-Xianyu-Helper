@@ -213,6 +213,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		current: func() Notifier {
 			return center.dependencies.notifier
 		},
+		logger: center.logger,
 	}
 	center.taskRunner = accountTaskCoordinator{
 		repository: newStoreAccountTaskRepository(store),
@@ -268,6 +269,13 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if task.TriggerType == "" || task.AccountID == "" {
 		return false, nil
 	}
+	// 简化付款消息只有会话标识，先从本账号待发货订单回填订单事实，再记录事件和匹配规则。
+	if // resolveErr 保存简化消息订单事实回填错误
+	resolvedTask, resolveErr := c.resolvePaidTaskOrder(ctx, task); resolveErr != nil {
+		return false, resolveErr
+	} else {
+		task = resolvedTask
+	}
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -306,6 +314,17 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if !enabled {
 		c.logger.Info("账号已停用，记录事件事实但不执行自动化", "account", task.AccountID, "trigger", task.TriggerType)
 		return false, nil
+	}
+	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
+		// autoConfirm、autoConfirmErr 分别保存付款自动化要求的账号开关和读取错误。
+		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)
+		if autoConfirmErr != nil {
+			return false, fmt.Errorf("读取自动确认发货设置: %w", autoConfirmErr)
+		}
+		if !autoConfirm {
+			c.logger.Info("账号未启用自动确认发货，跳过付款自动发货", "account", task.AccountID, "order_id", task.OrderID)
+			return false, nil
+		}
 	}
 	// pricingHandled 表示互斥的 AI 报价或外部货源跟价已接管订单；preparedTask 带回外部跟价读取的规格和数量。
 	if pricingHandled, preparedTask, pricingErr := c.handleOrderCreatedPricing(ctx, task); pricingHandled || pricingErr != nil {
@@ -723,72 +742,4 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 		return task, fmt.Errorf("保存订单详情事实: %w", err)
 	}
 	return task, nil
-}
-
-// executeAction 将具体动作委托给发货动作执行器。
-func (c *Center) executeAction(ctx context.Context, task Task, action db.AutomationAction) (int, error) {
-	return c.actions.executeAction(ctx, task, action)
-}
-
-// executeActionWithProof 执行动作并把当前运行内已成功投递的凭证传给确认发货动作。
-func (c *Center) executeActionWithProof(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
-	return c.actions.executeActionWithProof(ctx, task, action, proof)
-}
-
-// confirmShipment 将确认发货委托给发货动作执行器。
-func (c *Center) confirmShipment(ctx context.Context, task Task) error {
-	return c.actions.confirmShipment(ctx, task)
-}
-
-// wakeCredentialBlockedAutomation 在 Cookie 更新后唤醒凭证阻塞的自动化任务。
-func (c *Center) wakeCredentialBlockedAutomation(ctx context.Context, accountID string) {
-	if c == nil || c.store == nil || c.store.Automation == nil {
-		return
-	}
-	if // err 用于本次流程后续判断的err
-	err := c.store.Automation.WakeCredentialBlocked(ctx, accountID); err != nil {
-		c.logger.Warn("Cookie 更新后唤醒自动化任务失败", "account", accountID, "err", err)
-	}
-}
-
-// sendCard 将卡密发送委托给发货动作执行器。
-func (c *Center) sendCard(ctx context.Context, task Task, action db.AutomationAction) (int, error) {
-	return c.actions.sendCard(ctx, task, action)
-}
-
-// accountAutomationAllowed 判断账号是否仍允许执行自动化动作。
-func (c *Center) accountAutomationAllowed(ctx context.Context, accountID string) (bool, error) {
-	return c.taskRunner.accountAutomationAllowed(ctx, accountID)
-}
-
-// accountSenderReady 判断账号是否具备可发送自动化消息的在线连接。
-func (c *Center) accountSenderReady(accountID string) bool {
-	if c == nil || c.senders == nil {
-		return false
-	}
-	// sender、ok 用于本次流程后续判断的sender、ok
-	sender, ok := c.senders.Sender(accountID)
-	if !ok {
-		return false
-	}
-	if // ready、ok 用于本次流程后续判断的ready、ok
-	ready, ok := sender.(automationReadySender); ok {
-		return ready.AutomationReady()
-	}
-	return true
-}
-
-// cardContent 获取卡密组内容的兼容入口。
-func (c *Center) cardContent(ctx context.Context, card *db.CardFull) (text, imageURL string, err error) {
-	return c.actions.cardContent(ctx, card)
-}
-
-// sendImage 将图片消息发送委托给发货动作执行器。
-func (c *Center) sendImage(ctx context.Context, task Task, imageURL string, cardID int64) error {
-	return c.actions.sendImage(ctx, task, imageURL, cardID)
-}
-
-// cookieValue 读取账号 Cookie 的兼容入口。
-func (c *Center) cookieValue(ctx context.Context, cookieID string) (string, error) {
-	return c.actions.cookieValue(ctx, cookieID)
 }

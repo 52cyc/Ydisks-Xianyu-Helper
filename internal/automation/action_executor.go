@@ -291,6 +291,14 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return fmt.Errorf("%w: 订单改价 Session 已失效且凭证恢复失败: %v", errActionNotPerformed, sessionErr)
 	}
 	if result.callErr != nil {
+		// errorKind、hasErrorKind 保存 MTOP 错误分类；普通业务拒绝已经由平台明确确认，不属于结果未知。
+		errorKind, hasErrorKind := mtop.MTopErrorKindOf(result.callErr)
+		if hasErrorKind && errorKind == mtop.MTopErrorBusiness {
+			if len(persistenceErrs) > 0 {
+				return errors.Join(result.callErr, errors.Join(persistenceErrs...))
+			}
+			return result.callErr
+		}
 		if len(persistenceErrs) > 0 {
 			result.callErr = errors.Join(result.callErr, errors.Join(persistenceErrs...))
 		}

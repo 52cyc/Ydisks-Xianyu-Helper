@@ -282,20 +282,34 @@ jobs:
       - name: 实际验证 Windows 服务注册
         shell: pwsh
         run: |
-          $serviceName = 'YdisksXianyuHelper'
+          # 预检服务必须与安装器的正式服务名不同。SCM 对删除采用异步语义，
+          # 否则预检刚删除的同名服务可能仍占用正式安装器的新建名称。
+          $serviceName = 'YdisksXianyuHelperPreflight'
           $workDir = Join-Path $env:RUNNER_TEMP $serviceName
           $runtimeRoot = (Resolve-Path 'dist/windows/playwright-runtime/amd64').Path
           $serviceScript = (Resolve-Path 'packaging/windows/service-control.ps1').Path
           $serverPath = (Resolve-Path 'dist/windows/xianyu-server.exe').Path
           try {
-            foreach ($registerAttempt in 1..2) {
-              & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-                -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-                -File $serviceScript -Mode register -ServiceName $serviceName `
-                -ExePath $serverPath -WorkDir $workDir -RuntimeRoot $runtimeRoot
-              if ($LASTEXITCODE -ne 0) {
-                throw "Windows 服务第 $registerAttempt 次注册失败，错误码: $LASTEXITCODE"
-              }
+            & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+              -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File $serviceScript -Mode register -ServiceName $serviceName `
+              -ExePath $serverPath -WorkDir $workDir -RuntimeRoot $runtimeRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows 服务首次注册失败，错误码: $LASTEXITCODE"
+            }
+
+            # 模拟历史版本遗留的 ACL：管理员能停止、删除服务，却不能修改配置。
+            # 升级注册应自动删除该对象并按当前权限模型重建服务。
+            & "$env:SystemRoot\System32\sc.exe" sdset $serviceName `
+              'D:(A;;LCRPWPLOSD;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)'
+            if ($LASTEXITCODE -ne 0) { throw '无法构造旧版服务 ACL 回归夹具' }
+
+            & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+              -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File $serviceScript -Mode register -ServiceName $serviceName `
+              -ExePath $serverPath -WorkDir $workDir -RuntimeRoot $runtimeRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows 服务 ACL 回退重建失败，错误码: $LASTEXITCODE"
             }
             & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
               -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -552,6 +566,10 @@ jobs:
             $serverLog = Join-Path $env:ProgramData 'YdisksXianyuHelper\logs\server.log'
             if (Test-Path -LiteralPath $serverLog) {
               Get-Content -LiteralPath $serverLog -Tail 200
+            }
+            $serviceRegistrationLog = Join-Path $env:ProgramData 'YdisksXianyuHelper\logs\service-registration-error.log'
+            if (Test-Path -LiteralPath $serviceRegistrationLog) {
+              Get-Content -LiteralPath $serviceRegistrationLog -Tail 200
             }
             throw
           } finally {

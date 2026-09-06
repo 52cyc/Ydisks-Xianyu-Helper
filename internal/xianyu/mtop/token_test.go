@@ -3,6 +3,7 @@ package mtop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -130,6 +131,34 @@ func TestRefreshTokenWithDeviceIDSuccessOnRetry(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenWithCorrectExpiredRetRetries 验证正确拼写的 Token 过期码也会进入官方刷新重试。
+func TestRefreshTokenWithCorrectExpiredRetRetries(t *testing.T) {
+	// requests 统计 Token 接口收到的请求次数。
+	var requests atomic.Int32
+	// server 模拟首次返回正确拼写的 Token 过期码、随后返回成功令牌的本地接口。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// attempt 保存当前请求序号，用于区分过期响应和成功响应。
+		attempt := requests.Add(1)
+		if attempt == 1 {
+			fmt.Fprint(w, `{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"],"data":{}}`)
+			return
+		}
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"accessToken":"access-after-correct-expired"}}`)
+	}))
+	defer server.Close()
+
+	// client 使用本地 Token 接口验证正确拼写过期码的刷新行为。
+	client := &ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}
+	// result、err 保存 Token 刷新结果和错误。
+	result, err := client.RefreshTokenWithDeviceIDContext(context.Background(), testCookiesWithUnb, "device-correct-expired")
+	if err != nil || result == nil || result.AccessToken != "access-after-correct-expired" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d want 2", requests.Load())
+	}
+}
+
 // TestRefreshTokenMissingUnbCookie: cookie 缺 unb 报错。
 func TestRefreshTokenMissingUnbCookie(t *testing.T) {
 	// server 用于本次流程后续判断的server
@@ -213,6 +242,29 @@ func TestRefreshTokenHTTPError(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenNon2xxRiskPreservesVerificationURL 验证非 2xx 风控响应仍保留验证码链接。
+func TestRefreshTokenNon2xxRiskPreservesVerificationURL(t *testing.T) {
+	// server 返回非 2xx 的风控响应，并提供浏览器恢复所需的验证链接。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"ret":["FAIL_SYS_USER_VALIDATE::用户校验失败"],"data":{"url":"https://passport.goofish.com/punish?x5secdata=fixture"}}`)
+	}))
+	defer server.Close()
+
+	// client 保存注入本地测试端点的 MTOP 客户端。
+	client := &ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}
+	// result、err 保存刷新结果及风控错误。
+	result, err := client.RefreshTokenWithDeviceIDContext(context.Background(), testCookiesWithUnb, "device-1")
+	if result == nil || err == nil || !IsRiskVerificationErr(err) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	// riskErr 保存错误链中保留的风控错误，以验证 URL 没有被 HTTP 分类覆盖。
+	var riskErr *RiskVerificationError
+	if !errors.As(err, &riskErr) || riskErr.VerificationURL == "" || !strings.Contains(riskErr.VerificationURL, "x5secdata=fixture") {
+		t.Fatalf("riskErr=%#v err=%v", riskErr, err)
+	}
+}
+
 // TestRefreshTokenParseFailure: 响应非 JSON 解析失败。
 func TestRefreshTokenParseFailure(t *testing.T) {
 	// server 用于本次流程后续判断的server
@@ -227,6 +279,11 @@ func TestRefreshTokenParseFailure(t *testing.T) {
 	_, err := client.RefreshTokenContext(context.Background(), testCookiesWithUnb)
 	if err == nil || !strings.Contains(err.Error(), "解析 token 响应失败") {
 		t.Fatalf("err=%v", err)
+	}
+	// syntaxErr 验证 JSON 解析错误仍可通过 errors.As 被调用方识别。
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("解析错误未保留 json.SyntaxError: %v", err)
 	}
 }
 

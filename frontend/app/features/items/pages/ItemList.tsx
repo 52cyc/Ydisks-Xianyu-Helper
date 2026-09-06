@@ -1,7 +1,7 @@
 import { ArrowRight,Box,CheckCircle2,CircleDashed,Edit,Filter,Link2,LocateFixed,PackagePlus,Plus,RefreshCw,Save,Search,ShoppingBag,Trash2,UploadCloud,User,X } from 'lucide-react';
 import React,{ useCallback,useEffect,useMemo,useRef,useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountDetail,Item,ShippingRule } from '../api';
+import type { AccountDetail,Item,PublishLocation,ShippingRule } from '../api';
 import {
 getAccountDetails,
 getItemPublishBatches,
@@ -11,6 +11,7 @@ getShippingRules,
 import { batchStatusClass,batchStatusText } from '../batchState';
 import { BatchPhaseIndicator } from '../components/BatchPhaseIndicator';
 import { ItemCloneFlow } from '../components/ItemCloneFlow';
+import { ManualLocationPicker } from '../components/ManualLocationPicker';
 import { consumeSelectedFile } from '../fileInput';
 import { useItemPublishBatch } from '../hooks';
 import { useItemActions } from '../itemActions';
@@ -25,7 +26,7 @@ const formatItemPrice = (price?: string) => {
 };
 
 // ItemList 渲染商品列表组件。
-const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
+const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesEditor: ImagesEditor, publishSpecsEditor: SpecsEditor }) => {
   // [items, 解构得到当前 Hook 返回的状态和操作函数。
   const [items, setItems] = useState<Item[]>([]);
   // [shippingRules, 解构得到当前 Hook 返回的状态和操作函数。
@@ -122,6 +123,11 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
     setPublishLocations,
     publishLocation,
     setPublishLocation,
+    publishCategoryKeyword,
+    setPublishCategoryKeyword,
+    publishCategoryLoading,
+    publishCategory,
+    setPublishCategory,
     selectedItem,
     editForm,
     setEditForm,
@@ -136,11 +142,28 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
     handleDelete,
     handleAddItem,
     handlePublishItem,
+    handleRecommendPublishCategory,
     downloadPublishTemplate,
     openAddModal,
     openPublishModal,
     locateForPublish,
   } = itemActions;
+
+  // ManualLocationTarget 表示手动地点选择完成后要回填的发布流程。
+  type ManualLocationTarget = 'publish' | 'batch';
+  // manualLocationTarget 保存当前手动地点弹窗服务的发布场景。
+  const [manualLocationTarget, setManualLocationTarget] = useState<ManualLocationTarget | null>(null);
+  // confirmManualLocation 将用户选中的高德 POI 写回对应发布表单。
+  const confirmManualLocation = useCallback(/* confirmManualLocationCallback 将已确认的高德 POI 写入对应发布场景。 */ (location: PublishLocation) => {
+    if (manualLocationTarget === 'publish') {
+      setPublishLocations([location]);
+      setPublishLocation(location);
+    } else if (manualLocationTarget === 'batch') {
+      setBatchLocations([location]);
+      setBatchLocation(location);
+    }
+    setManualLocationTarget(null);
+  }, [manualLocationTarget, setBatchLocation, setBatchLocations, setPublishLocation, setPublishLocations]);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => {
     // controller 取消组件卸载前仍在执行的首屏并行请求。
@@ -449,7 +472,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
             <div className="modal-header flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-extrabold text-gray-900">发布商品到闲鱼</h3>
-                <p className="text-xs text-gray-500 mt-1">普通单规格发布；库存数量会写入闲鱼发布参数，用于判断账号库存能力。</p>
+                <p className="text-xs text-gray-500 mt-1">支持单规格和多规格；多规格按组合维护价格与库存。</p>
               </div>
               <button onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowPublishModal(false)} className="p-2 rounded-xl hover:bg-gray-100 transition-colors" title="关闭">
                 <X className="w-5 h-5 text-gray-500" />
@@ -457,12 +480,14 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
             </div>
             <div className="modal-body space-y-5">
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 leading-6">
-                发布时必须填写库存。若账号没有库存发布能力，后端会返回明确的“库存权限不足”错误，不会误报为普通发布失败。
+                单规格填写总库存；多规格在组合表逐行填写价格和库存。库存权限不足时会返回明确提示。
               </div>
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-gray-700">发布账号</label>
                 <select className="w-full ios-input px-4 py-3 rounded-xl" value={publishForm.cookie_id} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => {
 				  setPublishForm({...publishForm, cookie_id: e.target.value});
+				  setPublishCategoryKeyword('');
+				  setPublishCategory(null);
 				  setPublishLocations([]);
 				  setPublishLocation(null);
 				}}>
@@ -477,18 +502,37 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
                 </div>
                 <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">库存数量</label>
-                  <input className="w-full ios-input px-4 py-3 rounded-xl" type="number" min="1" placeholder="必须大于 0" value={publishForm.quantity} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, quantity: e.target.value})} />
+                  {publishForm.specs.length === 0 ? <input className="w-full ios-input px-4 py-3 rounded-xl" type="number" min="1" placeholder="必须大于 0" value={publishForm.quantity} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, quantity: e.target.value})} /> : <div className="text-sm text-slate-500">库存由下方 SKU 组合汇总</div>}
                 </div>
               </div>
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-gray-700">商品描述</label>
                 <textarea className="w-full ios-input px-4 py-3 rounded-xl h-28 resize-none" placeholder="描述会用于自动识别类目；留空时使用标题" value={publishForm.description} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, description: e.target.value})} />
               </div>
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                <div>
+                  <div className="text-sm font-extrabold text-gray-900">发布类目（可选）</div>
+                  <p className="mt-1 text-xs leading-5 text-amber-800">填写关键词获取准确类目；留空时由闲鱼自动识别，识别不到时默认使用“电子资料”兜底。</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input className="w-full ios-input rounded-xl bg-white px-4 py-3" placeholder="例如：课程资料、电子书" value={publishCategoryKeyword} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => { setPublishCategoryKeyword(e.target.value); setPublishCategory(null); }} onKeyDown={/* 当前回调处理用户交互或异步状态变化。 */ e => { if (e.key === 'Enter') { e.preventDefault(); void handleRecommendPublishCategory(); } }} />
+                  <button type="button" disabled={publishCategoryLoading || !publishForm.cookie_id || !publishCategoryKeyword.trim()} onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void handleRecommendPublishCategory()} className="shrink-0 rounded-xl bg-amber-500 px-4 py-3 text-sm font-bold text-white hover:bg-amber-600 disabled:opacity-50">
+                    {publishCategoryLoading ? '匹配中...' : '获取类目'}
+                  </button>
+                </div>
+                {publishCategory ? (
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm">
+                    <div><span className="font-bold text-gray-900">{publishCategory.cat_name}</span><span className="ml-2 font-mono text-xs text-gray-500">{publishCategory.cat_id} · 频道 {publishCategory.channel_cat_id}</span></div>
+                    <button type="button" className="text-xs font-bold text-gray-500 hover:text-red-600" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setPublishCategory(null)}>清除，使用自动识别</button>
+                  </div>
+                ) : <div className="text-xs text-gray-500">当前未指定类目，最终识别失败时会使用电子资料兜底。</div>}
+              </div>
+              {SpecsEditor && <SpecsEditor specs={publishForm.specs} skuRows={publishForm.skuRows} onChange={/* publishSpecsChangeAction 将规格编辑器的结构变化写回发布草稿。 */ (next) => setPublishForm(/* previous 保存上一次发布草稿状态。 */ previous => ({ ...previous, specs: next.specs, skuRows: next.skuRows }))} />}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="space-y-2">
+                {publishForm.specs.length === 0 && <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">售价</label>
                   <input className="w-full ios-input px-4 py-3 rounded-xl" placeholder="99.00" value={publishForm.price} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, price: e.target.value})} />
-                </div>
+                </div>}
                 <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">原价（可选）</label>
                   <input className="w-full ios-input px-4 py-3 rounded-xl" placeholder="129.00" value={publishForm.original_price} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, original_price: e.target.value})} />
@@ -512,38 +556,20 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
 			  <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 space-y-3">
 				<div className="flex items-center justify-between gap-3">
 				  <div><div className="text-sm font-extrabold text-gray-900">发货地（可选）</div><p className="mt-1 text-xs text-sky-800">虚拟商品无需发货地；发布失败时可再定位并作为补充信息提交。</p></div>
-				  <button type="button" disabled={locationLoading || !publishForm.cookie_id} onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void locateForPublish(false)} className="ios-btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50">
-					<LocateFixed className="h-4 w-4" />{locationLoading ? '定位中...' : '获取当前位置'}
-				  </button>
+					<div className="flex flex-wrap justify-end gap-2">
+					  <button type="button" disabled={locationLoading || !publishForm.cookie_id} onClick={/* currentLocationClickAction 获取设备当前位置附近的高德发货地。 */ () => void locateForPublish(false)} className="ios-btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50">
+					    <LocateFixed className="h-4 w-4" />{locationLoading ? '定位中...' : '获取当前位置'}
+					  </button>
+					  <button type="button" disabled={locationLoading || !publishForm.cookie_id} onClick={/* manualLocationClickAction 打开普通发布的高德手动选点弹窗。 */ () => setManualLocationTarget('publish')} className="flex items-center gap-2 rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-bold text-sky-700 transition-colors hover:bg-sky-50 disabled:opacity-50">
+					    <Search className="h-4 w-4" />手动选择
+					  </button>
+					</div>
 				</div>
 				{publishLocations.length > 0 && <select className="w-full ios-input rounded-xl bg-white px-4 py-3" value={String(Math.max(0, publishLocations.indexOf(publishLocation!)))} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishLocation(publishLocations[Number(e.target.value)] || null)}>
 				  {publishLocations.map(/* 当前回调处理集合中的单个元素。 */ (item, index) => <option key={`${item.division_id}-${item.poi_id}-${index}`} value={String(index)}>{[item.province, item.city, item.area, item.poi_name].filter(Boolean).join(' ')}</option>)}
 				</select>}
 			  </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-bold text-gray-700">商品图片（1-9 张）</label>
-                <label className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center hover:border-emerald-300 hover:bg-emerald-50/50 transition-colors">
-                  <UploadCloud className="w-8 h-8 text-emerald-600 mb-2" />
-                  <span className="text-sm font-bold text-gray-800">选择图片</span>
-                  <span className="text-xs text-gray-500 mt-1">{publishForm.images.length ? '已选择 ' + publishForm.images.length + ' 张' : '支持 JPG / PNG / GIF'}</span>
-                  <input
-                    className="hidden"
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, images: Array.from(e.target.files || []).slice(0, 9)})}
-                  />
-                </label>
-                {publishImagePreviews.length > 0 && (
-                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
-                    {publishImagePreviews.map(/* 当前回调处理集合中的单个元素。 */ (preview) => (
-                      <div key={preview.key} className="aspect-square rounded-xl bg-gray-100 overflow-hidden border border-gray-100">
-                        <img src={preview.url} alt="" className="w-full h-full object-cover" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {ImagesEditor && <ImagesEditor images={publishForm.images} previews={publishImagePreviews} onChange={/* publishImagesChangeAction 将图片追加、删除或排序后的列表写回发布草稿。 */ (images) => setPublishForm(/* previous 保存上一次发布草稿状态。 */ previous => ({ ...previous, images }))} />}
             </div>
             <div className="modal-footer">
               <button disabled={publishing} onClick={handlePublishItem} className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white px-6 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2">
@@ -662,9 +688,14 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
 				  <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 space-y-3">
 					<div className="flex items-center justify-between gap-3">
 					  <div><div className="text-sm font-extrabold text-gray-900">批次发货地（可选）</div><p className="mt-1 text-xs text-sky-800">虚拟商品可留空；填写后整个批次使用同一个发货地，并随任务保存用于恢复和重试。</p></div>
-					  <button type="button" disabled={locationLoading || !selectedAccount} onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void locateForPublish(true)} className="ios-btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50">
+					<div className="flex flex-wrap justify-end gap-2">
+					  <button type="button" disabled={locationLoading || !selectedAccount} onClick={/* currentBatchLocationClickAction 获取批量发布使用的设备当前位置。 */ () => void locateForPublish(true)} className="ios-btn-primary flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50">
 						<LocateFixed className="h-4 w-4" />{locationLoading ? '定位中...' : '获取当前位置'}
 					  </button>
+					  <button type="button" disabled={locationLoading || !selectedAccount} onClick={/* manualBatchLocationClickAction 打开批量发布的高德手动选点弹窗。 */ () => setManualLocationTarget('batch')} className="flex items-center gap-2 rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-bold text-sky-700 transition-colors hover:bg-sky-50 disabled:opacity-50">
+						<Search className="h-4 w-4" />手动选择
+					  </button>
+					</div>
 					</div>
 					{batchLocations.length > 0 && <select className="w-full ios-input rounded-xl bg-white px-4 py-3" value={String(Math.max(0, batchLocations.indexOf(batchLocation!)))} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setBatchLocation(batchLocations[Number(e.target.value)] || null)}>
 					  {batchLocations.map(/* 当前回调处理集合中的单个元素。 */ (item, index) => <option key={`${item.division_id}-${item.poi_id}-${index}`} value={String(index)}>{[item.province, item.city, item.area, item.poi_name].filter(Boolean).join(' ')}</option>)}
@@ -944,6 +975,12 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
           </div>
         </div>
       , document.body)}
+
+      <ManualLocationPicker
+        open={manualLocationTarget !== null}
+        onClose={/* manualLocationCloseAction 关闭手动地点弹窗并释放高德查询。 */ () => setManualLocationTarget(null)}
+        onConfirm={confirmManualLocation}
+      />
     </div>
   );
 };

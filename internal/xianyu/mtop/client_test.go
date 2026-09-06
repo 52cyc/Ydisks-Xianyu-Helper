@@ -1,10 +1,13 @@
 package mtop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +15,71 @@ import (
 	"testing"
 	"time"
 )
+
+// TestMTopResponseFailureClassifiesAndRedacts 验证统一错误分类覆盖各类 MTOP 失败，并且日志与用户错误均不泄露凭证。
+func TestMTopResponseFailureClassifiesAndRedacts(t *testing.T) {
+	// logs 收集结构化日志，验证平台错误码和分类可供排障检索。
+	var logs bytes.Buffer
+	// client 使用测试日志器，避免把合成失败写入全局日志。
+	client := &ClientImpl{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+	// cases 覆盖风控、会话、Token、HTTP、解析和普通业务失败分类。
+	cases := []struct {
+		name   string
+		kind   MTopErrorKind
+		code   string
+		status int
+		detail string
+	}{
+		{name: "risk", kind: MTopErrorRiskVerification, code: "FAIL_SYS_USER_VALIDATE::安全校验", status: http.StatusOK},
+		{name: "session", kind: MTopErrorSessionExpired, code: "FAIL_SYS_SESSION_EXPIRED::会话过期", status: http.StatusOK},
+		{name: "token", kind: MTopErrorTokenExpired, code: "FAIL_SYS_TOKEN_EXPIRED::令牌过期", status: http.StatusOK},
+		{name: "http", kind: MTopErrorHTTP, code: "FAIL_SYS_GATEWAY::网关错误", status: http.StatusBadGateway},
+		{name: "decode", kind: MTopErrorDecode, status: http.StatusOK, detail: "JSON 解析失败"},
+		{name: "business", kind: MTopErrorBusiness, code: "FAIL_BIZ_ORDER::订单错误", status: http.StatusOK},
+	}
+	// testCase 验证当前失败类型的错误链、诊断内容和日志字段。
+	for _, testCase := range cases {
+		// ret 只模拟平台错误标记，不包含真实账号信息。
+		ret := []string(nil)
+		if testCase.code != "" {
+			ret = []string{testCase.code + " cookie=_m_h5_tk=secret access_token=secret"}
+		}
+		// err 保存统一失败分类结果。
+		err := client.mtopResponseFailure("订单列表接口", testCase.status, ret, testCase.detail+" private-marker")
+		// kind、ok 保存错误链中解析出的失败分类。
+		kind, ok := MTopErrorKindOf(err)
+		if !ok || kind != testCase.kind {
+			t.Fatalf("%s kind=%q ok=%v want %q", testCase.name, kind, ok, testCase.kind)
+		}
+		if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "private-marker") {
+			t.Fatalf("%s error leaked sensitive text: %s", testCase.name, err)
+		}
+	}
+	// output 保存结构化日志文本，验证日志包含可检索类别但不包含敏感值。
+	output := logs.String()
+	if !strings.Contains(output, `"category":"token_expired"`) || !strings.Contains(output, "FAIL_SYS_TOKEN_EXPIRED") {
+		t.Fatalf("structured MTOP failure log incomplete: %s", output)
+	}
+	if strings.Contains(output, "secret") || strings.Contains(output, "private-marker") {
+		t.Fatalf("structured MTOP failure log leaked sensitive text: %s", output)
+	}
+}
+
+// TestMTopResponseFailureWithCausePreservesErrorChain 验证统一 MTOP 错误保留底层取消原因但不泄露原因文本。
+func TestMTopResponseFailureWithCausePreservesErrorChain(t *testing.T) {
+	// cause 保存模拟 HTTP 响应读取阶段的取消错误及敏感诊断文本。
+	cause := fmt.Errorf("响应读取被取消，cookie=_m_h5_tk=secret")
+	// client 使用默认安全日志器完成错误构造。
+	client := &ClientImpl{}
+	// err 保存带底层原因的统一 MTOP 错误。
+	err := client.mtopResponseFailureWithCause("订单列表接口", http.StatusOK, nil, "读取响应失败", cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("底层错误未保留: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("错误文本泄露底层敏感原因: %v", err)
+	}
+}
 
 // TestNewClientUsesGoHTTPByDefault 封装TestNewClientUsesGoHTTPByDefault业务协调。
 func TestNewClientUsesGoHTTPByDefault(t *testing.T) {
@@ -149,7 +217,7 @@ func TestConsignDoesNotRetryNonTokenFailure(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/"}
 	// ok、ret、err 用于本次流程后续判断的ok、ret、err
 	ok, ret, _, err := client.ConsignContext(context.Background(), "unb=123; _m_h5_tk=token_1;", "order-1")
-	if err != nil || ok || len(ret) == 0 {
+	if err != nil || ok || len(ret) == 0 || !strings.Contains(ret[0], "订单状态错误") {
 		t.Fatalf("ok=%v ret=%v err=%v", ok, ret, err)
 	}
 	if requests.Load() != 1 {

@@ -62,7 +62,7 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(r.FormValue("description"))
 	// priceCents、err 用于本次流程后续判断的priceCents、err
 	priceCents, err := parseMoneyCents(r.FormValue("price"))
-	if err != nil || priceCents <= 0 {
+	if err != nil || priceCents < 0 {
 		writeErr(w, http.StatusBadRequest, "商品价格必须大于 0")
 		return
 	}
@@ -95,6 +95,22 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// specImages 保存规格值图片；没有规格图片时保持空集合，不影响单规格发布。
+	specImages, err := readOptionalPublishImages(r, "spec_images", 1500)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// publishSpecs、publishSKUs 保存从 multipart JSON 转换出的规格维度和组合。
+	publishSpecs, publishSKUs, specErr := parseItemPublishSpecs(r.FormValue("item_properties"), r.FormValue("item_sku_list"), len(specImages))
+	if specErr != nil {
+		writeErr(w, http.StatusBadRequest, specErr.Error())
+		return
+	}
+	if len(publishSpecs) == 0 && priceCents <= 0 {
+		writeErr(w, http.StatusBadRequest, "商品价格必须大于 0")
+		return
+	}
 	// location 保存带有 JSON 标签的 HTTP 发货地请求模型。
 	var location itemPublishLocationRequest
 	// selectedLocation 保存解析成功、待转换为应用模型的发货地。
@@ -107,6 +123,12 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		selectedLocation = &location
+	}
+	// applicationCategory 是 HTTP 类目字段转换后的应用模型；为空时保留自动识别和电子资料兜底。
+	applicationCategory, categoryErr := parseItemPublishCategory(r)
+	if categoryErr != nil {
+		writeErr(w, http.StatusBadRequest, categoryErr.Error())
+		return
 	}
 	// applicationLocation 是 HTTP DTO 转换后的应用发货地模型。
 	var applicationLocation *itemapp.Location
@@ -123,11 +145,18 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	for _, image := range images {
 		applicationImages = append(applicationImages, itemapp.Image{Filename: image.Filename, ContentType: image.ContentType, Data: image.Data})
 	}
+	// applicationSpecImages 是规格图片转换后的应用图片模型，索引与规格值图片引用保持一致。
+	applicationSpecImages := make([]itemapp.Image, 0, len(specImages))
+	// image 表示当前待转换的规格图片。
+	for _, image := range specImages {
+		applicationSpecImages = append(applicationSpecImages, itemapp.Image{Filename: image.Filename, ContentType: image.ContentType, Data: image.Data})
+	}
 	// outcome、callErr 保存应用服务返回的发布结果及调用错误。
 	outcome, callErr := s.itemSinglePublishApplication().PublishSingle(r.Context(), itemapp.PublishInput{
 		UserID: userID, CookieID: cookieID, Title: title, Description: description,
 		PriceCents: priceCents, OriginalPriceCents: origCents, Quantity: quantity,
-		PostageMode: postageMode, PostageCents: postageCents, Location: applicationLocation, Images: applicationImages,
+		PostageMode: postageMode, PostageCents: postageCents, Location: applicationLocation,
+		Category: applicationCategory, Images: applicationImages, Specs: publishSpecs, SKUs: publishSKUs, SpecImages: applicationSpecImages,
 	})
 	// res 用于本次流程后续判断的响应
 	res := outcome.Result
@@ -150,6 +179,16 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, callErr.Error())
 			return
 		}
+		// message 保存未被专用错误类型包装的平台或基础设施失败原因，确保前端不会收到误导性的成功结果缺失提示。
+		message := strings.TrimSpace(callErr.Error())
+		if message == "" {
+			message = "商品发布失败"
+		}
+		if s.Logger != nil {
+			s.Logger.Error("商品发布失败", "cookie_id", cookieID, "err", callErr)
+		}
+		writeErrCode(w, http.StatusBadGateway, "publish_failed", message, "")
+		return
 	}
 	if res == nil || strings.TrimSpace(res.ItemID) == "" {
 		writeErrCode(w, http.StatusBadGateway, "publish_result_missing_item_id", "平台返回发布成功，但缺少商品 ID，无法确认发布结果", "")
@@ -173,18 +212,62 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// parseItemPublishCategory 解析单商品发布的可选类目，并拒绝不完整的覆盖配置。
+func parseItemPublishCategory(r *http.Request) (*itemapp.PublishCategory, error) {
+	// category 保存 multipart 字段组成的类目 DTO。
+	category := itemPublishCategoryRequest{
+		CatID: strings.TrimSpace(r.FormValue("category_id")), CatName: strings.TrimSpace(r.FormValue("category_name")),
+		ChannelCatID: strings.TrimSpace(r.FormValue("channel_category_id")), TBCatID: strings.TrimSpace(r.FormValue("tb_category_id")),
+	}
+	if category.CatID == "" && category.CatName == "" && category.ChannelCatID == "" && category.TBCatID == "" {
+		return nil, nil
+	}
+	if category.CatID == "" || category.CatName == "" || category.ChannelCatID == "" {
+		return nil, errors.New("商品类目信息不完整，请同时提供类目 ID、类目名称和频道类目 ID")
+	}
+	return &itemapp.PublishCategory{CatID: category.CatID, CatName: category.CatName, ChannelCatID: category.ChannelCatID, TBCatID: category.TBCatID}, nil
+}
+
+// itemPublishCategoryRequest 是单商品 multipart 请求中的类目字段 DTO。
+type itemPublishCategoryRequest struct {
+	// CatID 是闲鱼类目主键。
+	CatID string
+	// CatName 是闲鱼类目名称。
+	CatName string
+	// ChannelCatID 是闲鱼频道类目主键。
+	ChannelCatID string
+	// TBCatID 是可选的淘宝类目主键。
+	TBCatID string
+}
+
 // readPublishImages 封装read发布Images业务协调。
 func readPublishImages(r *http.Request, maxImages int) ([]itemapp.Image, error) {
+	return readPublishImageField(r, "images", maxImages, true)
+}
+
+// readOptionalPublishImages 读取可选的规格值图片；字段不存在时返回空集合。
+func readOptionalPublishImages(r *http.Request, field string, maxImages int) ([]itemapp.Image, error) {
+	return readPublishImageField(r, field, maxImages, false)
+}
+
+// readPublishImageField 将 multipart 图片字段转换为应用图片模型并执行大小、数量与 MIME 校验。
+func readPublishImageField(r *http.Request, field string, maxImages int, required bool) ([]itemapp.Image, error) {
 	if r.MultipartForm == nil || r.MultipartForm.File == nil {
-		return nil, errors.New("至少上传 1 张商品图片")
+		if required {
+			return nil, errors.New("至少上传 1 张商品图片")
+		}
+		return nil, nil
 	}
-	// files 用于本次流程后续判断的文件列表
-	files := r.MultipartForm.File["images"]
-	if len(files) == 0 {
+	// files 用于本次流程后续判断的文件列表。
+	files := r.MultipartForm.File[field]
+	if len(files) == 0 && required && field == "images" {
 		files = r.MultipartForm.File["image"]
 	}
 	if len(files) == 0 {
-		return nil, errors.New("至少上传 1 张商品图片")
+		if required {
+			return nil, errors.New("至少上传 1 张商品图片")
+		}
+		return nil, nil
 	}
 	if len(files) > maxImages {
 		return nil, fmt.Errorf("商品图片最多 %d 张", maxImages)
