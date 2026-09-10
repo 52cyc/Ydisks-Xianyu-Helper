@@ -27,6 +27,16 @@ type ExternalPriceMessageRecord struct {
 
 // ClaimExternalPriceMessage 原子领取一条外部货源买家消息的五分钟发送租约；已发送或未过期的任务不会重复领取。
 func (a *AutomationRules) ClaimExternalPriceMessage(ctx context.Context, record ExternalPriceMessageRecord) (bool, error) {
+	return a.claimExternalPriceMessage(ctx, record, false)
+}
+
+// ClaimExternalPriceGuidance 原子领取咨询报价任务；除失败和过期租约外，也允许重新领取已超过报价有效期的成功记录。
+func (a *AutomationRules) ClaimExternalPriceGuidance(ctx context.Context, record ExternalPriceMessageRecord) (bool, error) {
+	return a.claimExternalPriceMessage(ctx, record, true)
+}
+
+// claimExternalPriceMessage 按 allowExpiredSent 决定是否允许咨询报价在成功有效期结束后重新发送。
+func (a *AutomationRules) claimExternalPriceMessage(ctx context.Context, record ExternalPriceMessageRecord, allowExpiredSent bool) (bool, error) {
 	if a == nil || a.DB == nil {
 		return false, errors.New("自动化规则仓储未初始化")
 	}
@@ -50,16 +60,54 @@ func (a *AutomationRules) ClaimExternalPriceMessage(ctx context.Context, record 
 	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 { // affected 和 rowsErr 用于确认当前调用是否创建了新投递任务。
 		return true, nil
 	}
-	// retryResult 和 retryErr 尝试接管明确失败或进程崩溃后租约过期的投递任务。
+	// retryCondition 是普通通知的永久防重条件；咨询报价额外允许成功有效期过期后重领。
+	retryCondition := "status='failed' OR (status='pending' AND lease_expires_at<?)"
+	if allowExpiredSent {
+		retryCondition += " OR (status='sent' AND message_kind='guidance' AND lease_expires_at<=?)"
+	}
+	// retryArgs 按查询条件顺序保存新租约、防重键和过期时间参数。
+	retryArgs := []any{leaseExpiresAt, record.DedupeKey, now}
+	if allowExpiredSent {
+		retryArgs = append(retryArgs, now)
+	}
+	// retryResult 和 retryErr 尝试接管明确失败、过期租约或已过有效期的咨询报价。
 	retryResult, retryErr := a.DB.ExecContext(ctx, `UPDATE external_price_message_records
 		SET status='pending',last_error='',lease_expires_at=?,updated_at=CURRENT_TIMESTAMP
-		WHERE dedupe_key=? AND (status='failed' OR (status='pending' AND lease_expires_at<?))`, leaseExpiresAt, record.DedupeKey, now)
+		WHERE dedupe_key=? AND (`+retryCondition+`)`, retryArgs...)
 	if retryErr != nil {
 		return false, retryErr
 	}
 	// affected 是成功接管的记录数；零表示记录已经发送或仍由其他执行者持有。
 	affected, rowsErr := retryResult.RowsAffected()
 	return affected > 0, rowsErr
+}
+
+// FinishExternalPriceGuidance 把咨询报价收口为 sent 或 failed；成功时在 lease_expires_at 保存本次报价失效时间，以便过期后安全重新报价。
+func (a *AutomationRules) FinishExternalPriceGuidance(ctx context.Context, dedupeKey, status, message string, validity time.Duration) error {
+	if status != "sent" {
+		return a.FinishExternalPriceMessage(ctx, dedupeKey, status, message)
+	}
+	if validity <= 0 {
+		return errors.New("咨询报价有效期必须大于零")
+	}
+	// validUntil 是成功报价允许下次重新领取的 Unix 秒时刻。
+	validUntil := time.Now().UTC().Add(validity).Unix()
+	// result 和 updateErr 是带 pending 前置条件的报价成功收口结果。
+	result, updateErr := a.DB.ExecContext(ctx, `UPDATE external_price_message_records
+		SET status='sent',last_error=?,lease_expires_at=?,updated_at=CURRENT_TIMESTAMP
+		WHERE dedupe_key=? AND status='pending'`, message, validUntil, dedupeKey)
+	if updateErr != nil {
+		return updateErr
+	}
+	// affected 验证当前处理者仍持有本次报价租约。
+	affected, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return rowsErr
+	}
+	if affected != 1 {
+		return errors.New("外部跟价消息投递状态已经变化")
+	}
+	return nil
 }
 
 // FinishExternalPriceMessage 把投递任务收口为 sent 或 failed；失败摘要不得包含货源凭证。

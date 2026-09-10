@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"xianyu-go/internal/db"
 )
@@ -25,6 +26,8 @@ const (
 	legacyExternalFulfillmentFailureNotice = "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理；如不愿等待，也可以申请退款。"
 	// defaultExternalFulfillmentFailureNotice 是外部采购全部自动重试耗尽后发送的默认人工处理提示。
 	defaultExternalFulfillmentFailureNotice = "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理。"
+	// externalPriceGuidanceValidity 是同一规则和聊天会话中一次成功实时报价的有效时长。
+	externalPriceGuidanceValidity = 5 * time.Minute
 )
 
 // externalPriceMessageConfig 保存付款规则级咨询引导和改价成功通知；金额参数仍由各货源动作独立配置。
@@ -171,10 +174,10 @@ func (c *Center) HandleExternalPriceGuidanceChat(ctx context.Context, message Re
 	if dynamicErr != nil || !dynamicEnabled {
 		return false, dynamicErr
 	}
-	// dedupeKey 让同一规则和会话跨重启只成功发送一次咨询引导。
+	// dedupeKey 让同一规则和会话在五分钟有效期内只成功发送一次咨询报价。
 	dedupeKey := fmt.Sprintf("external-price-guide:%d:%s", rule.ID, strings.TrimSpace(message.ChatID))
 	// claimed 和 claimErr 表示当前处理者是否取得消息发送租约。
-	claimed, claimErr := c.store.Automation.ClaimExternalPriceMessage(ctx, db.ExternalPriceMessageRecord{
+	claimed, claimErr := c.store.Automation.ClaimExternalPriceGuidance(ctx, db.ExternalPriceMessageRecord{
 		DedupeKey: dedupeKey, CookieID: message.AccountID, ChatID: message.ChatID, ItemID: itemID, RuleID: rule.ID, MessageKind: "guidance",
 	})
 	if claimErr != nil || !claimed {
@@ -202,7 +205,7 @@ func (c *Center) HandleExternalPriceGuidanceChat(ctx context.Context, message Re
 		finishErr := c.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "failed", sendErr.Error()) // finishErr 是失败状态落库错误。
 		return true, errors.Join(sendErr, finishErr)
 	}
-	if finishErr := c.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "sent", ""); finishErr != nil { // finishErr 是发送成功后的状态持久化错误。
+	if finishErr := c.store.Automation.FinishExternalPriceGuidance(ctx, dedupeKey, "sent", "", externalPriceGuidanceValidity); finishErr != nil { // finishErr 是发送成功后的五分钟有效期持久化错误。
 		return true, uncertainAction(fmt.Errorf("咨询引导已发送但状态保存失败: %w", finishErr))
 	}
 	return true, nil

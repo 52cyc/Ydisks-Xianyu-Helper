@@ -168,7 +168,7 @@ const ExternalPriceMessageEditor: React.FC<ExternalPriceMessageEditorProps> = ({
     </div>
     <MessageToggle
       label="首次咨询自动查询报价"
-      detail="同一聊天会话只成功报价一次；多规格商品会按规格发送价格列表。"
+      detail="同一聊天会话 5 分钟内只成功报价一次；超过后下次咨询会重新查询，多规格商品会按规格发送价格列表。"
       checked={config.price_guidance_enabled === true}
       onChange={
         /* priceGuidanceToggleHandler 切换该商品首次咨询引导。 */ (

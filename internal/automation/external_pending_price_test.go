@@ -76,6 +76,17 @@ func TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice(t *testing.T) {
 	if len(sender.texts) != 2 || sender.texts[0] != "正在查询 item-price" || sender.texts[1] != "当前报价：¥3.30，需要请拍下不要付款" {
 		t.Fatalf("咨询实时报价或变量替换异常: %#v", sender.texts)
 	}
+	// guidanceDedupeKey 是本规则和聊天会话的稳定报价防重键。
+	guidanceDedupeKey := fmt.Sprintf("external-price-guide:%d:%s", ruleID, chatMessage.ChatID)
+	if _, expireErr := store.DB.ExecContext(ctx, `UPDATE external_price_message_records SET lease_expires_at=1 WHERE dedupe_key=?`, guidanceDedupeKey); expireErr != nil { // expireErr 是测试夹具把报价有效期推进到过去的写入错误。
+		t.Fatal(expireErr)
+	}
+	if handled, guideErr := center.HandleExternalPriceGuidanceChat(ctx, chatMessage, "item-price"); guideErr != nil || !handled { // handled 和 guideErr 验证过期后的下一条咨询会重新查价并发送。
+		t.Fatalf("过期后重新报价失败: handled=%v err=%v", handled, guideErr)
+	}
+	if len(sender.texts) != 4 || sender.texts[2] != "正在查询 item-price" || sender.texts[3] != "当前报价：¥3.30，需要请拍下不要付款" {
+		t.Fatalf("过期后应重新发送完整报价: %#v", sender.texts)
+	}
 	// task 是买家已拍下但尚未付款的真实订单事件。
 	task := Task{AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "order-price", ItemID: "item-price", BuyerID: "buyer", ChatID: "chat"}
 	if handleErr := center.HandleTask(ctx, task); handleErr != nil { // handleErr 是首次待付款跟价处理结果。
@@ -84,7 +95,7 @@ func TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice(t *testing.T) {
 	if platform.adjustCalls != 1 || platform.adjustCentsIn != 660 {
 		t.Fatalf("目标价格应为 (2.80+0.50)*2=6.60: calls=%d cents=%d", platform.adjustCalls, platform.adjustCentsIn)
 	}
-	if len(sender.texts) != 3 || sender.texts[2] != "最新总价 ¥6.60，数量 2" {
+	if len(sender.texts) != 5 || sender.texts[4] != "最新总价 ¥6.60，数量 2" {
 		t.Fatalf("改价成功通知应携带最终总价和数量: %#v", sender.texts)
 	}
 	// dynamicSafePrice、quoted、safeErr 是动作在改价成功后可用于付款采购的订单级保护价。
@@ -99,13 +110,16 @@ func TestExternalPendingPriceAdjustsAndPersistsDynamicSafePrice(t *testing.T) {
 	if platform.adjustCalls != 1 {
 		t.Fatalf("重复待付款事件不应再次改价: calls=%d", platform.adjustCalls)
 	}
-	if len(sender.texts) != 3 {
+	if len(sender.texts) != 5 {
 		t.Fatalf("重复待付款事件不应再次发送改价通知: %#v", sender.texts)
 	}
 }
 
+// TestProfitRatePricingRoundsUpToCent 验证实时采购价按利润率计算时向上取整到分。
 func TestProfitRatePricingRoundsUpToCent(t *testing.T) {
+	// config 是两个百分点的外部货源利润率配置。
 	config := externalActionConfig{ProfitRate: "2.00"}
+	// target、markup、minimum 和 err 是 9.50 元采购价的目标价、加价、兼容最低利润及计算错误，单位为分。
 	target, markup, minimum, err := externalUnitTargetCents(config, 950)
 	if err != nil || target != 969 || markup != 19 || minimum != 0 {
 		t.Fatalf("9.50 按 2%% 利润率应为 9.69: target=%d markup=%d minimum=%d err=%v", target, markup, minimum, err)
@@ -116,12 +130,16 @@ func TestProfitRatePricingRoundsUpToCent(t *testing.T) {
 	}
 }
 
+// TestExternalListingTargetUsesProfitRate 验证商品页同步价复用外部货源利润率计算。
 func TestExternalListingTargetUsesProfitRate(t *testing.T) {
+	// center 只注入返回 9.50 元实时价的外部货源报价能力。
 	center := NewWithDependencies(nil, nil, nil, CenterDependencies{ExternalFulfillment: &externalFulfillmentStub{
 		product: ExternalProductQuote{Price: "9.50", CanBuy: true},
 	}})
+	// rule 是开启两个百分点利润率同步的单规格商品规则。
 	rule := db.AutomationRule{UserID: 7, Actions: []db.AutomationAction{{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true,
 		ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":4994,"price_sync_enabled":true,"profit_rate":"2.00"}`}}}
+	// target、enabled 和 err 是商品页目标价分值、同步开关命中状态及报价错误。
 	target, enabled, err := center.externalListingTargetCents(context.Background(), rule)
 	if err != nil || !enabled || target != 969 {
 		t.Fatalf("商品页同步价应为 9.69: target=%d enabled=%v err=%v", target, enabled, err)
