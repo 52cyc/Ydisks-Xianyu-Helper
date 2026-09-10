@@ -29,6 +29,8 @@ type chatHandlerCoveragePort struct {
 	ownsAccountErr    error
 	// cleanupErr 保存清理空会话要返回的错误。
 	cleanupErr error
+	// deleteConversationErr 保存会话删除应用用例要返回的错误。
+	deleteConversationErr error
 	// refreshConversationsPage 与 refreshConversationsErr 保存联系人刷新结果。
 	refreshConversationsPage chatapp.ConversationPage
 	refreshConversationsErr  error
@@ -154,6 +156,11 @@ func (port *chatHandlerCoveragePort) OwnsAccount(context.Context, int64, string)
 	return port.ownsAccountResult, port.ownsAccountErr
 }
 
+// DeleteConversation 返回测试配置的会话删除错误。
+func (port *chatHandlerCoveragePort) DeleteConversation(context.Context, int64, string, string) error {
+	return port.deleteConversationErr
+}
+
 // CleanupEmptySessions 返回测试配置的空会话清理错误。
 func (port *chatHandlerCoveragePort) CleanupEmptySessions(context.Context, string) error {
 	return port.cleanupErr
@@ -254,7 +261,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	// cookie 是通过真实登录流程取得的管理员会话。
 	cookie := loginHelper(t, handler)
 	// successRecorder 保存文字发送成功响应。
-	successRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+	successRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 	if successRecorder.Code != http.StatusCreated {
 		t.Fatalf("success status=%d body=%s", successRecorder.Code, successRecorder.Body.String())
 	}
@@ -274,7 +281,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	for _, errorCase := range errorCases {
 		port.sendTextErr = errorCase.err
 		// recorder 保存当前文字发送错误响应。
-		recorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+		recorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 		if recorder.Code != errorCase.status {
 			t.Errorf("%s status=%d want=%d body=%s", errorCase.name, recorder.Code, errorCase.status, recorder.Body.String())
 		}
@@ -288,8 +295,8 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 		status int
 	}{
 		{"malformed json", "{", http.StatusBadRequest},
-		{"missing fields", `{"account_id":"acc1","chat_id":"","buyer_id":"buyer1","text":"x"}`, http.StatusBadRequest},
-		{"too long", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"` + strings.Repeat("中", 2001) + `"}`, http.StatusBadRequest},
+		{"missing fields", `{"account_id":"acc1","chat_id":"","peer_user_id":"buyer1","text":"x"}`, http.StatusBadRequest},
+		{"too long", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"` + strings.Repeat("中", 2001) + `"}`, http.StatusBadRequest},
 	}
 	// validationCase 表示当前文字发送输入校验场景。
 	for _, validationCase := range validationCases {
@@ -301,7 +308,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	}
 	port.ownsAccountResult = false
 	// forbiddenRecorder 保存账号归属失败响应。
-	forbiddenRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+	forbiddenRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 	if forbiddenRecorder.Code != http.StatusForbidden {
 		t.Fatalf("forbidden status=%d", forbiddenRecorder.Code)
 	}
@@ -322,7 +329,7 @@ func newChatImageCoverageRequest(t *testing.T, cookie *http.Cookie, fileContentT
 	writer := multipart.NewWriter(&body)
 	if includeFields {
 		// fields 保存图片发送所需的聊天标识字段。
-		fields := map[string]string{"account_id": "acc1", "chat_id": "chat1", "buyer_id": "buyer1"}
+		fields := map[string]string{"account_id": "acc1", "chat_id": "chat1", "peer_user_id": "buyer1"}
 		// fieldName、fieldValue 表示当前待写入的表单字段。
 		for fieldName, fieldValue := range fields {
 			// fieldErr 表示当前表单字段写入失败原因。
@@ -484,12 +491,12 @@ func TestChatSessionAndMessageHandlersCoverRefreshFallbacks(t *testing.T) {
 	// port 是当前测试注入的会话与消息应用端口。
 	port := &chatHandlerCoveragePort{
 		ownsAccountResult:        true,
-		listSessionsResult:       []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "买家"}},
-		refreshIdentitiesResult:  []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "补全买家"}},
+		listSessionsResult:       []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "买家"}},
+		refreshIdentitiesResult:  []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "补全买家"}},
 		refreshConversationsPage: chatapp.ConversationPage{HasMore: true, NextCursor: 9},
-		refreshHistoryPage:       chatapp.HistoryPage{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1"}, HasMore: true, NextCursor: 10},
-		listStoredPage:           chatapp.Page{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1"}},
-		resolveIdentityResult:    chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "本地补全"},
+		refreshHistoryPage:       chatapp.HistoryPage{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1"}, HasMore: true, NextCursor: 10},
+		listStoredPage:           chatapp.Page{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1"}},
+		resolveIdentityResult:    chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "本地补全"},
 	}
 	srv.applications.chat = port
 	// handler 是注入可控聊天端口后的真实路由。
@@ -584,6 +591,52 @@ func TestChatSessionAndMessageHandlersCoverRefreshFallbacks(t *testing.T) {
 	missingChatRecorder := serveChatCoverageRequest(handler, cookie, http.MethodGet, "/api/v1/chat/messages?account_id=acc1", "")
 	if missingChatRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("missing chat status=%d", missingChatRecorder.Code)
+	}
+}
+
+// TestDeleteChatSessionHandlerMapsApplicationResults 覆盖本地会话删除的成功与统一错误契约。
+func TestDeleteChatSessionHandlerMapsApplicationResults(t *testing.T) {
+	// srv、cleanup 是启用聊天应用的测试服务及资源释放函数。
+	srv, _, cleanup := newTestServerWithChat(t)
+	defer cleanup()
+	// port 是当前测试注入的可控会话删除应用端口。
+	port := &chatHandlerCoveragePort{}
+	srv.applications.chat = port
+	// handler 是注入可控聊天端口后的真实路由。
+	handler := srv.Router()
+	// cookie 是通过真实登录流程取得的管理员会话。
+	cookie := loginHelper(t, handler)
+	// cases 保存应用错误与 HTTP 状态、稳定错误码之间的映射断言。
+	cases := []struct {
+		// name 是子场景名称。
+		name string
+		// appErr 是应用端口返回值。
+		appErr error
+		// wantStatus 是预期 HTTP 状态。
+		wantStatus int
+		// wantCode 是预期统一错误码，成功时为空。
+		wantCode string
+	}{
+		{name: "success", wantStatus: http.StatusOK},
+		{name: "invalid", appErr: chatapp.ErrInvalidInput, wantStatus: http.StatusBadRequest, wantCode: "chat_session_invalid"},
+		{name: "forbidden", appErr: chatapp.ErrSessionForbidden, wantStatus: http.StatusForbidden, wantCode: "chat_session_forbidden"},
+		{name: "not-found", appErr: chatapp.ErrChatSessionNotFound, wantStatus: http.StatusNotFound, wantCode: "chat_session_not_found"},
+		{name: "unavailable", appErr: chatapp.ErrSessionUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: "chat_session_service_unavailable"},
+		{name: "storage", appErr: errors.New("storage failed"), wantStatus: http.StatusInternalServerError, wantCode: "chat_session_delete_failed"},
+	}
+	// testCase 是当前待执行的错误映射场景。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			port.deleteConversationErr = testCase.appErr
+			// recorder 保存本次真实 DELETE 路由响应。
+			recorder := serveChatCoverageRequest(handler, cookie, http.MethodDelete, "/api/v1/chat/sessions?account_id=acc1&chat_id=chat1", "")
+			if recorder.Code != testCase.wantStatus {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if testCase.wantCode != "" && !strings.Contains(recorder.Body.String(), `"code":"`+testCase.wantCode+`"`) {
+				t.Fatalf("body=%s", recorder.Body.String())
+			}
+		})
 	}
 }
 

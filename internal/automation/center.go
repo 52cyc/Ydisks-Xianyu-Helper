@@ -338,7 +338,7 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return false, err
 	}
 	if len(rules) == 0 {
-		c.logger.Debug("无匹配自动化规则，忽略事件", "trigger", task.TriggerType, "order_id", task.OrderID, "item_id", task.ItemID)
+		c.logger.Warn("未匹配商品规则或已确认的账号通用规则，未执行自动化", "trigger", task.TriggerType, "order_id", task.OrderID, "item_id", task.ItemID)
 		return false, nil
 	}
 	// firstErr 用于本次流程后续判断的firstErr
@@ -431,7 +431,7 @@ func (c *Center) deferTaskWithError(ctx context.Context, task Task, dueAt int64,
 // ManualFullDelivery 对已存在订单执行完整发货，和付款系统事件共用同一套
 // 订单详情补全、规格匹配、按购买数量发卡、确认发货逻辑。
 // ManualFullDelivery 封装ManualFull发货业务协调。
-func (c *Center) ManualFullDelivery(ctx context.Context, order *db.Order) (int, error) {
+func (c *Center) legacyManualFullDelivery(ctx context.Context, order *db.Order) (int, error) {
 	if c == nil || c.store == nil || order == nil {
 		return 0, fmt.Errorf("自动化中心未初始化或订单为空")
 	}

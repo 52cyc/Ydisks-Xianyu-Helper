@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,59 +203,133 @@ func (c *Conn) SendImage(ctx context.Context, myID, cid, toID, imageURL string, 
 	return c.sendChatContent(ctx, myID, cid, toID, content)
 }
 
+// SendItemCard 发送一条个人会话商品卡片，载荷与闲鱼 PC IM contentType=7 协议保持一致。
+func (c *Conn) SendItemCard(ctx context.Context, myID, cid, toID, itemID, title, imageURL, price string) error {
+	// normalizedItemID 和 normalizedTitle 是去除首尾空白的商品身份字段。
+	normalizedItemID, normalizedTitle := strings.TrimSpace(itemID), strings.TrimSpace(title)
+	// normalizedImageURL 和 normalizedPrice 是去除首尾空白及已有货币符号的展示字段。
+	normalizedImageURL, normalizedPrice := strings.TrimSpace(imageURL), strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(price), "¥"))
+	if normalizedItemID == "" || normalizedTitle == "" || normalizedImageURL == "" || normalizedPrice == "" {
+		return fmt.Errorf("发送商品卡片缺少必要字段")
+	}
+	// content 是官网个人会话商品卡片的内层消息正文。
+	content := map[string]any{
+		"contentType": 7,
+		"itemCard": map[string]any{
+			"itemTip": "我想要",
+			"item":    map[string]any{"itemId": normalizedItemID, "mainPic": normalizedImageURL, "price": "¥" + normalizedPrice, "title": normalizedTitle},
+		},
+	}
+	return c.sendChatContent(ctx, myID, cid, toID, content)
+}
+
 // sendChatContent 封装send聊天内容业务协调。
 func (c *Conn) sendChatContent(ctx context.Context, myID, cid, toID string, content any) error {
+	// err 保存发送开始前的取消状态。
+	if err := ctx.Err(); err != nil {
+		return &SendError{Kind: SendNotSent, Err: err}
+	}
 	myID = stripGoofish(myID)
 	cid = stripGoofish(cid)
 	toID = stripGoofish(toID)
 	if myID == "" || cid == "" || toID == "" {
-		return fmt.Errorf("发送消息缺少必要参数: myID=%q cid=%q toID=%q", myID, cid, toID)
+		return &SendError{Kind: SendNotSent, Err: fmt.Errorf("发送消息缺少必要参数")}
 	}
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := json.Marshal(content)
 	if err != nil {
-		return err
+		return &SendError{Kind: SendNotSent, Err: err}
 	}
 	// encoded 用于本次流程后续判断的encoded
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	// msg 用于本次流程后续判断的msg
-	msg := map[string]any{
-		"lwp": "/r/MessageSend/sendByReceiverScope",
-		"headers": map[string]any{
-			"mid": protocol.GenerateMid(),
-		},
-		"body": []any{
-			map[string]any{
-				"uuid":             protocol.GenerateUUID(),
-				"cid":              cid + "@goofish",
-				"conversationType": 1,
-				"content": map[string]any{
-					"contentType": 101,
-					"custom": map[string]any{
-						"type": 1,
-						"data": encoded,
-					},
+	// headers 保存一次平台发送使用的 mid；请求确认必须使用同一个 mid。
+	headers := map[string]any{"mid": protocol.GenerateMid()}
+	// body 保存与既有协议完全一致的消息载荷。
+	body := []any{
+		map[string]any{
+			"uuid":             protocol.GenerateUUID(),
+			"cid":              cid + "@goofish",
+			"conversationType": 1,
+			"content": map[string]any{
+				"contentType": 101,
+				"custom": map[string]any{
+					"type": 1,
+					"data": encoded,
 				},
-				"redPointPolicy": 0,
-				"extension": map[string]any{
-					"extJson": "{}",
-				},
-				"ctx": map[string]any{
-					"appVersion": "1.0",
-					"platform":   "web",
-				},
-				"mtags":                map[string]any{},
-				"msgReadStatusSetting": 1,
 			},
-			map[string]any{
-				"actualReceivers": []string{
-					toID + "@goofish",
-					myID + "@goofish",
-				},
+			"redPointPolicy": 0,
+			"extension": map[string]any{
+				"extJson": "{}",
+			},
+			"ctx": map[string]any{
+				"appVersion": "1.0",
+				"platform":   "web",
+			},
+			"mtags":                map[string]any{},
+			"msgReadStatusSetting": 1,
+		},
+		map[string]any{
+			"actualReceivers": []string{
+				toID + "@goofish",
+				myID + "@goofish",
 			},
 		},
 	}
-	return c.sendJSON(ctx, msg)
+	// response 保存平台对本次发送的确认；该请求不会额外创建连接或增加闲鱼调用次数。
+	response, err := c.request(ctx, "/r/MessageSend/sendByReceiverScope", headers, body, regResponseTimeout)
+	if err != nil {
+		return &SendError{Kind: SendUncertain, Err: err}
+	}
+	// code 和 ok 保存平台发送确认状态码及其严格可解析性。
+	code, ok := strictChatSendResponseCode(response["code"])
+	if !ok {
+		return &SendError{Kind: SendUncertain, Code: code}
+	}
+	if code == http.StatusOK {
+		return nil
+	}
+	if code >= http.StatusBadRequest && code < http.StatusInternalServerError && code != http.StatusRequestTimeout {
+		return &SendError{Kind: SendRejected, Code: code}
+	}
+	return &SendError{Kind: SendUncertain, Code: code}
+}
+
+// strictChatSendResponseCode 只接受完整整数形式的聊天发送状态码，避免截断浮点数或接受带尾随字符的字符串。
+func strictChatSendResponseCode(value any) (int, bool) {
+	switch // code 是当前待严格校验的平台状态码具体类型和值。
+	code := value.(type) {
+	case int:
+		return code, true
+	case float64:
+		if math.IsNaN(code) || math.IsInf(code, 0) || code != math.Trunc(code) || code > float64(math.MaxInt) || code < float64(math.MinInt) {
+			return 0, false
+		}
+		return int(code), true
+	case json.Number:
+		// parsed 和 err 保存不允许小数形式的 JSON 整数及解析错误。
+		parsed, err := code.Int64()
+		if err != nil || int64(int(parsed)) != parsed {
+			return 0, false
+		}
+		return int(parsed), true
+	case string:
+		// raw 保存去除协议外围空白后的完整状态码文本。
+		raw := strings.TrimSpace(code)
+		if raw == "" {
+			return 0, false
+		}
+		// digit 是当前参与严格数字校验的字符，不允许符号、小数点或尾随文本。
+		for _, digit := range raw {
+			if digit < '0' || digit > '9' {
+				return 0, false
+			}
+		}
+		// parsed 和 err 保存完整十进制状态码及溢出错误。
+		parsed, err := strconv.Atoi(raw)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // stripGoofish 封装stripGoofish业务协调。

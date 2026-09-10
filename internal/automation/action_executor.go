@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/money"
 	"xianyu-go/internal/orderspec"
 	"xianyu-go/internal/xianyu/cookierefresh"
 	"xianyu-go/internal/xianyu/mtop"
@@ -66,12 +67,15 @@ type shipmentConsignResult struct {
 	callErr error
 }
 
-// shipmentDeliveryProof 保存本次自动发货已经成功投递的文本和图片凭证；它只在当前运行内存中流转，不进入任务快照、日志或通知。
+// shipmentDeliveryProof 保存订单已经确定的发货内容和确认发货凭证。
+// 它最终会加密持久化到自动化运行，供失败后原样重发；不得进入任务快照、日志或通知。
 type shipmentDeliveryProof struct {
 	// tradeText 是已成功发送给买家的文本凭证，多个发货单位按换行合并。
 	tradeText string
 	// picList 是已成功发送给买家的图片地址，顺序与发送顺序一致。
 	picList []string
+	// messages 按原始顺序保存文本和图片消息，重发时必须使用此顺序且不得再次读取卡密库存。
+	messages []db.AutomationDeliveryMessage
 }
 
 // actionExecutionResult 保存动作成功产生的数量和可供后续确认发货使用的短暂凭证。
@@ -106,7 +110,8 @@ func (e *automationActionExecutor) executeAction(ctx context.Context, task Task,
 	return result.sent, err
 }
 
-// executeActionWithProof 执行动作并把已发送的发货凭证传递给后续确认发货动作；凭证不跨运行持久化。
+// executeActionWithProof 执行动作并把已发送的发货凭证传递给后续确认发货动作；
+// 运行协调器会把成功内容加密持久化为订单重发快照。
 func (e *automationActionExecutor) executeActionWithProof(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
 	switch action.ActionType {
 	case ActionConfirmShipment:
@@ -131,9 +136,13 @@ func (e *automationActionExecutor) executeActionWithProof(ctx context.Context, t
 			if errors.Is(sendErr, ErrMessageNotSent) {
 				return actionExecutionResult{}, sendErr
 			}
-			return actionExecutionResult{}, uncertainAction(sendErr)
+			// reviewProof 保存传输结果未知时的原始文本，人工补发只能复用它，不能重新渲染可能含卡密的模板。
+			reviewProof := shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: text}}}
+			return actionExecutionResult{reviewProof: reviewProof}, uncertainAction(sendErr)
 		}
-		return actionExecutionResult{sent: 1}, nil
+		// proof 保存这条已成功投递的普通文本，人工补发也必须复用同一内容而不能重新渲染动态卡密。
+		proof := shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: text}}}
+		return actionExecutionResult{sent: 1, proof: proof}, nil
 	default:
 		return actionExecutionResult{}, fmt.Errorf("未知自动化动作: %s", action.ActionType)
 	}
@@ -291,9 +300,17 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return fmt.Errorf("%w: 订单改价 Session 已失效且凭证恢复失败: %v", errActionNotPerformed, sessionErr)
 	}
 	if result.callErr != nil {
-		// errorKind、hasErrorKind 保存 MTOP 错误分类；普通业务拒绝已经由平台明确确认，不属于结果未知。
+		// errorKind、hasErrorKind 保存 MTOP 错误分类；明确业务拒绝终止重试，平台系统错误保留为可恢复失败。
 		errorKind, hasErrorKind := mtop.MTopErrorKindOf(result.callErr)
 		if hasErrorKind && errorKind == mtop.MTopErrorBusiness {
+			// failure 标记平台已经明确拒绝的改价，防止零成功动作被通用恢复队列再次提交。
+			failure := noRetryAction(result.callErr)
+			if len(persistenceErrs) > 0 {
+				return errors.Join(failure, errors.Join(persistenceErrs...))
+			}
+			return failure
+		}
+		if hasErrorKind && errorKind == mtop.MTopErrorSystem {
 			if len(persistenceErrs) > 0 {
 				return errors.Join(result.callErr, errors.Join(persistenceErrs...))
 			}
@@ -305,8 +322,8 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return uncertainAction(result.callErr)
 	}
 	if !result.succeeded {
-		// failure 是远端拒绝改价的业务错误，例如订单已付款或已关闭。
-		failure := fmt.Errorf("订单改价失败: %s", strings.Join(result.returns, "; "))
+		// failure 是远端拒绝改价的业务错误，例如订单已付款或已关闭；平台已明确未执行时禁止运行级自动重放。
+		failure := noRetryAction(fmt.Errorf("订单改价失败: %s", strings.Join(result.returns, "; ")))
 		if len(persistenceErrs) > 0 {
 			return errors.Join(failure, errors.Join(persistenceErrs...))
 		}
@@ -374,39 +391,11 @@ func adjustPriceCentsFromConfig(configJSON string) (int64, error) {
 // parseYuanToCents 把以元为单位的十进制金额文本转换为整数分。
 // 允许 0.01 到 1000000 元、至多两位小数；非法格式返回错误。
 func parseYuanToCents(raw string) (int64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, errors.New("改价动作缺少目标价格")
-	}
-	// wholeText、fracText 分别是金额的整数部分与小数部分文本。
-	wholeText, fracText := raw, ""
-	if // dot 是小数点在金额文本中的位置。
-	dot := strings.IndexByte(raw, '.'); dot >= 0 {
-		wholeText, fracText = raw[:dot], raw[dot+1:]
-	}
-	if wholeText == "" || len(fracText) > 2 {
+	// cents 是统一金额解析器返回的整数分结果。
+	cents, parseErr := money.ParseYuanToCents(raw)
+	if parseErr != nil {
 		return 0, fmt.Errorf("目标价格格式非法: %q", raw)
 	}
-	// whole、wholeErr 分别是整数元部分的数值和解析错误。
-	whole, wholeErr := strconv.ParseInt(wholeText, 10, 64)
-	if wholeErr != nil || whole < 0 {
-		return 0, fmt.Errorf("目标价格格式非法: %q", raw)
-	}
-	// frac 是小数部分折算出的分值。
-	frac := int64(0)
-	if fracText != "" {
-		// fracValue、fracErr 分别是小数部分的数值和解析错误。
-		fracValue, fracErr := strconv.ParseInt(fracText, 10, 64)
-		if fracErr != nil || fracValue < 0 {
-			return 0, fmt.Errorf("目标价格格式非法: %q", raw)
-		}
-		frac = fracValue
-		if len(fracText) == 1 {
-			frac *= 10
-		}
-	}
-	// cents 是目标价格的整数分结果。
-	cents := whole*100 + frac
 	if cents <= 0 || cents > 100000000 {
 		return 0, fmt.Errorf("目标价格必须在 0.01 到 1000000 元之间: %q", raw)
 	}

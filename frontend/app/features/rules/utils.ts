@@ -389,3 +389,18 @@ export const accountLabel = (account?: AccountDetail) =>
 // boolFlag 兼容后端可能返回的布尔、数字和字符串标志值。
 export const boolFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1";
+
+// withAllItemsConfirmation 保存用户对账号下全部商品发货范围的明确确认，并保留其他配置。
+export const withAllItemsConfirmation = (
+  raw: string | undefined,
+  confirmed: boolean,
+): string =>
+  JSON.stringify({ ...parseJSONObject(raw), allow_all_items: confirmed });
+
+// needsAllItemsConfirmation 判断账号级付款发货规则是否仍缺少明确授权。
+export const needsAllItemsConfirmation = (
+  rule: Partial<ShippingRule>,
+): boolean =>
+  (rule.trigger_type || "order_paid") === "order_paid" &&
+  !rule.item_id &&
+  parseJSONObject(rule.config_json).allow_all_items !== true;

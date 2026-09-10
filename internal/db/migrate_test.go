@@ -52,6 +52,11 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"default_reply_records", "image_sent"},
 		{"users", "is_admin"},
 		{"sessions", "session_id"},
+		{"chat_sessions", "account_role"},
+		{"chat_sessions", "buyer_user_id"},
+		{"chat_sessions", "seller_user_id"},
+		{"chat_sessions", "role_item_id"},
+		{"chat_sessions", "role_source"},
 		{"notification_channels", "user_id"},
 		{"notification_channels", "event_types"},
 		{"message_notifications", "event_types"},
@@ -176,9 +181,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
 	}
-	// finalVersion、versionErr 验证升级到清理已删除规则的 00043，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级包含聊天删除截止线、认证代次和会话角色迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 47 {
+	if versionErr != nil || finalVersion != 51 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -191,7 +196,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 }
 
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到包含本地 00045、归属修正审计 00046 和历史规则清理 00047 的最终版本。
+// 聊天迁移可以原样升级到包含 fork 迁移 00038-00047 和上游聊天安全迁移 00048-00051 的最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -214,18 +219,43 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if upErr != nil {
 		t.Fatalf("apply released main migrations: %v", upErr)
 	}
+	// legacyUserResult、legacyUserErr 创建升级前的管理用户，密码字段仅使用不可登录的测试占位值。
+	legacyUserResult, legacyUserErr := rawDB.Exec(`INSERT INTO users (username,email,password_hash) VALUES ('role-upgrade-user','role-upgrade@example.invalid','test-only')`)
+	if legacyUserErr != nil {
+		t.Fatalf("seed legacy user: %v", legacyUserErr)
+	}
+	// legacyUserID、legacyUserIDErr 是旧账号外键所需的本地测试用户主键。
+	legacyUserID, legacyUserIDErr := legacyUserResult.LastInsertId()
+	if legacyUserIDErr != nil {
+		t.Fatalf("read legacy user id: %v", legacyUserIDErr)
+	}
+	// legacyAccountErr 写入不含真实凭证的旧账号记录。
+	if _, legacyAccountErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id) VALUES ('role-upgrade-account','',?)`, legacyUserID); legacyAccountErr != nil {
+		t.Fatalf("seed legacy account: %v", legacyAccountErr)
+	}
+	// legacySessionErr 在 00051 之前写入旧会话，验证新增字段不会要求重建平台数据。
+	if _, legacySessionErr := rawDB.Exec(`INSERT INTO chat_sessions (cookie_id,chat_id,buyer_id,item_id) VALUES ('role-upgrade-account','role-upgrade-chat','role-upgrade-peer','role-upgrade-item')`); legacySessionErr != nil {
+		t.Fatalf("seed legacy chat session: %v", legacySessionErr)
+	}
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续至合并后 00047 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至合并后 00051 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
 	if !tableExists(t, rawDB, "order_reconciliations") {
 		t.Fatal("order_reconciliations should be created by the dev schema baseline migration")
 	}
-	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") {
-		t.Fatal("chat read tracking, media presentation, and session visibility columns should remain after dev schema baseline upgrade")
+	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") || !columnExists(t, rawDB, "chat_sessions", "user_hidden_at") || !columnExists(t, rawDB, "chat_sessions", "messages_cleared_at") {
+		t.Fatal("chat read tracking, media presentation, and user deletion columns should remain after dev schema baseline upgrade")
+	}
+	// legacyRole、legacyBuyerID 和 legacySellerID 是升级后旧会话的安全默认角色与双方标识。
+	var legacyRole, legacyBuyerID, legacySellerID string
+	// legacyRoleErr 验证旧会话升级后保持 unknown，不能把历史对端字段直接猜成买家。
+	legacyRoleErr := rawDB.QueryRow(`SELECT account_role,buyer_user_id,seller_user_id FROM chat_sessions WHERE cookie_id='role-upgrade-account' AND chat_id='role-upgrade-chat'`).Scan(&legacyRole, &legacyBuyerID, &legacySellerID)
+	if legacyRoleErr != nil || legacyRole != "unknown" || legacyBuyerID != "" || legacySellerID != "" {
+		t.Fatalf("legacy role=%q buyer=%q seller=%q err=%v", legacyRole, legacyBuyerID, legacySellerID, legacyRoleErr)
 	}
 	if !tableExists(t, rawDB, "chat_quick_replies") || !tableExists(t, rawDB, "chat_buyer_notes") {
 		t.Fatal("chat quick reply and buyer note tables should be created by the latest migration")
@@ -236,13 +266,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到双方迁移顺延后的最新 00047，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到会话角色语义的 00051，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 47 {
-		t.Fatalf("final migration version=%d, want 47", finalVersion)
+	if finalVersion != 51 {
+		t.Fatalf("final migration version=%d, want 51", finalVersion)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")
@@ -371,6 +401,8 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 		{"account_task_runs", "run_key"},
 		{"chat_sessions", "unread_count"},
 		{"chat_sessions", "item_image_url"},
+		{"chat_sessions", "user_hidden_at"},
+		{"chat_sessions", "messages_cleared_at"},
 		{"chat_messages", "message_key"},
 		{"chat_messages", "read_status"},
 		{"chat_messages", "read_at"},

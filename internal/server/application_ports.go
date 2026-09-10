@@ -150,6 +150,7 @@ type AuthenticationPort interface {
 	VerifyPassword(context.Context, string, string) (accountapp.AuthUser, bool, error)
 	UpdatePassword(context.Context, string, string) (bool, error)
 	UpdateCredentials(context.Context, int64, string, string) error
+	ValidateSession(context.Context, string, int64) error
 }
 
 // LoginAuditPort 定义账号登录成功后的审计能力。
@@ -235,6 +236,7 @@ type ChatPort interface {
 	CleanupEmptySessions(context.Context, string) error
 	OwnsAccount(context.Context, int64, string) (bool, error)
 	MarkRead(context.Context, int64, string, string) error
+	DeleteConversation(context.Context, int64, string, string) error
 	ReportPlatformRead(context.Context, string, string, []map[string]any) error
 	ResolveSessionIdentity(context.Context, chatapp.Session) (chatapp.Session, error)
 	RefreshSessionIdentities(context.Context, string, []chatapp.Session) ([]chatapp.Session, error)

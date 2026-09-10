@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -158,9 +159,31 @@ func (s *Service) RecordConversationPage(ctx context.Context, accountID, myID st
 		session := db.ChatSession{CookieID: accountID, ChatID: cid, BuyerID: peerID, BuyerName: peerName, BuyerAvatar: avatar,
 			ItemID: cleanNilString(ext["itemId"]), ItemTitle: cleanNilString(ext["itemTitle"]), ItemImageURL: cleanNilString(ext["itemMainPic"]), LastMessage: summary,
 			LastMessageAt: lastMessageAt, UnreadCount: unreadCount}
+		// roleRepository、roleSupported 表示生产仓储是否支持纯本地商品归属判断和角色持久化。
+		roleRepository, roleSupported := s.repository.(sessionRoleRepository)
+		if roleSupported && session.ItemID != "" && strings.TrimSpace(myID) != "" {
+			// owned、ownedErr 表示会话商品是否已存在于当前账号的本地商品表。
+			owned, ownedErr := roleRepository.ItemExists(ctx, accountID, session.ItemID)
+			if ownedErr != nil {
+				return page, ownedErr
+			}
+			if owned {
+				session.AccountRole = "seller"
+				session.BuyerUserID = peerID
+				session.SellerUserID = myID
+				session.RoleItemID = session.ItemID
+				session.RoleSource = "local_item"
+			}
+		}
 		if // err 用于本次流程后续判断的err
 		err := s.repository.UpsertSession(ctx, session); err != nil {
 			return page, err
+		}
+		if roleSupported && session.AccountRole == "seller" {
+			// roleErr 保存本地商品证据的角色写入结果；会话刚写入后必须固定该结论。
+			if roleErr := roleRepository.UpdateSessionRole(ctx, accountID, cid, session.ItemID, session.AccountRole, session.BuyerUserID, session.SellerUserID, session.RoleSource); roleErr != nil {
+				return page, roleErr
+			}
 		}
 		if // err 用于本次流程后续判断的err
 		err := s.repository.SyncSessionSummary(ctx, accountID, cid, summary, lastMessageAt, modifyTime, session.UnreadCount); err != nil {
@@ -284,13 +307,17 @@ func cleanNilString(value any) string {
 // Incoming 用于本次流程后续判断的Incoming
 type Incoming struct {
 	AccountID string
-	ChatID    string
-	BuyerID   string
-	BuyerName string
-	Text      string
-	MessageID string
-	ItemID    string
-	Raw       map[string]any
+	// AccountUserID 是从当前账号凭证快照解析出的平台用户标识，不包含 Cookie 或 Token。
+	AccountUserID string
+	ChatID        string
+	BuyerID       string
+	BuyerName     string
+	Text          string
+	MessageID     string
+	ItemID        string
+	// ObservedAt 是引擎首次接纳实时消息的 Unix 毫秒时间；零值时由聊天服务在入口处补齐。
+	ObservedAt int64
+	Raw        map[string]any
 }
 
 // Event 用于本次流程后续判断的Event
@@ -298,12 +325,6 @@ type Event struct {
 	Type    string          `json:"type"`
 	Message *db.ChatMessage `json:"message,omitempty"`
 	Session *db.ChatSession `json:"session,omitempty"`
-}
-
-// subscriber 用于本次流程后续判断的subscriber
-type subscriber struct {
-	accounts map[string]struct{}
-	ch       chan Event
 }
 
 // Service 用于本次流程后续判断的Service
@@ -325,65 +346,15 @@ func NewWithRepository(repository Repository) *Service {
 	return &Service{repository: repository, subs: make(map[uint64]subscriber)}
 }
 
-// Subscribe 封装Subscribe业务协调。
-func (s *Service) Subscribe(ctx context.Context, userID int64) (<-chan Event, func(), error) {
-	accountIDs, err := s.repository.ListOwnedIDs(ctx, userID) // accountIDs 和 err 是用户账号 ID 列表及查询错误。
-	if err != nil {
-		return nil, nil, err
-	}
-	// allowed 用于本次流程后续判断的allowed
-	allowed := make(map[string]struct{}, len(accountIDs))
-	for _, accountID := range accountIDs { // accountID 是当前订阅允许接收事件的账号。
-		allowed[accountID] = struct{}{}
-	}
-	s.mu.Lock()
-	s.next++
-	// id 用于本次流程后续判断的标识
-	id := s.next
-	// ch 用于本次流程后续判断的ch
-	ch := make(chan Event, 128)
-	s.subs[id] = subscriber{accounts: allowed, ch: ch}
-	s.mu.Unlock()
-	// once 用于本次流程后续判断的once
-	var once sync.Once
-	// cancel 用于本次流程后续判断的取消
-	cancel := func() {
-		once.Do(func() {
-			s.mu.Lock()
-			if // sub、ok 用于本次流程后续判断的sub、ok
-			sub, ok := s.subs[id]; ok {
-				delete(s.subs, id)
-				close(sub.ch)
-			}
-			s.mu.Unlock()
-		})
-	}
-	return ch, cancel, nil
-}
-
-// Publish 封装发布业务协调。
-func (s *Service) Publish(accountID string, event Event) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// sub 表示当前遍历过程中的sub
-	for _, sub := range s.subs {
-		if // ok 用于本次流程后续判断的ok
-		_, ok := sub.accounts[accountID]; !ok {
-			continue
-		}
-		select {
-		case sub.ch <- event:
-		default:
-			// A slow browser must not block the account receive loop. The client
-			// reconnects and reloads authoritative history when its buffer fills.
-		}
-	}
-}
-
 // RecordIncoming 封装RecordIncoming业务协调。
 func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMessage, bool, error) {
 	if s == nil || s.repository == nil {
 		return nil, false, fmt.Errorf("聊天服务未初始化")
+	}
+	// observedAt 固定实时消息进入业务层的本地顺序；引擎提供的防抖前时间优先。
+	observedAt := in.ObservedAt
+	if observedAt <= 0 {
+		observedAt = time.Now().UTC().UnixMilli()
 	}
 	// sentAt 用于本次流程后续判断的sentAt
 	sentAt := extractUnixMilli(in.Raw)
@@ -406,6 +377,19 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	session := db.ChatSession{CookieID: in.AccountID, ChatID: in.ChatID, BuyerID: in.BuyerID,
 		BuyerName: in.BuyerName, BuyerAvatar: extractString(in.Raw, "avatar", "avatarUrl", "senderAvatar"),
 		ItemID: in.ItemID, ItemTitle: extractString(in.Raw, "itemTitle", "title"), ItemImageURL: extractString(in.Raw, "itemMainPic", "itemImage", "itemImageUrl")}
+	// roleRepository 是可选的本地角色仓储；生产实现具备该能力，轻量测试替身可保持 unknown。
+	roleRepository, roleSupported := s.repository.(sessionRoleRepository)
+	if roleSupported && strings.TrimSpace(in.ItemID) != "" && strings.TrimSpace(in.AccountUserID) != "" && strings.TrimSpace(in.BuyerID) != "" {
+		// owned、ownedErr 表示当前商品是否存在于账号的本地有效商品集合。
+		owned, ownedErr := roleRepository.ItemExists(ctx, in.AccountID, in.ItemID)
+		if ownedErr == nil && owned {
+			session.AccountRole = "seller"
+			session.BuyerUserID = in.BuyerID
+			session.SellerUserID = in.AccountUserID
+			session.RoleItemID = in.ItemID
+			session.RoleSource = "local_item"
+		}
+	}
 	// messageType、content 用于本次流程后续判断的消息Type、content
 	messageType, content := extractMessageContent(in.Raw, in.Text)
 	// mediaDuration 保存平台语音载荷的秒级时长；非语音或缺失时保持零值。
@@ -420,13 +404,25 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	}
 	// message 用于本次流程后续判断的消息
 	message := db.ChatMessage{MessageKey: key, Direction: "incoming", SenderID: in.BuyerID,
-		SenderName: in.BuyerName, MessageType: messageType, Content: content, MediaDuration: mediaDuration, Status: "received", SentAt: sentAt}
+		SenderName: in.BuyerName, MessageType: messageType, Content: content, MediaDuration: mediaDuration, Status: "received", SentAt: sentAt, ObservedAt: observedAt}
 	// stored、inserted、err 保存落库消息、首次插入标识及错误；系统消息永不增加用户红点。
 	stored, inserted, err := s.repository.SaveMessage(ctx, session, message, messageType != "system")
-	if err == nil && inserted {
-		s.Publish(in.AccountID, Event{Type: "message.created", Message: stored, Session: &session})
+	if err != nil {
+		return stored, inserted, err
 	}
-	return stored, inserted, err
+	// roleErr 保存消息落库之后的角色持久化错误；它只能阻止自动回复，不能阻止已落库消息广播。
+	var roleErr error
+	if session.AccountRole == "seller" && roleSupported {
+		// roleErr 保存本地商品证据的会话角色写入结果；消息已经安全落库时仍向调用方报告数据库失败。
+		roleErr = roleRepository.UpdateSessionRole(ctx, in.AccountID, in.ChatID, in.ItemID, session.AccountRole, session.BuyerUserID, session.SellerUserID, session.RoleSource)
+		if errors.Is(roleErr, db.ErrNotFound) {
+			roleErr = nil
+		}
+	}
+	if inserted {
+		s.PublishContext(ctx, in.AccountID, Event{Type: "message.created", Message: stored, Session: &session})
+	}
+	return stored, inserted, roleErr
 }
 
 // RecordHistoryPage normalizes official IM history and stores it idempotently.
@@ -455,6 +451,12 @@ func (s *Service) RecordHistoryPage(ctx context.Context, accountID, chatID, myID
 		stored, _, err := s.repository.SaveMessage(ctx, session, message, false)
 		if err != nil {
 			return page, err
+		}
+		if stored == nil {
+			// 命中用户消息清空截止线后，当前项及后续平台分页都只会更旧，停止继续回灌历史。
+			page.HasMore = false
+			page.NextCursor = 0
+			continue
 		}
 		if message.MessageType != "text" && (stored.MessageType != message.MessageType || stored.Content != message.Content) {
 			// updateErr 保存历史接口用真实媒体地址纠正已有占位消息时的持久化错误。
@@ -617,6 +619,12 @@ func extractMessageContent(raw map[string]any, fallback string) (string, string)
 		case map[string]any:
 			// contentType 用于本次流程后续判断的内容类型
 			contentType := strings.TrimSpace(fmt.Sprint(typed["contentType"]))
+			if contentType == "7" {
+				// itemContent 是完整商品卡片归一化后的规范 JSON。
+				if itemContent := normalizedItemCardContent(typed); itemContent != "" {
+					return "item", itemContent
+				}
+			}
 			if contentType == "2" {
 				if // mediaURL 用于本次流程后续判断的mediaURL
 				mediaURL := extractString(typed["image"], "url"); mediaURL != "" {
@@ -730,14 +738,16 @@ func (s *Service) CreateOutgoing(ctx context.Context, session db.ChatSession, te
 func (s *Service) CreateOutgoingMedia(ctx context.Context, session db.ChatSession, messageType, content string) (*db.ChatMessage, error) {
 	// key 用于本次流程后续判断的key
 	key := "local-" + randomID()
-	// message 用于本次流程后续判断的消息
+	// observedAt 同时作为人工消息的本地接纳时间和默认发送时间，避免秒级平台时间影响删除排序。
+	observedAt := time.Now().UTC().UnixMilli()
+	// message 是发送前持久化的本地出站消息。
 	message := db.ChatMessage{MessageKey: key, Direction: "outgoing", SenderID: session.CookieID,
 		SenderName: "我", MessageType: messageType, Content: strings.TrimSpace(content), Status: "sending",
-		SentAt: time.Now().UTC().UnixMilli()}
+		SentAt: observedAt, ObservedAt: observedAt}
 	// stored、err 用于本次流程后续判断的stored、err
 	stored, _, err := s.repository.SaveMessage(ctx, session, message, false)
 	if err == nil {
-		s.Publish(session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
+		s.PublishContext(ctx, session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
 	}
 	return stored, err
 }
@@ -747,7 +757,7 @@ func (s *Service) SetOutgoingStatus(ctx context.Context, accountID, key, status 
 	// message、err 用于本次流程后续判断的message、err
 	message, err := s.repository.UpdateMessageStatus(ctx, accountID, key, status)
 	if err == nil {
-		s.Publish(accountID, Event{Type: "message.updated", Message: message})
+		s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	}
 	return message, err
 }
@@ -762,7 +772,7 @@ func (s *Service) MarkOutgoingRead(ctx context.Context, accountID, key string, r
 	if message == nil || message.Direction != "outgoing" {
 		return nil, nil
 	}
-	s.Publish(accountID, Event{Type: "message.updated", Message: message})
+	s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	return message, nil
 }
 
@@ -771,7 +781,7 @@ func (s *Service) MarkLatestOutgoingRead(ctx context.Context, accountID, chatID 
 	// message、err 保存回退更新后的消息及持久化错误。
 	message, err := s.repository.MarkLatestOutgoingRead(ctx, accountID, chatID, readAt)
 	if err == nil {
-		s.Publish(accountID, Event{Type: "message.updated", Message: message})
+		s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	}
 	return message, err
 }

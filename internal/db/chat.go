@@ -11,18 +11,37 @@ import (
 
 // ChatSession 用于本次流程后续判断的聊天会话
 type ChatSession struct {
-	CookieID    string `json:"account_id"`
-	ChatID      string `json:"chat_id"`
-	BuyerID     string `json:"buyer_id"`
-	BuyerName   string `json:"buyer_name"`
-	BuyerAvatar string `json:"buyer_avatar_url"`
-	ItemID      string `json:"item_id"`
-	ItemTitle   string `json:"item_title"`
+	CookieID string `json:"account_id"`
+	ChatID   string `json:"chat_id"`
+	// BuyerID 是历史数据库列承载的会话对端标识；对外契约必须使用 peer_user_id。
+	BuyerID string `json:"peer_user_id"`
+	// BuyerName 是历史数据库列承载的会话对端昵称；对外契约必须使用 peer_name。
+	BuyerName string `json:"peer_name"`
+	// BuyerAvatar 是历史数据库列承载的会话对端头像；对外契约必须使用 peer_avatar_url。
+	BuyerAvatar string `json:"peer_avatar_url"`
+	// AccountRole 是当前账号在 RoleItemID 商品会话中的角色，仅允许 seller、buyer 或 unknown。
+	AccountRole string `json:"account_role"`
+	// BuyerUserID 是经本地商品或平台发布者证据确认的买家平台标识。
+	BuyerUserID string `json:"buyer_user_id"`
+	// SellerUserID 是经本地商品或平台发布者证据确认的卖家平台标识。
+	SellerUserID string `json:"seller_user_id"`
+	// RoleItemID 是角色结论绑定的商品标识，商品变化时旧结论不得复用。
+	RoleItemID string `json:"role_item_id"`
+	// RoleSource 是角色证据来源，例如 local_item 或 platform_verified。
+	RoleSource string `json:"role_source"`
+	ItemID     string `json:"item_id"`
+	ItemTitle  string `json:"item_title"`
 	// ItemImageURL 是会话商品主图的公开地址，仅用于聊天列表展示。
 	ItemImageURL  string `json:"item_image_url"`
 	LastMessage   string `json:"last_message"`
 	LastMessageAt int64  `json:"last_message_at"`
 	UnreadCount   int    `json:"unread_count"`
+	// UserHiddenAt 是用户删除会话的 Unix 毫秒时间；非零时仅从聊天列表隐藏，自动化仍可使用会话标识。
+	UserHiddenAt int64 `json:"-"`
+	// MessagesClearedAt 是本地消息永久清空的 Unix 毫秒截止时间，历史同步不得重新写入该时间及之前的消息。
+	MessagesClearedAt int64 `json:"-"`
+	// LocalMessagesClearedAt 是实时消息的本地接纳截止时间，恢复可见状态时也必须保留。
+	LocalMessagesClearedAt int64 `json:"-"`
 }
 
 // ChatSessionCursor 是聊天会话稳定键集分页的最后一条排序键。
@@ -61,6 +80,8 @@ type ChatMessage struct {
 	ReadStatus    int    `json:"read_status"`
 	ReadAt        int64  `json:"read_at,omitempty"`
 	SentAt        int64  `json:"sent_at"`
+	// ObservedAt 是本进程首次接纳实时或人工消息的 Unix 毫秒时间，只参与删除并发判定，不持久化也不返回前端；零值表示平台历史回灌。
+	ObservedAt int64 `json:"-"`
 }
 
 // ChatStore 用于本次流程后续判断的聊天Store
@@ -93,13 +114,21 @@ func (s *ChatStore) UpsertSession(ctx context.Context, session ChatSession) erro
 		item_id=CASE WHEN ?<>'' THEN ? ELSE item_id END,
 		item_title=CASE WHEN ?<>'' THEN ? ELSE item_title END,
 		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,
-		last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
-		last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
-		unread_count=CASE WHEN ?>unread_count THEN ? ELSE unread_count END,is_visible=?,updated_at=?
+		account_role=CASE WHEN ?<>'' AND role_item_id<>? THEN 'unknown' ELSE account_role END,
+		buyer_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE buyer_user_id END,
+		seller_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE seller_user_id END,
+		role_source=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_source END,
+		role_item_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_item_id END,
+		last_message=CASE WHEN ?>messages_cleared_at AND last_message_at<=? THEN ? ELSE last_message END,
+		last_message_at=CASE WHEN ?>messages_cleared_at AND last_message_at<=? THEN ? ELSE last_message_at END,
+		unread_count=CASE WHEN ?>messages_cleared_at AND ?>unread_count THEN ? ELSE unread_count END,
+		user_hidden_at=CASE WHEN user_hidden_at>0 AND ?>messages_cleared_at THEN 0 ELSE user_hidden_at END,
+		is_visible=?,updated_at=?
 		WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName,
 		session.BuyerAvatar, session.BuyerAvatar, session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL,
-		session.LastMessageAt, session.LastMessage, session.LastMessageAt, session.LastMessageAt,
-		session.UnreadCount, session.UnreadCount, true, now, session.CookieID, session.ChatID)
+		session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID,
+		session.LastMessageAt, session.LastMessageAt, session.LastMessage, session.LastMessageAt, session.LastMessageAt, session.LastMessageAt,
+		session.LastMessageAt, session.UnreadCount, session.UnreadCount, session.LastMessageAt, true, now, session.CookieID, session.ChatID)
 	return err
 }
 
@@ -120,8 +149,10 @@ func (s *ChatStore) FindChatIDsByBuyerAndItem(ctx context.Context, cookieID, buy
 	// rows、err 保存当前账号下候选会话的查询结果及数据库错误。
 	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT chat_id
 		FROM chat_sessions
-		WHERE cookie_id=? AND buyer_id IN (?,?) AND item_id=? AND TRIM(chat_id)<>''`,
-		accountID, buyerVariants[0], buyerVariants[1], productID)
+		WHERE cookie_id=? AND item_id=? AND TRIM(chat_id)<>'' AND (
+			(account_role='seller' AND buyer_user_id IN (?,?)) OR
+			(account_role='unknown' AND buyer_id IN (?,?))
+		)`, accountID, productID, buyerVariants[0], buyerVariants[1], buyerVariants[0], buyerVariants[1])
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +193,116 @@ func (s *ChatStore) DeleteSession(ctx context.Context, cookieID, chatID string) 
 	return err
 }
 
+// HideAndClearSession 原子隐藏用户拥有的会话并物理清空展示消息，同时保留订单和自动化使用的会话定位字段。
+// userID、cookieID 和 chatID 限制删除范围；clearedAt 是 Unix 毫秒截止时间；返回 false 表示账号下没有该会话。
+func (s *ChatStore) HideAndClearSession(ctx context.Context, userID int64, cookieID, chatID string, clearedAt int64) (bool, error) {
+	if s == nil || s.DB == nil {
+		return false, errors.New("聊天存储未初始化")
+	}
+	// tx 保证隐藏标记、昵称快照和消息清空要么同时成功，要么全部回滚。
+	tx, beginErr := s.DB.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return false, beginErr
+	}
+	defer tx.Rollback()
+	// hiddenAt 保存当前用户删除状态。
+	var hiddenAt, localMessagesClearedAt int64
+	// buyerName 保存自动化仍会读取的昵称快照。
+	var buyerName string
+	// lastMessageAt 保存删除前会话摘要的平台时间，用于推进历史消息永久水位。
+	var lastMessageAt int64
+	// lookupQuery 是带用户归属条件的会话读取语句；行锁数据库用它串行化删除与新消息保存。
+	lookupQuery := `SELECT cs.user_hidden_at,cs.local_messages_cleared_at,cs.buyer_name,cs.last_message_at
+		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.chat_id=?`
+	if s.Dialect != DialectSQLite {
+		lookupQuery += ` FOR UPDATE`
+	}
+	// lookupErr 是带用户归属条件的会话读取结果，避免跨用户清空消息。
+	lookupErr := tx.QueryRowContext(ctx, lookupQuery, userID, cookieID, chatID).Scan(&hiddenAt, &localMessagesClearedAt, &buyerName, &lastMessageAt)
+	if errors.Is(lookupErr, sql.ErrNoRows) {
+		return false, nil
+	}
+	if lookupErr != nil {
+		return false, lookupErr
+	}
+	if hiddenAt > 0 {
+		return true, nil
+	}
+	// preservedName 在摘要昵称为空或被平台遮罩时保存历史中最后一个可信昵称，清空消息后自动化模板仍可使用。
+	preservedName := strings.TrimSpace(buyerName)
+	if preservedName == "" || strings.Contains(preservedName, "***") {
+		// candidateName 是删除前从真实入站消息中提取的最后一个未遮罩买家昵称。
+		var candidateName string
+		// nicknameErr 允许没有候选昵称，但任何真实数据库错误都必须回滚删除事务。
+		nicknameErr := tx.QueryRowContext(ctx, `SELECT sender_name FROM chat_messages
+			WHERE cookie_id=? AND chat_id=? AND direction='incoming' AND sender_name<>'' AND sender_name NOT LIKE '%***%'
+			AND message_type<>'system' AND sender_name<>content
+			ORDER BY sent_at DESC,id DESC LIMIT 1`, cookieID, chatID).Scan(&candidateName)
+		if nicknameErr == nil {
+			preservedName = strings.TrimSpace(candidateName)
+		} else if !errors.Is(nicknameErr, sql.ErrNoRows) {
+			return false, nicknameErr
+		}
+	}
+	if clearedAt <= 0 {
+		clearedAt = time.Now().UTC().UnixMilli()
+	}
+	if clearedAt < localMessagesClearedAt {
+		clearedAt = localMessagesClearedAt
+	}
+	// maximumMessageAt 保存事务开始前已存在消息的最大平台时间，未来偏移的旧消息也必须纳入历史水位。
+	var maximumMessageAt int64
+	// maximumErr 读取当前全部展示消息的最大平台时间；聚合查询总会返回一行。
+	maximumErr := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sent_at),0) FROM chat_messages WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).Scan(&maximumMessageAt)
+	if maximumErr != nil {
+		return false, maximumErr
+	}
+	// historyCutoff 只在平台消息时间域内取删除前摘要和已存消息的最大值；不得混入本机删除时钟，否则平台时钟落后时会吞掉删除后的新历史。
+	historyCutoff := int64(0)
+	if lastMessageAt > historyCutoff {
+		historyCutoff = lastMessageAt
+	}
+	if maximumMessageAt > historyCutoff {
+		historyCutoff = maximumMessageAt
+	}
+	// previousHistoryCutoff 防止平台时间偏移时第二次删除让历史水位倒退。
+	var previousHistoryCutoff int64
+	// err 保存读取历史截止线的数据库错误。
+	if err := tx.QueryRowContext(ctx, `SELECT messages_cleared_at FROM chat_sessions WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).Scan(&previousHistoryCutoff); err != nil {
+		return false, err
+	}
+	if previousHistoryCutoff > historyCutoff {
+		historyCutoff = previousHistoryCutoff
+	}
+	// updateResult 以 user_hidden_at=0 领取本次删除，重复请求不会推进截止时间或删除后来恢复的消息。
+	updateResult, updateErr := tx.ExecContext(ctx, `UPDATE chat_sessions SET
+		buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,user_hidden_at=?,local_messages_cleared_at=?,messages_cleared_at=?,
+		last_message='',last_message_at=0,unread_count=0,updated_at=?
+		WHERE cookie_id=? AND chat_id=? AND user_hidden_at=0`, preservedName, preservedName, clearedAt, clearedAt, historyCutoff,
+		time.Now().UTC().Unix(), cookieID, chatID)
+	if updateErr != nil {
+		return false, updateErr
+	}
+	// updatedRows 判断并发重复请求是否已经由另一个事务完成；零行时保持幂等成功且不再次清空。
+	updatedRows, rowsErr := updateResult.RowsAffected()
+	if rowsErr != nil {
+		return false, rowsErr
+	}
+	if updatedRows == 0 {
+		return true, nil
+	}
+	// deleteErr 删除取得会话行锁前已经完成落库的全部展示消息；等待该锁的新消息会在提交后按观察时间重新判定。
+	if _, deleteErr := tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE cookie_id=? AND chat_id=?`, cookieID, chatID); deleteErr != nil {
+		return false, deleteErr
+	}
+	// commitErr 保存隐藏标记、历史水位和消息物理清空的事务提交结果。
+	if commitErr := tx.Commit(); commitErr != nil {
+		return false, commitErr
+	}
+	return true, nil
+}
+
 // DeleteEmptySessions removes conversation shells returned by IM pagination
 // with visible=0 and no lastMessage. Older versions persisted these shells as
 // "暂无消息", although the official UI never renders them.
@@ -170,6 +311,7 @@ func (s *ChatStore) DeleteEmptySessions(ctx context.Context, cookieID string) er
 	// err 用于本次流程后续判断的err
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM chat_sessions
 		WHERE cookie_id=? AND (last_message='' OR last_message='暂无消息')
+		AND user_hidden_at=0
 		AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.cookie_id=chat_sessions.cookie_id AND m.chat_id=chat_sessions.chat_id)`, cookieID)
 	return err
 }
@@ -180,9 +322,10 @@ func (s *ChatStore) DeleteEmptySessions(ctx context.Context, cookieID string) er
 // SyncSessionSummary 同步会话Summary。
 func (s *ChatStore) SyncSessionSummary(ctx context.Context, cookieID, chatID, summary string, sentAt, observedModifyAt int64, unread int) error {
 	// err 用于本次流程后续判断的err
-	_, err := s.DB.ExecContext(ctx, `UPDATE chat_sessions SET last_message=?,last_message_at=?,unread_count=?,updated_at=?
-		WHERE cookie_id=? AND chat_id=? AND last_message_at<=?`, summary, sentAt, unread, time.Now().UTC().Unix(),
-		cookieID, chatID, observedModifyAt)
+	_, err := s.DB.ExecContext(ctx, `UPDATE chat_sessions SET last_message=?,last_message_at=?,unread_count=?,
+		user_hidden_at=CASE WHEN user_hidden_at>0 THEN 0 ELSE user_hidden_at END,updated_at=?
+		WHERE cookie_id=? AND chat_id=? AND last_message_at<=? AND ?>messages_cleared_at`, summary, sentAt, unread,
+		time.Now().UTC().Unix(), cookieID, chatID, observedModifyAt, sentAt)
 	return err
 }
 
@@ -290,6 +433,25 @@ func (s *ChatStore) SaveMessage(ctx context.Context, session ChatSession, messag
 		session.BuyerName, session.BuyerAvatar, session.ItemID, session.ItemTitle, session.ItemImageURL, "", int64(0), 0, now, now); err != nil {
 		return nil, false, fmt.Errorf("建立聊天会话: %w", err)
 	}
+	// userHiddenAt 和 messagesClearedAt 分别是本地观察截止线与平台历史永久水位。
+	var userHiddenAt, localMessagesClearedAt, messagesClearedAt int64
+	// cutoffQuery 读取清空边界；行锁数据库借此与删除事务串行，SQLite 已由前面的写入取得事务写锁。
+	cutoffQuery := `SELECT user_hidden_at,local_messages_cleared_at,messages_cleared_at FROM chat_sessions WHERE cookie_id=? AND chat_id=?`
+	if s.Dialect != DialectSQLite {
+		cutoffQuery += ` FOR UPDATE`
+	}
+	// cutoffErr 读取当前会话的清空边界；读取失败必须终止事务，避免绕过用户删除语义。
+	cutoffErr := tx.QueryRowContext(ctx, cutoffQuery, session.CookieID, session.ChatID).Scan(&userHiddenAt, &localMessagesClearedAt, &messagesClearedAt)
+	if cutoffErr != nil {
+		return nil, false, fmt.Errorf("读取聊天消息清空边界: %w", cutoffErr)
+	}
+	// liveAccepted 表示实时或人工消息在用户删除动作之后才被本进程接纳；它不依赖平台的秒级或偏移时间。
+	liveAccepted := message.ObservedAt > 0 && (localMessagesClearedAt == 0 || message.ObservedAt > localMessagesClearedAt)
+	// historyAccepted 表示平台历史消息严格晚于删除时记录的最大历史水位。
+	historyAccepted := message.ObservedAt == 0 && (messagesClearedAt == 0 || message.SentAt > messagesClearedAt)
+	if !liveAccepted && !historyAccepted {
+		return nil, false, nil
+	}
 
 	// prefix 用于本次流程后续判断的prefix
 	prefix := dialectInsertIgnorePrefix(s.Dialect)
@@ -341,12 +503,21 @@ func (s *ChatStore) SaveMessage(ctx context.Context, session ChatSession, messag
 		_, err := tx.ExecContext(ctx, `UPDATE chat_sessions SET buyer_id=CASE WHEN ?<>'' THEN ? ELSE buyer_id END,
 			buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,buyer_avatar_url=CASE WHEN ?<>'' THEN ? ELSE buyer_avatar_url END,
 			item_id=CASE WHEN ?<>'' THEN ? ELSE item_id END,item_title=CASE WHEN ?<>'' THEN ? ELSE item_title END,
-		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
+		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,
+		account_role=CASE WHEN ?<>'' AND role_item_id<>? THEN 'unknown' ELSE account_role END,
+		buyer_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE buyer_user_id END,
+		seller_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE seller_user_id END,
+		role_source=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_source END,
+		role_item_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_item_id END,
+		last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
 		last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
-		unread_count=unread_count+?,is_visible=?,updated_at=?
+		unread_count=unread_count+?,user_hidden_at=CASE WHEN user_hidden_at>0 THEN 0 ELSE user_hidden_at END,
+		is_visible=?,updated_at=?
 			WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName, session.BuyerAvatar, session.BuyerAvatar,
-			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL, message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta, true, now,
-			session.CookieID, session.ChatID); err != nil {
+			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL,
+			session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID,
+			message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta,
+			true, now, session.CookieID, session.ChatID); err != nil {
 			return nil, false, fmt.Errorf("更新聊天会话: %w", err)
 		}
 	}
@@ -399,9 +570,10 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 	}
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := s.DB.QueryContext(ctx, `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
-		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
-		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? ORDER BY cs.last_message_at DESC,cs.chat_id DESC LIMIT ?`, userID, cookieID, true, limit)
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? AND cs.user_hidden_at=0 ORDER BY cs.last_message_at DESC,cs.chat_id DESC LIMIT ?`, userID, cookieID, true, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -413,12 +585,36 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 		var row ChatSession
 		if // err 用于本次流程后续判断的err
 		err := rows.Scan(&row.CookieID, &row.ChatID, &row.BuyerID, &row.BuyerName, &row.BuyerAvatar,
-			&row.ItemID, &row.ItemTitle, &row.ItemImageURL, &row.LastMessage, &row.LastMessageAt, &row.UnreadCount); err != nil {
+			&row.ItemID, &row.ItemTitle, &row.ItemImageURL, &row.LastMessage, &row.LastMessageAt, &row.UnreadCount,
+			&row.AccountRole, &row.BuyerUserID, &row.SellerUserID, &row.RoleItemID, &row.RoleSource); err != nil {
 			return nil, err
 		}
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// FindSession 按用户归属、账号和会话标识精确读取一条可见会话。
+// 返回 ErrNotFound 表示会话不存在、不可见或不属于当前用户。
+func (s *ChatStore) FindSession(ctx context.Context, userID int64, cookieID, chatID string) (*ChatSession, error) {
+	// session 保存从数据库扫描出的非敏感会话摘要。
+	var session ChatSession
+	// err 是带账号归属条件的单行查询结果。
+	err := s.DB.QueryRowContext(ctx, `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
+		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.chat_id=? AND cs.is_visible=? AND cs.user_hidden_at=0`, userID, cookieID, chatID, true).
+		Scan(&session.CookieID, &session.ChatID, &session.BuyerID, &session.BuyerName, &session.BuyerAvatar,
+			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount,
+			&session.AccountRole, &session.BuyerUserID, &session.SellerUserID, &session.RoleItemID, &session.RoleSource)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
 }
 
 // ListSessionPage 按用户归属读取本地聊天会话的稳定键集分页结果。
@@ -429,9 +625,10 @@ func (s *ChatStore) ListSessionPage(ctx context.Context, userID int64, cookieID 
 	}
 	// query 保存归属过滤、可选键集条件和稳定排序共同构成的会话分页 SQL。
 	query := `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
-		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
-		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=?`
+		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? AND cs.user_hidden_at=0`
 	// args 保存与会话分页 SQL 占位符严格对应的非敏感查询参数。
 	args := []any{userID, cookieID, true}
 	if cursor != nil {
@@ -453,7 +650,8 @@ func (s *ChatStore) ListSessionPage(ctx context.Context, userID int64, cookieID 
 		var session ChatSession
 		// scanErr 保存当前数据库行映射到会话摘要时的错误。
 		if scanErr := rows.Scan(&session.CookieID, &session.ChatID, &session.BuyerID, &session.BuyerName, &session.BuyerAvatar,
-			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount); scanErr != nil {
+			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount,
+			&session.AccountRole, &session.BuyerUserID, &session.SellerUserID, &session.RoleItemID, &session.RoleSource); scanErr != nil {
 			return ChatSessionPage{}, scanErr
 		}
 		sessions = append(sessions, session)

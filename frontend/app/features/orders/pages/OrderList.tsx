@@ -1,12 +1,11 @@
-import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,FilePenLine,PackageCheck,Plus,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
+import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,FilePenLine,PackageCheck,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { formatLocalDateTime } from '../../../../dateTime';
 import type { OrderStatus } from '../api';
 import { OrderFilterBar } from '../components/OrderFilterBar';
 import { OrderBuyerNoteDialog } from '../components/OrderBuyerNoteDialog';
-import { OrderImportModal } from '../components/OrderImportModal';
-import { useOrderImport,useOrderQuery } from '../hooks';
+import { useOrderQuery } from '../hooks';
 import { useOrderActions } from '../orderActions';
 
 // StatusBadge 渲染订单状态徽标。
@@ -44,8 +43,6 @@ const StatusBadge: React.FC<{ /** status 表示状态。 */ status: OrderStatus 
 const OrderList: React.FC = () => {
   // orderQuery 负责订单查询、筛选、分页和展示辅助数据。
   const orderQuery = useOrderQuery({ pageSize: 15 });
-  // importState 负责订单导入弹窗、上传取消和失败重试。
-  const importState = useOrderImport(orderQuery.loadOrders);
   // { 解构得到当前 Hook 返回的状态和操作函数。
   const { orders, accounts, filter, setFilter, accountFilter, setAccountFilter, searchText, setSearchText, page, setPage, total, totalPages, pageSize, setPageSize, loading, loadOrders, accountName, accountNickname, getItemNameById } = orderQuery;
   // noteOrder 是当前打开买家共享备注的订单；空值表示弹窗关闭。
@@ -122,13 +119,6 @@ const OrderList: React.FC = () => {
         <div className="flex items-center gap-3">
             <button onClick={loadOrders} aria-label="刷新当前订单列表" className="p-3 rounded-2xl bg-white border border-gray-100 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shadow-sm">
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-            <button
-			  onClick={importState.openImportModal}
-              className="px-5 py-3 rounded-2xl font-bold bg-gray-900 text-white hover:bg-gray-800 transition-colors text-sm flex items-center gap-2 shadow-lg"
-            >
-              <Plus className="w-4 h-4" />
-              插入订单
             </button>
             <button onClick={handleSync} className="ios-btn-primary px-6 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 text-sm flex items-center gap-2">
                 <Truck className="w-5 h-5" />
@@ -442,8 +432,6 @@ const OrderList: React.FC = () => {
         </div>,
         document.body
       )}
-
-      <OrderImportModal {...importState} />
 
       {noteOrder && <OrderBuyerNoteDialog order={noteOrder} onClose={/* 当前回调关闭订单买家备注弹窗。 */ () => setNoteOrder(null)} />}
 

@@ -187,6 +187,14 @@ type fakeRepository struct {
 	markReadErr error
 	// markReadCalls 记录会话已读状态更新次数，避免测试误判未调用端口。
 	markReadCalls int
+	// hideFound 和 hideErr 保存原子隐藏清空端口的命中结果及预设错误。
+	hideFound bool
+	hideErr   error
+	// hiddenUserID、hiddenAccountID、hiddenChatID 和 hiddenAt 保存最近一次会话删除请求的完整非敏感参数。
+	hiddenUserID    int64
+	hiddenAccountID string
+	hiddenChatID    string
+	hiddenAt        int64
 }
 
 // fakePlatformReadReporter 记录平台已读上报调用并返回预设失败。
@@ -235,10 +243,10 @@ func (r *fakeRepository) DeleteEmptySessions(_ context.Context, _ string) error 
 }
 
 // UpdateSessionIdentity 记录应用层请求保存的会话身份。
-func (r *fakeRepository) UpdateSessionIdentity(_ context.Context, accountID, chatID, buyerID, buyerName, buyerAvatar string) error {
+func (r *fakeRepository) UpdateSessionIdentity(_ context.Context, accountID, chatID, peerUserID, peerName, peerAvatar string) error {
 	r.updatedSessionsMu.Lock()
 	defer r.updatedSessionsMu.Unlock()
-	r.updatedSessions = append(r.updatedSessions, Session{AccountID: accountID, ChatID: chatID, BuyerID: buyerID, BuyerName: buyerName, BuyerAvatar: buyerAvatar})
+	r.updatedSessions = append(r.updatedSessions, Session{AccountID: accountID, ChatID: chatID, PeerUserID: peerUserID, PeerName: peerName, PeerAvatar: peerAvatar})
 	return r.updateErr
 }
 
@@ -258,6 +266,51 @@ func (r *fakeRepository) ExistsOwned(_ context.Context, _ int64, _ string) (bool
 func (r *fakeRepository) MarkRead(_ context.Context, _ int64, _, _ string) error {
 	r.markReadCalls++
 	return r.markReadErr
+}
+
+// HideAndClearSession 记录用户会话删除参数，并返回测试预置的命中状态或错误。
+func (r *fakeRepository) HideAndClearSession(_ context.Context, userID int64, accountID, chatID string, clearedAt int64) (bool, error) {
+	r.hiddenUserID, r.hiddenAccountID, r.hiddenChatID, r.hiddenAt = userID, accountID, chatID, clearedAt
+	return r.hideFound, r.hideErr
+}
+
+// TestDeleteConversationValidatesOwnershipAndDelegatesAtomicClear 验证应用层会话删除的校验、归属、未命中和成功路径。
+func TestDeleteConversationValidatesOwnershipAndDelegatesAtomicClear(t *testing.T) {
+	// repository 保存可观察删除参数的会话仓储替身，默认账号归属且会话存在。
+	repository := &fakeRepository{owned: true, hideFound: true}
+	// service 是执行用户会话删除用例的应用服务。
+	service := New(repository)
+	// invalidErr 验证缺少会话标识时不会调用仓储。
+	invalidErr := service.DeleteConversation(context.Background(), 7, "account", " ")
+	if !errors.Is(invalidErr, ErrInvalidInput) || repository.hiddenAt != 0 {
+		t.Fatalf("invalid error=%v hidden_at=%d", invalidErr, repository.hiddenAt)
+	}
+	repository.owned = false
+	// forbiddenErr 验证账号不属于当前用户时返回稳定权限错误。
+	forbiddenErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(forbiddenErr, ErrSessionForbidden) {
+		t.Fatalf("forbidden error=%v", forbiddenErr)
+	}
+	repository.owned, repository.hideFound = true, false
+	// missingErr 验证账号归属正确但会话不存在时返回稳定未找到错误。
+	missingErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(missingErr, ErrChatSessionNotFound) {
+		t.Fatalf("missing error=%v", missingErr)
+	}
+	repository.hideFound = true
+	// successErr 保存带首尾空白参数的成功删除结果，仓储应只收到规范化标识。
+	successErr := service.DeleteConversation(context.Background(), 7, " account ", " chat ")
+	if successErr != nil || repository.hiddenUserID != 7 || repository.hiddenAccountID != "account" || repository.hiddenChatID != "chat" || repository.hiddenAt <= 0 {
+		t.Fatalf("success err=%v user=%d account=%q chat=%q at=%d", successErr, repository.hiddenUserID, repository.hiddenAccountID, repository.hiddenChatID, repository.hiddenAt)
+	}
+	// wantErr 是仓储模拟返回的数据库错误。
+	wantErr := errors.New("delete failed")
+	repository.hideErr = wantErr
+	// deleteErr 验证数据库错误原样离开应用层，供 HTTP 统一映射为内部错误。
+	deleteErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(deleteErr, wantErr) {
+		t.Fatalf("delete error=%v", deleteErr)
+	}
 }
 
 // fakeIdentityResolver 返回预设平台展示身份，不接触真实凭证或网络。
@@ -326,7 +379,7 @@ func TestListStoredMessagesUsesUserScopedPort(t *testing.T) {
 	// repository 是带有一条消息和会话摘要的测试端口。
 	repository := &fakeRepository{
 		messages: []Message{{ID: 1, ChatID: "chat-1", Content: "你好"}},
-		sessions: []Session{{ChatID: "chat-1", BuyerName: "买家甲"}},
+		sessions: []Session{{ChatID: "chat-1", PeerName: "买家甲"}},
 	}
 	// service 是使用测试端口构造的聊天历史服务。
 	service := New(repository)
@@ -335,7 +388,7 @@ func TestListStoredMessagesUsesUserScopedPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListStoredMessages() error = %v", err)
 	}
-	if repository.userID != 42 || len(page.Messages) != 1 || page.Session.BuyerName != "买家甲" || !page.HasMore {
+	if repository.userID != 42 || len(page.Messages) != 1 || page.Session.PeerName != "买家甲" || !page.HasMore {
 		t.Fatalf("unexpected page=%+v userID=%d", page, repository.userID)
 	}
 }
@@ -423,7 +476,7 @@ func TestSessionPortCoversCleanupOwnershipAndIdentity(t *testing.T) {
 	// repository 是记录端口调用的测试仓储。
 	repository := &fakeRepository{owned: true}
 	// service 是带平台身份替身的聊天应用服务。
-	service := NewWithIdentity(repository, fakeIdentityResolver{identity: Identity{BuyerName: "买家新名", BuyerAvatar: "avatar-new"}})
+	service := NewWithIdentity(repository, fakeIdentityResolver{identity: Identity{PeerName: "买家新名", PeerAvatar: "avatar-new"}})
 	// err 表示清理空会话时的应用层错误。
 	if err := service.CleanupEmptySessions(context.Background(), "account-1"); err != nil {
 		t.Fatalf("CleanupEmptySessions() error = %v", err)
@@ -434,10 +487,10 @@ func TestSessionPortCoversCleanupOwnershipAndIdentity(t *testing.T) {
 		t.Fatalf("OwnsAccount() = %v, %v", owned, err)
 	}
 	// resolved 和 resolveErr 保存身份补全后的会话及平台错误。
-	resolved, resolveErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"})
+	resolved, resolveErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"})
 	// updatedSessions 保存身份解析成功后的线程安全写入快照。
 	updatedSessions := repository.updatedSessionSnapshot()
-	if resolveErr != nil || resolved.BuyerName != "买家新名" || len(updatedSessions) != 1 {
+	if resolveErr != nil || resolved.PeerName != "买家新名" || len(updatedSessions) != 1 {
 		t.Fatalf("ResolveSessionIdentity() = %+v, %v; updates=%+v", resolved, resolveErr, updatedSessions)
 	}
 }
@@ -451,10 +504,10 @@ func TestSessionPortPreservesIdentityErrorAndCachedSession(t *testing.T) {
 	// service 是返回平台错误的聊天应用服务。
 	service := NewWithIdentity(repository, fakeIdentityResolver{err: wantErr})
 	// session 和 err 保存身份失败后的会话及错误。
-	session, err := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1", BuyerName: "旧名称"})
+	session, err := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1", PeerName: "旧名称"})
 	// failedUpdates 保存身份查询失败后的线程安全写入快照。
 	failedUpdates := repository.updatedSessionSnapshot()
-	if !errors.Is(err, wantErr) || session.BuyerName != "旧名称" || len(failedUpdates) != 1 {
+	if !errors.Is(err, wantErr) || session.PeerName != "旧名称" || len(failedUpdates) != 1 {
 		t.Fatalf("session=%+v err=%v updates=%+v", session, err, failedUpdates)
 	}
 }
@@ -464,17 +517,17 @@ func TestRefreshSessionIdentitiesKeepsOfficialSessionAndUpdatesPeers(t *testing.
 	// repository 是记录身份缓存写入的测试仓储。
 	repository := &fakeRepository{}
 	// service 是返回统一买家身份的批量补全服务。
-	service := NewWithIdentity(repository, fakeIdentityResolver{identity: Identity{BuyerName: "批量名称", BuyerAvatar: "批量头像"}})
+	service := NewWithIdentity(repository, fakeIdentityResolver{identity: Identity{PeerName: "批量名称", PeerAvatar: "批量头像"}})
 	// sessions 是包含普通联系人和官方会话的测试列表。
 	sessions := []Session{
-		{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"},
-		{AccountID: "account-1", ChatID: "chat-official", BuyerID: "1400", BuyerName: "闲小蜜"},
+		{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"},
+		{AccountID: "account-1", ChatID: "chat-official", PeerUserID: "1400", PeerName: "闲小蜜"},
 	}
 	// refreshed 和 refreshErr 保存批量补全结果及首个错误。
 	refreshed, refreshErr := service.RefreshSessionIdentities(context.Background(), "account-1", sessions)
 	// refreshedUpdates 保存并发身份刷新完成后的线程安全写入快照。
 	refreshedUpdates := repository.updatedSessionSnapshot()
-	if refreshErr != nil || refreshed[0].BuyerName != "批量名称" || refreshed[1].BuyerName != "闲小蜜" || len(refreshedUpdates) != 1 {
+	if refreshErr != nil || refreshed[0].PeerName != "批量名称" || refreshed[1].PeerName != "闲小蜜" || len(refreshedUpdates) != 1 {
 		t.Fatalf("refreshed=%+v err=%v updates=%+v", refreshed, refreshErr, refreshedUpdates)
 	}
 }
@@ -494,19 +547,19 @@ func TestSessionPortRejectsMissingCapabilities(t *testing.T) {
 func TestSessionQueriesAndLegacyReadIDResolution(t *testing.T) {
 	// repository 保存可供查询和诊断解析的聊天数据。
 	repository := &readMessageRepository{
-		fakeRepository: &fakeRepository{sessions: []Session{{ChatID: "chat-1", BuyerName: "买家"}}},
+		fakeRepository: &fakeRepository{sessions: []Session{{ChatID: "chat-1", PeerName: "买家"}}},
 		values:         []string{"not-json", `{"outer":[{"2":"chat-1@goofish","3":"platform.PNM","10":{"message_id":"legacy-1"}}]}`},
 	}
 	// service 是绑定查询仓储的聊天应用服务。
 	service := New(repository)
 	// sessions、err 保存账号会话列表和查询错误。
 	sessions, err := service.ListSessions(context.Background(), 7, " account-1 ", 20)
-	if err != nil || len(sessions) != 1 || sessions[0].BuyerName != "买家" {
+	if err != nil || len(sessions) != 1 || sessions[0].PeerName != "买家" {
 		t.Fatalf("sessions=%+v err=%v", sessions, err)
 	}
 	// found、err 保存命中的会话和查询错误。
 	found, err := service.FindSession(context.Background(), 7, "account-1", " chat-1 ")
-	if err != nil || found.BuyerName != "买家" {
+	if err != nil || found.PeerName != "买家" {
 		t.Fatalf("found=%+v err=%v", found, err)
 	}
 	// missing、err 保存未命中的零值会话及查询错误。
@@ -625,14 +678,14 @@ func TestSessionOwnershipAndRefreshBoundaries(t *testing.T) {
 		t.Fatalf("invalid ownership error=%v", invalidErr)
 	}
 	// identitySession、identityErr 保存平台身份失败时的缓存会话和错误。
-	identitySession, identityErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"})
+	identitySession, identityErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"})
 	if !errors.Is(identityErr, wantErr) || identitySession.ChatID != "chat-1" {
 		t.Fatalf("identitySession=%+v err=%v", identitySession, identityErr)
 	}
 	// noIdentityService 是未装配平台身份解析器的服务。
 	noIdentityService := New(&fakeRepository{})
 	// sessions、refreshErr 保存无解析器时原样返回的会话集合。
-	sessions := []Session{{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"}}
+	sessions := []Session{{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"}}
 	// refreshed、refreshErr 保存无解析器时原样返回的会话集合和错误。
 	refreshed, refreshErr := noIdentityService.RefreshSessionIdentities(context.Background(), "account-1", sessions)
 	if refreshErr != nil || len(refreshed) != 1 {

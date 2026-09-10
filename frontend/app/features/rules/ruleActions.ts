@@ -53,6 +53,7 @@ import {
   parseJSONObject,
   shouldReplaceGeneratedName,
   triggerMeta,
+  withAllItemsConfirmation,
 } from "./utils";
 
 // RuleActionsOptions 描述规则动作协调器依赖的页面数据、刷新函数和外部联动目标。
@@ -494,6 +495,10 @@ export const useRuleActions = ({
         item_id: itemID,
         item_title: item?.item_title || "",
         item_keyword: itemLabel,
+        config_json: withAllItemsConfirmation(
+          editingAutomationRule.config_json,
+          false,
+        ),
         name: shouldReplaceGeneratedName(editingAutomationRule.name)
           ? defaultRuleName(currentTrigger, itemLabel)
           : editingAutomationRule.name,
