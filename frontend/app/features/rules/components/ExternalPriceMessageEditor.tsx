@@ -27,6 +27,10 @@ const legacyFailureNotice =
 const defaultFailureNotice =
   "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理。";
 
+// defaultFulfillmentSuccessNotice 是外部货源成功后发送的第二条默认消息。
+const defaultFulfillmentSuccessNotice =
+  "【--使用方法--】\n1、点击【链接】打开（若打不开复制到浏览器打开）\n2、依次选取【门店】-【餐品】\n3、等待1分钟出取餐码\n4、凭取餐码到门店取餐\n卡密: {delivery_content}\n请务必检查取餐门店，出取餐码后无法退换，祝您用餐愉快～\n恭喜，【订单号】{order_id}已发货成功！\n您可随时查看确认发货结果。\n使用中有任何问题随时联系，满意请确认收货，感谢支持～";
+
 // failureNoticeText 返回自定义异常文案，并把升级前默认话术更新为新版文案。
 const failureNoticeText = (config: Record<string, unknown>): string => {
   // configured 是规则中已经保存的通用货源异常提示。
@@ -241,6 +245,22 @@ const ExternalPriceMessageEditor: React.FC<ExternalPriceMessageEditorProps> = ({
       />
     )}
     <div className="border-t border-violet-200 pt-4 space-y-4">
+      {hasExternalFulfillment && (
+        <MessageTextarea
+          label="外部货源发货成功文案（第二条）"
+          rows={11}
+          value={String(
+            config.fulfillment_success_notice_text ||
+              defaultFulfillmentSuccessNotice,
+          )}
+          help={<>必须保留 {"{delivery_content}"}，系统会替换为真实链接、卡密或充值结果；另支持 {"{order_id}"}、{"{item_title}"}、{"{item_id}"}、{"{quantity}"}。第一条订单受理提示由系统自动发送。</>}
+          onChange={
+            /* fulfillmentSuccessNoticeTextHandler 更新外部采购成功后的第二条完整消息。 */ (
+              value,
+            ) => onChange({ fulfillment_success_notice_text: value })
+          }
+        />
+      )}
       <MessageToggle
         label="采购最终失败后通知买家"
         detail="重试耗尽后每个订单最多发送一次；订单保持待发货并继续通知管理员。"

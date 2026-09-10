@@ -133,16 +133,32 @@ func TestSendExternalFulfillmentUsesStableOrderNumber(t *testing.T) {
 	executor := automationActionExecutor{store: store, senders: testSenderProvider{sender: sender}, externalFulfillment: func() ExternalFulfillment { return fulfillment }}
 	// task 是带购买数量的闲鱼付款订单。
 	task := Task{AccountID: "external-account", OrderID: "XY-ORDER-9", ChatID: "chat", BuyerID: "buyer", Quantity: "2", TriggerType: TriggerOrderPaid}
-	// action 是每件采购一份的外部商品发货动作。
-	action := db.AutomationAction{ID: 17, ActionType: ActionSendCard, DeliveryCount: 1, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"safe_price":"9.90"}`}
+	// ruleID 和 createRuleErr 创建带自定义第二条成功文案的真实付款规则。
+	ruleID, createRuleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "external-account", ItemID: "item-9", Name: "外部履约消息", TriggerType: TriggerOrderPaid, Enabled: true,
+		ConfigJSON: `{"fulfillment_success_notice_text":"订单 {order_id} 已完成\n交付内容：{delivery_content}"}`,
+		Actions:    []db.AutomationActionInput{{ActionType: ActionSendCard, DeliveryCount: 1, ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"safe_price":"9.90"}`, Enabled: true}},
+	})
+	if createRuleErr != nil {
+		t.Fatal(createRuleErr)
+	}
+	// rule 和 action 使用数据库实际动作 ID，验证运行时能读取规则级消息配置。
+	rule, getRuleErr := store.Automation.Get(ctx, ruleID)
+	if getRuleErr != nil || len(rule.Actions) != 1 {
+		t.Fatalf("读取外部履约规则失败: rule=%+v err=%v", rule, getRuleErr)
+	}
+	action := rule.Actions[0]
 	// sent、sendErr 保存执行结果。
 	sent, sendErr := executor.sendCard(ctx, task, action)
-	if sendErr != nil || sent != 2 || len(sender.texts) != 2 || len(fulfillment.requests) != 1 {
+	if sendErr != nil || sent != 1 || len(sender.texts) != 2 || len(fulfillment.requests) != 1 {
 		t.Fatalf("外部卡密履约失败: sent=%d texts=%v requests=%+v err=%v", sent, sender.texts, fulfillment.requests, sendErr)
+	}
+	if sender.texts[0] != "亲，已收到您的订单XY-ORDER-9\n正在为您发货，请稍候～\n预计1-2分钟，发货成功会第一时间通知您，感谢耐心等待！" || sender.texts[1] != "订单 XY-ORDER-9 已完成\n交付内容：CODE-1\n\nCODE-2" {
+		t.Fatalf("外部履约两条消息顺序或渲染错误: %q", sender.texts)
 	}
 	// request 是本次提交给供应商的采购参数。
 	request := fulfillment.requests[0]
-	if request.ExternalOrderNo != "xy-XY-ORDER-9-a17" || request.GoodsID != 4366 || request.Quantity != 2 || request.SafePrice != "9.90" {
+	if request.ExternalOrderNo != fmt.Sprintf("xy-XY-ORDER-9-a%d", action.ID) || request.GoodsID != 4366 || request.Quantity != 2 || request.SafePrice != "9.90" {
 		t.Fatalf("外部采购参数错误: %+v", request)
 	}
 }

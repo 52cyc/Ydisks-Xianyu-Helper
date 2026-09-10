@@ -20,12 +20,18 @@ func TestParseExternalPriceMessageConfigUpgradesLegacyDefault(t *testing.T) {
 	if config.QueryPromptText != defaultExternalPriceQueryPrompt || config.GuidanceText != defaultExternalPriceGuidance {
 		t.Fatalf("旧版默认话术未升级: %+v", config)
 	}
+	if config.SuccessNoticeText != defaultExternalFulfillmentSuccessNotice {
+		t.Fatalf("未配置成功文案时应使用默认第二条消息: %q", config.SuccessNoticeText)
+	}
 	// failureRaw 是升级前保存的通用采购失败默认提示。
 	failureRaw := `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"` + legacyExternalFulfillmentFailureNotice + `"}`
 	// failureConfig、failureErr 是升级后的保护价和货源站异常两类默认提示。
 	failureConfig, failureErr := parseExternalPriceMessageConfig(failureRaw)
 	if failureErr != nil || failureConfig.FailureNoticeText != defaultExternalFulfillmentFailureNotice || failureConfig.SafePriceFailureNoticeText != defaultExternalSafePriceFailureNotice {
 		t.Fatalf("旧版采购失败话术未升级: config=%+v err=%v", failureConfig, failureErr)
+	}
+	if _, invalidErr := parseExternalPriceMessageConfig(`{"fulfillment_success_notice_text":"缺少卡密占位符"}`); invalidErr == nil {
+		t.Fatal("缺少 delivery_content 的成功文案必须拒绝执行")
 	}
 }
 
@@ -377,7 +383,7 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	fulfillment := &externalFulfillmentStub{product: ExternalProductQuote{Price: "3.10", CanBuy: true}, fulfillErr: fmt.Errorf("%w: 当前价格超过保护价", ErrExternalSafePriceExceeded)}
 	// platform 记录确认发货调用；采购失败时调用次数必须保持为零。
 	platform := &fakeMTop{}
-	// sender 接收第三次采购失败后的买家人工处理提示。
+	// sender 接收首次订单受理提示和第三次采购失败后的买家人工处理提示。
 	sender := &testSender{}
 	// notifier 记录原有管理员失败通知，确保新增买家提示没有替代运维告警。
 	notifier := &recordingNotifier{}
@@ -392,21 +398,23 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	if firstErr := center.HandleTask(ctx, task); firstErr == nil { // firstErr 是首次保护价采购拒绝，应进入安全重试。
 		t.Fatal("首次保护价采购失败不应被当作成功")
 	}
-	if len(sender.texts) != 0 {
-		t.Fatalf("首次失败不应提示买家: %v", sender.texts)
+	// processingNotice 是采购开始前按订单只发送一次的固定受理提示。
+	processingNotice := "亲，已收到您的订单order-safe-price\n正在为您发货，请稍候～\n预计1-2分钟，发货成功会第一时间通知您，感谢耐心等待！"
+	if len(sender.texts) != 1 || sender.texts[0] != processingNotice {
+		t.Fatalf("首次采购应只发送订单受理提示: %v", sender.texts)
 	}
 	for retryIndex := 0; retryIndex < 2; retryIndex++ { // retryIndex 表示剩余两次自动恢复尝试的下标。
 		if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET next_retry_at=0 WHERE order_id=?`, task.OrderID); updateErr != nil { // updateErr 是测试加速重试时间的数据库错误。
 			t.Fatal(updateErr)
 		}
 		_ = NewScheduler(center).runRecoveryTasks(ctx)
-		if retryIndex == 0 && len(sender.texts) != 0 {
-			t.Fatalf("第二次失败仍不应提示买家: %v", sender.texts)
+		if retryIndex == 0 && len(sender.texts) != 1 {
+			t.Fatalf("第二次失败不得重复受理提示或提前发送失败通知: %v", sender.texts)
 		}
 	}
 	// expectedNotice 是按实时货源价 3.10 元加固定加价 0.50 元计算的新订单总价和重新下单引导。
 	expectedNotice := "最新总价 ¥3.60，请退款后重新拍下"
-	if len(sender.texts) != 1 || sender.texts[0] != expectedNotice {
+	if len(sender.texts) != 2 || sender.texts[1] != expectedNotice {
 		t.Fatalf("重试耗尽后买家提示异常: %v", sender.texts)
 	}
 	if len(fulfillment.requests) != 3 || platform.consignCalls != 0 {
@@ -417,7 +425,7 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	}
 	// duplicateErr 是重复扫描结果；已发送防重记录必须阻止第二次买家提示。
 	duplicateErr := NewScheduler(center).runRecoveryTasks(ctx)
-	if duplicateErr != nil || len(sender.texts) != 1 {
+	if duplicateErr != nil || len(sender.texts) != 2 {
 		t.Fatalf("最终失败提示不应重复: texts=%v err=%v", sender.texts, duplicateErr)
 	}
 	// supplierTask 模拟另一笔非保护价货源站异常，必须选择人工核实文案而不是重新报价。
@@ -426,7 +434,7 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	if noticeErr := center.sendExternalFulfillmentFailureNotice(ctx, supplierTask, *rule, false); noticeErr != nil { // noticeErr 是货源站异常提示的发送结果。
 		t.Fatal(noticeErr)
 	}
-	if len(sender.texts) != 2 || sender.texts[1] != "订单 order-supplier-error 正在人工核实，请勿重复下单" {
+	if len(sender.texts) != 3 || sender.texts[2] != "订单 order-supplier-error 正在人工核实，请勿重复下单" {
 		t.Fatalf("货源站异常应使用人工核实提示: %v", sender.texts)
 	}
 	// unavailableTask 模拟保护价拦截后商品已经不可采购，系统不得向买家发送不可靠的新价格。
@@ -437,7 +445,7 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	if noticeErr := center.sendExternalFulfillmentFailureNotice(ctx, unavailableTask, *rule, true); noticeErr != nil { // noticeErr 是重新报价失败后回退人工核实提示的结果。
 		t.Fatal(noticeErr)
 	}
-	if len(sender.texts) != 3 || sender.texts[2] != "订单 order-price-unavailable 正在人工核实，请勿重复下单" {
+	if len(sender.texts) != 4 || sender.texts[3] != "订单 order-price-unavailable 正在人工核实，请勿重复下单" {
 		t.Fatalf("最新报价不可用时应回退人工核实提示: %v", sender.texts)
 	}
 }

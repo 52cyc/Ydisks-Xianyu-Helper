@@ -138,6 +138,25 @@ func (e *automationActionExecutor) sendExternalFulfillmentWithProof(ctx context.
 	if attachErr != nil {
 		return actionExecutionResult{}, externalFulfillmentFailed(fmt.Errorf("%w: %v", errActionNotPerformed, attachErr))
 	}
+	// messageConfig 保存规则级履约消息；真实规则动作必须先发送一次订单受理提示。
+	messageConfig := externalPriceMessageConfig{SuccessNoticeText: defaultExternalFulfillmentSuccessNotice}
+	// itemTitle 是成功文案可选的闲鱼商品标题。
+	itemTitle := ""
+	if action.RuleID > 0 {
+		// rule 和 ruleErr 用于读取规则级可配置的成功文案。
+		rule, ruleErr := e.store.Automation.Get(ctx, action.RuleID)
+		if ruleErr != nil {
+			return actionExecutionResult{}, externalFulfillmentFailed(fmt.Errorf("%w: 读取外部履约消息配置: %v", errActionNotPerformed, ruleErr))
+		}
+		itemTitle = rule.ItemTitle
+		messageConfig, ruleErr = parseExternalPriceMessageConfig(rule.ConfigJSON)
+		if ruleErr != nil {
+			return actionExecutionResult{}, externalFulfillmentFailed(fmt.Errorf("%w: %v", errActionNotPerformed, ruleErr))
+		}
+		if noticeErr := e.sendExternalFulfillmentProcessingNotice(ctx, task, action.RuleID); noticeErr != nil {
+			return actionExecutionResult{}, noticeErr
+		}
+	}
 	// safePrice 仅在倒挂保护开启时传给供应站；新模型不再要求管理员维护固定保护价。
 	safePrice := ""
 	if config.inversionProtectionEnabled() {
@@ -162,7 +181,7 @@ func (e *automationActionExecutor) sendExternalFulfillmentWithProof(ctx context.
 	if result.State != "succeeded" {
 		return actionExecutionResult{}, externalFulfillmentFailed(fmt.Errorf("%w: 外部货源订单当前状态为 %s，稍后使用原单号查询", errActionNotPerformed, result.State))
 	}
-	// messages 是需要顺序发送给买家的卡密或直充结果。
+	// messages 是货源返回的卡密、链接或直充结果，最终统一嵌入可配置的第二条成功消息。
 	messages := append([]string(nil), result.Cards...)
 	if len(messages) == 0 && strings.TrimSpace(result.RechargeInfo) != "" {
 		messages = append(messages, result.RechargeInfo)
@@ -173,21 +192,47 @@ func (e *automationActionExecutor) sendExternalFulfillmentWithProof(ctx context.
 	if len(messages) == 0 {
 		return actionExecutionResult{}, uncertainAction(errors.New("外部货源已成功但没有可发送的卡密或直充结果"))
 	}
-	// sent 是已明确成功发送的外部履约结果数量。
-	sent := 0
-	// proof 保存实际发给买家的外部卡密或直充文本。
-	proof := shipmentDeliveryProof{}
-	for _, message := range messages { // message 是当前待发送的一条卡密或直充结果。
-		if sendErr := e.sendText(ctx, task, message); sendErr != nil {
-			if errors.Is(sendErr, ErrMessageNotSent) {
-				return actionExecutionResult{sent: sent, proof: proof}, sendErr
-			}
-			return actionExecutionResult{sent: sent, reviewProof: proof}, uncertainAction(sendErr)
+	// deliveryContent 保留货源返回的完整内容，多份卡券之间留空行便于买家阅读。
+	deliveryContent := strings.Join(messages, "\n\n")
+	// successText 把真实交付内容和订单变量填入规则级第二条成功文案。
+	successText := renderExternalPriceMessage(messageConfig.SuccessNoticeText, task, "", "", itemTitle)
+	successText = strings.TrimSpace(strings.ReplaceAll(successText, "{delivery_content}", deliveryContent))
+	if sendErr := e.sendText(ctx, task, successText); sendErr != nil {
+		if errors.Is(sendErr, ErrMessageNotSent) {
+			return actionExecutionResult{}, sendErr
 		}
-		proof.tradeText = appendTradeText(proof.tradeText, message)
-		sent++
+		return actionExecutionResult{reviewProof: shipmentDeliveryProof{tradeText: successText}}, uncertainAction(sendErr)
 	}
-	return actionExecutionResult{sent: sent, proof: proof}, nil
+	// proof 必须使用买家实际收到的完整成功消息，确认发货和人工恢复都不能退回原始卡密文本。
+	proof := shipmentDeliveryProof{tradeText: successText}
+	return actionExecutionResult{sent: 1, proof: proof}, nil
+}
+
+// sendExternalFulfillmentProcessingNotice 在采购前按规则和订单防重发送固定受理提示。
+func (e *automationActionExecutor) sendExternalFulfillmentProcessingNotice(ctx context.Context, task Task, ruleID int64) error {
+	if strings.TrimSpace(task.OrderID) == "" || strings.TrimSpace(task.ChatID) == "" || strings.TrimSpace(task.BuyerID) == "" {
+		return externalFulfillmentFailed(fmt.Errorf("%w: 外部履约受理提示缺少订单或会话信息", errActionNotPerformed))
+	}
+	// dedupeKey 保证同一规则的一笔订单即使包含多个外部动作或发生恢复重试，也只发送一次受理提示。
+	dedupeKey := fmt.Sprintf("external-fulfillment-processing:%d:%s", ruleID, strings.TrimSpace(task.OrderID))
+	// claimed 和 claimErr 表示当前动作是否取得受理提示发送权。
+	claimed, claimErr := e.store.Automation.ClaimExternalPriceMessage(ctx, db.ExternalPriceMessageRecord{
+		DedupeKey: dedupeKey, CookieID: task.AccountID, ChatID: task.ChatID, ItemID: task.ItemID, RuleID: ruleID,
+		OrderID: task.OrderID, MessageKind: "fulfillment_processing",
+	})
+	if claimErr != nil || !claimed {
+		return claimErr
+	}
+	// text 只包含订单号等闲鱼侧事实，不包含货源成本或凭证。
+	text := renderExternalPriceMessage(defaultExternalFulfillmentProcessingNotice, task, "", "", "")
+	if sendErr := e.sendText(ctx, task, text); sendErr != nil {
+		finishErr := e.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "failed", sendErr.Error())
+		return errors.Join(sendErr, finishErr)
+	}
+	if finishErr := e.store.Automation.FinishExternalPriceMessage(ctx, dedupeKey, "sent", ""); finishErr != nil {
+		return uncertainAction(fmt.Errorf("外部履约受理提示已发送但状态保存失败: %w", finishErr))
+	}
+	return nil
 }
 
 // renderExternalAttach 把直充字段模板绑定到当前闲鱼订单，缺少动态值时在采购前安全停止。

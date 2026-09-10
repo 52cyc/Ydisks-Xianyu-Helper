@@ -17,6 +17,11 @@ func TestValidateExternalPriceMessageConfig(t *testing.T) {
 	if validateErr := validateExternalPriceMessageConfig(failureNotice, TriggerOrderPaid, "item-1", false, true); validateErr != nil { // validateErr 是直接付款外部采购失败通知不应产生的校验错误。
 		t.Fatalf("有效采购失败通知被拒绝: %v", validateErr)
 	}
+	// successNotice 是包含真实交付内容占位符的有效第二条发货消息。
+	successNotice := `{"fulfillment_success_notice_text":"订单 {order_id}\n卡密：{delivery_content}"}`
+	if validateErr := validateExternalPriceMessageConfig(successNotice, TriggerOrderPaid, "item-1", false, true); validateErr != nil {
+		t.Fatalf("有效履约成功文案被拒绝: %v", validateErr)
+	}
 	// cases 保存应被拒绝的触发范围、商品范围、动态跟价状态和文案长度组合。
 	cases := []struct {
 		// name 是测试子场景名称。
@@ -36,6 +41,8 @@ func TestValidateExternalPriceMessageConfig(t *testing.T) {
 		{name: "失败通知没有外部货源", raw: failureNotice, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: false},
 		{name: "失败通知文案过长", raw: `{"fulfillment_failure_notice_enabled":true,"fulfillment_failure_notice_text":"` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
 		{name: "保护价提示文案过长", raw: `{"fulfillment_failure_notice_enabled":true,"fulfillment_safe_price_notice_text":"` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
+		{name: "成功文案缺少交付内容", raw: `{"fulfillment_success_notice_text":"订单已完成"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
+		{name: "成功文案过长", raw: `{"fulfillment_success_notice_text":"{delivery_content}` + strings.Repeat("长", 1001) + `"}`, triggerType: TriggerOrderPaid, itemID: "item-1", dynamic: false, external: true},
 	}
 	for _, testCase := range cases { // testCase 是当前应被拒绝的规则组合。
 		t.Run(testCase.name, func(t *testing.T) { // t 是隔离当前校验分支的测试句柄。

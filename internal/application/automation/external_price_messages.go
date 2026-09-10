@@ -25,6 +25,8 @@ type externalPriceMessageDraft struct {
 	SafePriceFailureNoticeText string `json:"fulfillment_safe_price_notice_text"`
 	// FailureNoticeText 是不包含货源成本和保护价的最终失败提示。
 	FailureNoticeText string `json:"fulfillment_failure_notice_text"`
+	// SuccessNoticeText 是外部采购成功后的可配置交付文案。
+	SuccessNoticeText string `json:"fulfillment_success_notice_text"`
 }
 
 // validateExternalPriceMessageConfig 校验询价消息和采购失败提示的规则范围，并限制聊天文案长度。
@@ -34,7 +36,11 @@ func validateExternalPriceMessageConfig(raw, triggerType, itemID string, dynamic
 	if unmarshalErr := json.Unmarshal([]byte(raw), &config); unmarshalErr != nil { // unmarshalErr 是已通过对象校验后仍无法解码字段类型的原因。
 		return errors.New("实时跟价消息配置格式无效")
 	}
-	if !config.GuidanceEnabled && !config.AdjustedNoticeEnabled && !config.FailureNoticeEnabled {
+	// successNoticeConfigured 表示用户已经保存外部履约成功文案；空值由运行时使用默认模板。
+	successNoticeConfigured := strings.TrimSpace(config.SuccessNoticeText) != ""
+	// successNoticeActive 只在规则仍包含外部货源动作时参与校验，切回本地库存不会被历史字段阻塞。
+	successNoticeActive := successNoticeConfigured && externalFulfillmentEnabled
+	if !config.GuidanceEnabled && !config.AdjustedNoticeEnabled && !config.FailureNoticeEnabled && !successNoticeActive {
 		return nil
 	}
 	if triggerType != TriggerOrderPaid {
@@ -46,12 +52,15 @@ func validateExternalPriceMessageConfig(raw, triggerType, itemID string, dynamic
 	if config.FailureNoticeEnabled && !externalFulfillmentEnabled {
 		return errors.New("采购失败通知只能用于外部货源发货规则")
 	}
+	if successNoticeActive && !strings.Contains(config.SuccessNoticeText, "{delivery_content}") {
+		return errors.New("履约成功文案必须包含 {delivery_content}")
+	}
 	if strings.TrimSpace(itemID) == "" {
 		return errors.New("开启外部货源买家通知必须关联具体闲鱼商品")
 	}
 	if utf8.RuneCountInString(config.QueryPromptText) > 1000 || utf8.RuneCountInString(config.GuidanceText) > 1000 ||
 		utf8.RuneCountInString(config.AdjustedNoticeText) > 1000 || utf8.RuneCountInString(config.SafePriceFailureNoticeText) > 1000 ||
-		utf8.RuneCountInString(config.FailureNoticeText) > 1000 {
+		utf8.RuneCountInString(config.FailureNoticeText) > 1000 || utf8.RuneCountInString(config.SuccessNoticeText) > 1000 {
 		return errors.New("外部货源买家通知文案不能超过 1000 个字")
 	}
 	return nil

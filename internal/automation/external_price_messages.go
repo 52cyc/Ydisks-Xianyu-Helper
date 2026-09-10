@@ -26,6 +26,10 @@ const (
 	legacyExternalFulfillmentFailureNotice = "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理；如不愿等待，也可以申请退款。"
 	// defaultExternalFulfillmentFailureNotice 是外部采购全部自动重试耗尽后发送的默认人工处理提示。
 	defaultExternalFulfillmentFailureNotice = "您好，您的订单正在人工核实处理中，目前暂时无法自动发货。请先不要重复下单，我们会尽快处理。"
+	// defaultExternalFulfillmentProcessingNotice 是外部采购开始前每个订单只发送一次的受理提示。
+	defaultExternalFulfillmentProcessingNotice = "亲，已收到您的订单{order_id}\n正在为您发货，请稍候～\n预计1-2分钟，发货成功会第一时间通知您，感谢耐心等待！"
+	// defaultExternalFulfillmentSuccessNotice 使用货源返回的真实交付内容生成第二条成功消息。
+	defaultExternalFulfillmentSuccessNotice = "【--使用方法--】\n1、点击【链接】打开（若打不开复制到浏览器打开）\n2、依次选取【门店】-【餐品】\n3、等待1分钟出取餐码\n4、凭取餐码到门店取餐\n卡密: {delivery_content}\n请务必检查取餐门店，出取餐码后无法退换，祝您用餐愉快～\n恭喜，【订单号】{order_id}已发货成功！\n您可随时查看确认发货结果。\n使用中有任何问题随时联系，满意请确认收货，感谢支持～"
 	// externalPriceGuidanceValidity 是同一规则和聊天会话中一次成功实时报价的有效时长。
 	externalPriceGuidanceValidity = 5 * time.Minute
 )
@@ -48,6 +52,8 @@ type externalPriceMessageConfig struct {
 	SafePriceFailureNoticeText string `json:"fulfillment_safe_price_notice_text"`
 	// FailureNoticeText 是最终失败提示，不允许自动拼入保护价、成本或利润。
 	FailureNoticeText string `json:"fulfillment_failure_notice_text"`
+	// SuccessNoticeText 是外部采购成功后的第二条消息，delivery_content 会替换为真实卡密、链接或直充结果。
+	SuccessNoticeText string `json:"fulfillment_success_notice_text"`
 }
 
 // parseExternalPriceMessageConfig 解析规则扩展配置并为已开启但留空的文案应用安全默认值。
@@ -55,7 +61,7 @@ func parseExternalPriceMessageConfig(raw string) (externalPriceMessageConfig, er
 	// config 是规则级消息配置；旧规则保持两个开关关闭。
 	var config externalPriceMessageConfig
 	if strings.TrimSpace(raw) == "" {
-		return config, nil
+		raw = "{}"
 	}
 	if unmarshalErr := json.Unmarshal([]byte(raw), &config); unmarshalErr != nil { // unmarshalErr 是规则配置 JSON 解析错误。
 		return config, errors.New("实时跟价消息配置不是有效 JSON")
@@ -76,6 +82,12 @@ func parseExternalPriceMessageConfig(raw string) (externalPriceMessageConfig, er
 	}
 	if config.FailureNoticeEnabled && strings.TrimSpace(config.SafePriceFailureNoticeText) == "" {
 		config.SafePriceFailureNoticeText = defaultExternalSafePriceFailureNotice
+	}
+	if strings.TrimSpace(config.SuccessNoticeText) == "" {
+		config.SuccessNoticeText = defaultExternalFulfillmentSuccessNotice
+	}
+	if !strings.Contains(config.SuccessNoticeText, "{delivery_content}") {
+		return config, errors.New("外部履约成功文案必须包含 {delivery_content}")
 	}
 	return config, nil
 }
