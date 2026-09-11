@@ -386,6 +386,8 @@ type FulfillmentPort interface {
 	UpdateInstance(context.Context, int64, int64, fulfillmentapp.InstanceInput) (fulfillmentapp.Instance, error)
 	DeleteInstance(context.Context, int64, int64) error
 	ListProducts(context.Context, int64, int64) ([]fulfillmentapp.Product, error)
+	ListCategories(context.Context, int64, int64) ([]fulfillmentapp.Category, error)
+	ListProductPage(context.Context, int64, int64, fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error)
 	GetProduct(context.Context, int64, int64, int64) (fulfillmentapp.Product, error)
 	ListMappings(context.Context, int64) ([]fulfillmentapp.Mapping, error)
 	CreateMapping(context.Context, int64, fulfillmentapp.MappingInput) (fulfillmentapp.Mapping, error)

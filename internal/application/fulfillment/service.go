@@ -67,6 +67,54 @@ func (service *Service) ListProducts(ctx context.Context, userID, instanceID int
 	return service.gateway.ListProducts(ctx, instance)
 }
 
+// ListCategories 读取支持目录选品的货源实例目录树。
+func (service *Service) ListCategories(ctx context.Context, userID, instanceID int64) ([]Category, error) {
+	// instance、instanceErr 分别是短时凭证视图和归属读取错误。
+	instance, instanceErr := service.repository.GetInstance(ctx, userID, instanceID, true)
+	if instanceErr != nil {
+		return nil, instanceErr
+	}
+	if !instance.Enabled {
+		return nil, errors.New("货源实例已停用")
+	}
+	// catalog、supported 是当前协议是否实现目录选品能力。
+	catalog, supported := service.gateway.(CatalogGateway)
+	if !supported {
+		return nil, errors.New("当前货源协议暂不支持目录选品")
+	}
+	return catalog.ListCategories(ctx, instance)
+}
+
+// ListProductPage 校验分页条件后读取货源商品页。
+func (service *Service) ListProductPage(ctx context.Context, userID, instanceID int64, query ProductListQuery) (ProductPage, error) {
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 {
+		query.PageSize = 50
+	}
+	if query.PageSize > 100 {
+		return ProductPage{}, errors.New("每页商品数量不能超过 100")
+	}
+	query.Keyword = strings.TrimSpace(query.Keyword)
+	// instance、instanceErr 分别是短时凭证视图和归属读取错误。
+	instance, instanceErr := service.repository.GetInstance(ctx, userID, instanceID, true)
+	if instanceErr != nil {
+		return ProductPage{}, instanceErr
+	}
+	if !instance.Enabled {
+		return ProductPage{}, errors.New("货源实例已停用")
+	}
+	// catalog、supported 是当前协议是否实现分页选品能力。
+	catalog, supported := service.gateway.(CatalogGateway)
+	if !supported {
+		// products、listErr 保留旧协议的一次性商品列表兼容能力。
+		products, listErr := service.gateway.ListProducts(ctx, instance)
+		return ProductPage{Items: products, Total: len(products), Page: 1, PageSize: len(products)}, listErr
+	}
+	return catalog.ListProductPage(ctx, instance, query)
+}
+
 // GetProduct 读取远程商品详情及直充附加字段。
 func (service *Service) GetProduct(ctx context.Context, userID, instanceID, goodsID int64) (Product, error) {
 	// instance 包含本次外部请求所需的短时秘钥视图。

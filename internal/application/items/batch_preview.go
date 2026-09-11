@@ -81,6 +81,8 @@ type BatchPreviewAutomation struct {
 	ReviewGift BatchPreviewCardAutomation `json:"review_gift"`
 	// ReviewRequest 是超时求评价配置。
 	ReviewRequest BatchPreviewReviewRequest `json:"review_request"`
+	// ExternalDelivery 是付款后按远程商品 ID 自动采购并发货的配置。
+	ExternalDelivery BatchPreviewExternalDelivery `json:"external_delivery"`
 }
 
 // BatchPreviewRow 是表格一行经归一化和校验后的应用模型。
@@ -326,6 +328,22 @@ func (service *BatchPreviewService) validateAutomation(ctx context.Context, user
 	}
 	validateCards(config.PaidDelivery, "付款发货")
 	validateCards(config.ReviewGift, "评价赠品")
+	if config.ExternalDelivery.Enabled {
+		if config.PaidDelivery.Enabled {
+			errorsFound = append(errorsFound, "付款发货不能同时选择本地卡密和外部货源")
+		}
+		if config.ExternalDelivery.InstanceID <= 0 || config.ExternalDelivery.GoodsID <= 0 {
+			errorsFound = append(errorsFound, "外部货源缺少实例或商品 ID")
+		}
+		if config.ExternalDelivery.GoodsType != 1 {
+			errorsFound = append(errorsFound, "首版批量上架仅支持卡密类单规格货源商品")
+		}
+		if strings.TrimSpace(config.ExternalDelivery.SafePrice) != "" {
+			if cents, priceErr := parseMoneyCents(config.ExternalDelivery.SafePrice); priceErr != nil || cents <= 0 { // cents、priceErr 是可选采购保护价分值和格式错误。
+				errorsFound = append(errorsFound, "外部货源采购保护价必须大于 0")
+			}
+		}
+	}
 	if config.ReviewRequest.Enabled {
 		if config.ReviewRequest.AfterShippedHours <= 0 {
 			errorsFound = append(errorsFound, "求评价等待小时必须大于 0")
@@ -640,6 +658,13 @@ func parseAutomation(fields map[string]any) BatchPreviewAutomation {
 		PaidDelivery:  BatchPreviewCardAutomation{Enabled: parseBool(firstString(fields, "paid_delivery_enabled", "付款发货启用")), Actions: paidActions, ParseError: paidError},
 		ReviewGift:    BatchPreviewCardAutomation{Enabled: parseBool(firstString(fields, "review_gift_enabled", "评价赠品启用")), Actions: reviewActions, ParseError: reviewError},
 		ReviewRequest: BatchPreviewReviewRequest{Enabled: parseBool(firstString(fields, "review_request_enabled", "求评价启用")), AfterShippedHours: parseIntDefault(firstString(fields, "review_request_after_hours", "求评价等待小时"), 72), Message: firstString(fields, "review_request_message", "求评价文案"), MaxAttempts: parseIntDefault(firstString(fields, "review_request_max_attempts", "求评价最多次数"), 1), DelaySeconds: parseIntDefault(firstString(fields, "review_request_delay_seconds", "求评价延迟秒"), 0)},
+		ExternalDelivery: BatchPreviewExternalDelivery{
+			Enabled: parseBool(firstString(fields, "external_delivery_enabled")), InstanceID: int64(parseIntDefault(firstString(fields, "external_instance_id"), 0)),
+			GoodsID: int64(parseIntDefault(firstString(fields, "external_goods_id"), 0)), GoodsName: firstString(fields, "external_goods_name"),
+			GoodsType: parseIntDefault(firstString(fields, "external_goods_type"), 0), SafePrice: firstString(fields, "external_safe_price"),
+			ProfitRate: firstString(fields, "external_profit_rate"), PriceSyncEnabled: parseBool(firstString(fields, "external_price_sync_enabled")),
+			StopPurchaseOnInversion: parseBool(firstString(fields, "external_stop_purchase_on_inversion")),
+		},
 	}
 }
 

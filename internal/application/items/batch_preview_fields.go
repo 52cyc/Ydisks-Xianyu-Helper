@@ -90,6 +90,24 @@ func normalizeHeader(header string) string {
 		return "review_request_max_attempts"
 	case "reviewrequestdelayseconds", "求评价延迟秒":
 		return "review_request_delay_seconds"
+	case "externaldeliveryenabled":
+		return "external_delivery_enabled"
+	case "externalinstanceid":
+		return "external_instance_id"
+	case "externalgoodsid":
+		return "external_goods_id"
+	case "externalgoodsname":
+		return "external_goods_name"
+	case "externalgoodstype":
+		return "external_goods_type"
+	case "externalsafeprice":
+		return "external_safe_price"
+	case "externalprofitrate":
+		return "external_profit_rate"
+	case "externalpricesyncenabled":
+		return "external_price_sync_enabled"
+	case "externalstoppurchaseoninversion":
+		return "external_stop_purchase_on_inversion"
 	default:
 		return strings.TrimPrefix(strings.TrimSpace(header), "\uFEFF")
 	}

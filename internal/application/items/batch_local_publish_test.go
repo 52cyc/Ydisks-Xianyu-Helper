@@ -2,6 +2,7 @@ package items
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -97,6 +98,36 @@ func TestBatchLocalPublishServiceCompletesLocalState(t *testing.T) {
 	}
 	if len(ruleRepository.inputs) != 2 || ruleRepository.inputs[0].Actions[1].ActionType != automationapp.ActionConfirmShipment || ruleRepository.inputs[1].TriggerType != automationapp.TriggerReviewMissingTimeout {
 		t.Fatalf("自动化规则转换异常: %+v", ruleRepository.inputs)
+	}
+}
+
+// TestBatchLocalPublishServiceCreatesExternalFulfillmentRule 验证发布成功后创建外部采购与确认发货动作。
+func TestBatchLocalPublishServiceCreatesExternalFulfillmentRule(t *testing.T) {
+	// completionRepository 保存当前 worker 的有效批次租约。
+	completionRepository := &batchCompletionRepositoryFake{batch: BatchInfo{Status: "running", WorkerToken: "worker"}}
+	// itemRepository 保存本地商品写入结果。
+	itemRepository := &batchPublishedItemRepositoryFake{}
+	// ruleRepository 捕获外部货源自动化规则。
+	ruleRepository := &batchPublishRuleRepositoryFake{}
+	// service 是待验证的批量本地收口服务。
+	service, serviceErr := NewBatchLocalPublishService(completionRepository, itemRepository, ruleRepository)
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	// automationJSON 是选品批次持久化的外部货源配置。
+	automationJSON := `{"external_delivery":{"enabled":true,"instance_id":3,"goods_id":9,"goods_name":"视频月卡","safe_price":"2.80","profit_rate":"10.00","price_sync_enabled":true,"stop_purchase_on_inversion":true}}`
+	// completeErr 是平台发布成功后的本地收口结果。
+	completeErr := service.Complete(context.Background(), 1, BatchRow{ID: 7, BatchID: "batch-1", CookieID: "acc1", Title: "视频月卡", Quantity: 1, AutomationJSON: automationJSON}, "worker", &BatchPublishResult{ItemID: "item-9", Title: "视频月卡", PriceText: "3.08"})
+	if completeErr != nil || len(ruleRepository.inputs) != 1 || len(ruleRepository.inputs[0].Actions) != 2 || ruleRepository.inputs[0].Actions[1].ActionType != automationapp.ActionConfirmShipment {
+		t.Fatalf("外部货源规则收口失败: rules=%+v err=%v", ruleRepository.inputs, completeErr)
+	}
+	// config 是发送卡密动作中供现有执行器消费的结构化配置。
+	var config map[string]any
+	if decodeErr := json.Unmarshal([]byte(ruleRepository.inputs[0].Actions[0].ConfigJSON), &config); decodeErr != nil { // decodeErr 是动作配置 JSON 解析错误。
+		t.Fatal(decodeErr)
+	}
+	if config["source_type"] != "external" || config["goods_id"] != float64(9) || config["profit_rate"] != "10.00" {
+		t.Fatalf("外部货源动作配置错误: %#v", config)
 	}
 }
 

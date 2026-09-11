@@ -2001,6 +2001,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/fulfillment/instances/{instance_id}/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listFulfillmentCategories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/fulfillment/instances/{instance_id}/products/{goods_id}": {
         parameters: {
             query?: never;
@@ -2227,10 +2243,29 @@ export interface components {
             status: number;
             stock_num: number;
             can_buy: boolean;
+            goods_info?: string;
+            goods_notice?: string;
+            start_count?: number;
+            end_count?: number;
+            buy_channels?: string;
+            blocked_channels?: string;
+            can_price?: boolean;
+            need_balance?: boolean;
             attach?: components["schemas"]["FulfillmentAttachField"][];
+        };
+        FulfillmentCategory: {
+            id: number;
+            name: string;
+            children?: components["schemas"]["FulfillmentCategory"][];
+        };
+        FulfillmentCategoryListResponse: {
+            data: components["schemas"]["FulfillmentCategory"][];
         };
         FulfillmentProductListResponse: {
             data: components["schemas"]["FulfillmentProduct"][];
+            total: number;
+            page: number;
+            page_size: number;
         };
         FulfillmentMappingInput: {
             account_id: string;
@@ -14032,7 +14067,12 @@ export interface operations {
     };
     listFulfillmentProducts: {
         parameters: {
-            query?: never;
+            query?: {
+                category_id?: number;
+                keyword?: string;
+                page?: number;
+                page_size?: number;
+            };
             header?: never;
             path: {
                 instance_id: number;
@@ -14061,6 +14101,55 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listFulfillmentCategories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                instance_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 远程商品目录树 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FulfillmentCategoryListResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 实例不存在 */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -36,6 +36,16 @@ func (fulfillmentContractPort) ListProducts(context.Context, int64, int64) ([]fu
 	return []fulfillmentapp.Product{fulfillmentContractProduct()}, nil
 }
 
+// ListCategories 返回两级货源目录契约数据。
+func (fulfillmentContractPort) ListCategories(context.Context, int64, int64) ([]fulfillmentapp.Category, error) {
+	return []fulfillmentapp.Category{{ID: 10, Name: "卡券", Children: []fulfillmentapp.Category{{ID: 11, Name: "视频会员"}}}}, nil
+}
+
+// ListProductPage 返回带总数和页码的远程商品页。
+func (fulfillmentContractPort) ListProductPage(context.Context, int64, int64, fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error) {
+	return fulfillmentapp.ProductPage{Items: []fulfillmentapp.Product{fulfillmentContractProduct()}, Total: 1, Page: 1, PageSize: 50}, nil
+}
+
 // GetProduct 返回带直充附加字段的商品详情。
 func (fulfillmentContractPort) GetProduct(context.Context, int64, int64, int64) (fulfillmentapp.Product, error) {
 	return fulfillmentContractProduct(), nil
@@ -108,6 +118,7 @@ func TestOpenAPIFulfillmentSuccessResponses(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/api/v1/fulfillment/instances", strings.NewReader(`{"name":"契约货源","base_url":"https://supplier.example","merchant_user_id":"merchant","api_key":"secret","enabled":true}`)),
 		httptest.NewRequest(http.MethodPut, "/api/v1/fulfillment/instances/1", strings.NewReader(`{"name":"契约货源","base_url":"https://supplier.example","merchant_user_id":"merchant","enabled":true}`)),
 		httptest.NewRequest(http.MethodDelete, "/api/v1/fulfillment/instances/1", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/fulfillment/instances/1/categories", nil),
 		httptest.NewRequest(http.MethodGet, "/api/v1/fulfillment/instances/1/products", nil),
 		httptest.NewRequest(http.MethodGet, "/api/v1/fulfillment/instances/1/products/101", nil),
 		httptest.NewRequest(http.MethodGet, "/api/v1/fulfillment/mappings", nil),

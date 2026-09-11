@@ -120,16 +120,66 @@ type MappingInput struct {
 
 // Product 是不同货源协议归一化后的商品摘要。
 type Product struct {
-	ID        int64         `json:"id"`
-	Name      string        `json:"goods_name"`
-	Image     string        `json:"goods_img"`
-	GoodsType int           `json:"goods_type"`
-	FaceValue string        `json:"face_value"`
-	Price     string        `json:"goods_price"`
-	Status    int           `json:"status"`
-	Stock     int           `json:"stock_num"`
-	CanBuy    bool          `json:"can_buy"`
-	Attach    []AttachField `json:"attach,omitempty"`
+	ID        int64  `json:"id"`
+	Name      string `json:"goods_name"`
+	Image     string `json:"goods_img"`
+	GoodsType int    `json:"goods_type"`
+	FaceValue string `json:"face_value"`
+	Price     string `json:"goods_price"`
+	Status    int    `json:"status"`
+	Stock     int    `json:"stock_num"`
+	CanBuy    bool   `json:"can_buy"`
+	// Description 是货源商品详情文本，供发布描述使用。
+	Description string `json:"goods_info,omitempty"`
+	// Notice 是货源商品购买须知，发布时追加到商品描述。
+	Notice string `json:"goods_notice,omitempty"`
+	// StartCount 是货源站允许的最小采购数量。
+	StartCount int `json:"start_count,omitempty"`
+	// EndCount 是货源站允许的最大采购数量；零表示协议未提供上限。
+	EndCount int `json:"end_count,omitempty"`
+	// BuyChannels 是卡速售允许销售的渠道文本，不再误当作购买布尔值。
+	BuyChannels string `json:"buy_channels,omitempty"`
+	// BlockedChannels 是卡速售禁止销售的渠道文本。
+	BlockedChannels string `json:"blocked_channels,omitempty"`
+	// CanSetPrice 表示供应站是否允许下单时提交保护价。
+	CanSetPrice bool `json:"can_price"`
+	// NeedBalance 表示采购是否要求货源账户余额充足。
+	NeedBalance bool          `json:"need_balance"`
+	Attach      []AttachField `json:"attach,omitempty"`
+}
+
+// Category 是货源站商品目录中的一个节点。
+type Category struct {
+	// ID 是查询该目录商品时传给供应站的目录标识。
+	ID int64 `json:"id"`
+	// Name 是目录的用户可见名称。
+	Name string `json:"name"`
+	// Children 保存下级目录；卡速售可能返回两级以上目录。
+	Children []Category `json:"children,omitempty"`
+}
+
+// ProductListQuery 是货源目录商品查询条件。
+type ProductListQuery struct {
+	// CategoryID 是最终选中的叶子目录标识；零表示不按目录筛选。
+	CategoryID int64
+	// Keyword 是供应站商品名称搜索词。
+	Keyword string
+	// Page 是从一开始的页码。
+	Page int
+	// PageSize 是单页商品数量。
+	PageSize int
+}
+
+// ProductPage 是货源商品分页结果。
+type ProductPage struct {
+	// Items 是当前页标准化后的商品摘要。
+	Items []Product `json:"data"`
+	// Total 是供应站返回的匹配商品总数。
+	Total int `json:"total"`
+	// Page 是当前页码。
+	Page int `json:"page"`
+	// PageSize 是当前请求的单页数量。
+	PageSize int `json:"page_size"`
 }
 
 // AttachField 描述直充商品下单时要求的一个动态字段。
@@ -259,6 +309,14 @@ type Gateway interface {
 	Buy(context.Context, Instance, PurchaseRequest) (RemoteOrder, error)
 	QueryOrder(context.Context, Instance, OrderQuery) (RemoteOrder, error)
 	VerifyOrderCallback(Instance, []byte) (RemoteOrder, error)
+}
+
+// CatalogGateway 定义支持目录和分页选品的货源协议扩展能力。
+type CatalogGateway interface {
+	// ListCategories 返回实例的完整商品目录树。
+	ListCategories(context.Context, Instance) ([]Category, error)
+	// ListProductPage 按叶子目录、关键词和页码读取商品。
+	ListProductPage(context.Context, Instance, ProductListQuery) (ProductPage, error)
 }
 
 // NormalizeInstanceInput 对实例输入做不含网络访问的稳定归一化。

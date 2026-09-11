@@ -29,6 +29,7 @@ import {
   secretCredentialLabel,
   type FulfillmentProvider,
 } from "../provider";
+import { CatalogBatchPanel } from "../components/CatalogBatchPanel";
 
 /** emptyInstance 是新货源实例表单的默认值。 */
 const emptyInstance: FulfillmentInstanceInput = {
@@ -376,6 +377,8 @@ const Fulfillment: React.FC = () => {
           </div>
         </form>
       )}
+
+      <CatalogBatchPanel instances={instances} />
 
       <section className="ios-card overflow-hidden rounded-2xl bg-white shadow-lg">
         <div className="border-b border-slate-100 p-5">

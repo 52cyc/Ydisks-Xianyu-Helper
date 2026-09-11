@@ -7191,10 +7191,25 @@ paths:
       security: [{cookieAuth: []}]
       parameters:
         - {name: instance_id, in: path, required: true, schema: {type: integer}}
+        - {name: category_id, in: query, required: false, schema: {type: integer, minimum: 1}}
+        - {name: keyword, in: query, required: false, schema: {type: string}}
+        - {name: page, in: query, required: false, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: page_size, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
         '200': {description: 远程商品列表, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentProductListResponse'}}}}
         '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
         '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/fulfillment/instances/{instance_id}/categories":
+    get:
+      operationId: listFulfillmentCategories
+      security: [{cookieAuth: []}]
+      parameters:
+        - {name: instance_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: 远程商品目录树, content: {application/json: {schema: {$ref: '#/components/schemas/FulfillmentCategoryListResponse'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 实例不存在, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   "/api/v1/fulfillment/instances/{instance_id}/products/{goods_id}":
     get:
       operationId: getFulfillmentProduct
@@ -7417,11 +7432,34 @@ components:
         status: {type: integer}
         stock_num: {type: integer}
         can_buy: {type: boolean}
+        goods_info: {type: string}
+        goods_notice: {type: string}
+        start_count: {type: integer}
+        end_count: {type: integer}
+        buy_channels: {type: string}
+        blocked_channels: {type: string}
+        can_price: {type: boolean}
+        need_balance: {type: boolean}
         attach: {type: array, items: {$ref: '#/components/schemas/FulfillmentAttachField'}}
-    FulfillmentProductListResponse:
+    FulfillmentCategory:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        children: {type: array, items: {$ref: '#/components/schemas/FulfillmentCategory'}}
+    FulfillmentCategoryListResponse:
       type: object
       required: [data]
-      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentProduct'}}}
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/FulfillmentCategory'}}}
+    FulfillmentProductListResponse:
+      type: object
+      required: [data, total, page, page_size]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/FulfillmentProduct'}}
+        total: {type: integer}
+        page: {type: integer}
+        page_size: {type: integer}
     FulfillmentMappingInput:
       type: object
       required: [account_id, item_id, instance_id, remote_goods_id, goods_type, enabled]

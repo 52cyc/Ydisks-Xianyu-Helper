@@ -68,6 +68,28 @@ func TestParseSheetAcceptsUTF8BOM(t *testing.T) {
 	}
 }
 
+// TestBatchPreviewAcceptsExternalCardDelivery 验证单规格卡密货源字段通过预检，直充类型被首版边界拒绝。
+func TestBatchPreviewAcceptsExternalCardDelivery(t *testing.T) {
+	// service 是使用确定账号归属和远程图片校验替身的预检服务。
+	service, serviceErr := NewBatchPreviewService(batchPreviewOwnershipFake{cookieOwned: "acc1"}, batchPreviewImageFake{})
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	// fields 保存选品流程生成的一条外部货源卡密记录。
+	fields := map[string]any{"title": "卡密商品", "price": "3.08", "quantity": "5", "images": "https://img.example/a.jpg", "external_delivery_enabled": "true", "external_instance_id": "3", "external_goods_id": "9", "external_goods_name": "卡密商品", "external_goods_type": "1", "external_safe_price": "2.80", "external_profit_rate": "10.00", "external_price_sync_enabled": "true", "external_stop_purchase_on_inversion": "true"}
+	// rows、previewErr 是外部卡密记录预检结果及错误。
+	rows, previewErr := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, DefaultCookieID: "acc1", Rows: []map[string]any{fields}})
+	if previewErr != nil || len(rows) != 1 || len(rows[0].Errors) != 0 || rows[0].Automation.ExternalDelivery.GoodsID != 9 {
+		t.Fatalf("外部卡密预检失败: rows=%+v err=%v", rows, previewErr)
+	}
+	fields["external_goods_type"] = "2"
+	// rejected 是相同记录切换为直充类型后的预检结果。
+	rejected, _ := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, DefaultCookieID: "acc1", Rows: []map[string]any{fields}})
+	if len(rejected[0].Errors) == 0 || !strings.Contains(strings.Join(rejected[0].Errors, "；"), "仅支持卡密类") {
+		t.Fatalf("直充商品未被首版边界拒绝: %+v", rejected[0].Errors)
+	}
+}
+
 // TestParseSheetRejectsEmptyAndUnsupportedInput 验证空输入、旧版 XLS 和表头缺行错误。
 func TestParseSheetRejectsEmptyAndUnsupportedInput(t *testing.T) {
 	// cases 保存不同无效表格输入。

@@ -21,6 +21,18 @@ type fulfillmentInstanceListResponse struct {
 // fulfillmentProductListResponse 是远程商品列表响应。
 type fulfillmentProductListResponse struct {
 	Data []fulfillmentapp.Product `json:"data"`
+	// Total 是当前筛选条件下的远程商品总数。
+	Total int `json:"total"`
+	// Page 是当前页码。
+	Page int `json:"page"`
+	// PageSize 是当前请求的单页数量。
+	PageSize int `json:"page_size"`
+}
+
+// fulfillmentCategoryListResponse 是货源商品目录树响应。
+type fulfillmentCategoryListResponse struct {
+	// Data 保存供应站返回的所有顶级目录。
+	Data []fulfillmentapp.Category `json:"data"`
 }
 
 // fulfillmentMappingListResponse 是商品映射列表响应。
@@ -120,13 +132,38 @@ func (s *Server) listFulfillmentProducts(w http.ResponseWriter, r *http.Request)
 	}
 	// session 是认证中间件注入的当前用户会话。
 	session := auth.SessionFromContext(r.Context())
-	// products 是远程站的标准化商品列表。
-	products, err := s.fulfillmentApplication().ListProducts(r.Context(), session.UserID, instanceID)
+	// query 是目录、关键词和页码组成的商品查询条件。
+	query := fulfillmentapp.ProductListQuery{
+		CategoryID: int64(atoiDefault(r.URL.Query().Get("category_id"), 0)),
+		Keyword:    r.URL.Query().Get("keyword"), Page: atoiDefault(r.URL.Query().Get("page"), 1),
+		PageSize: atoiDefault(r.URL.Query().Get("page_size"), 50),
+	}
+	// productPage 是远程站的标准化商品分页结果。
+	productPage, err := s.fulfillmentApplication().ListProductPage(r.Context(), session.UserID, instanceID, query)
 	if err != nil {
 		writeFulfillmentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, fulfillmentProductListResponse{Data: products})
+	writeJSON(w, http.StatusOK, fulfillmentProductListResponse{Data: productPage.Items, Total: productPage.Total, Page: productPage.Page, PageSize: productPage.PageSize})
+}
+
+// listFulfillmentCategories 从指定卡速售实例读取商品目录树。
+func (s *Server) listFulfillmentCategories(w http.ResponseWriter, r *http.Request) {
+	// instanceID 是当前要请求的货源实例。
+	instanceID, parseErr := strconv.ParseInt(chi.URLParam(r, "instance_id"), 10, 64)
+	if parseErr != nil {
+		writeErr(w, http.StatusBadRequest, "货源实例 ID 无效")
+		return
+	}
+	// session 是认证中间件注入的当前用户会话。
+	session := auth.SessionFromContext(r.Context())
+	// categories 是远程站的标准化目录树。
+	categories, listErr := s.fulfillmentApplication().ListCategories(r.Context(), session.UserID, instanceID)
+	if listErr != nil {
+		writeFulfillmentError(w, listErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, fulfillmentCategoryListResponse{Data: categories})
 }
 
 // getFulfillmentProduct 读取商品详情和直充动态字段。

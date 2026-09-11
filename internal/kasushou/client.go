@@ -46,19 +46,54 @@ func NewClient(httpClient *http.Client) *Client {
 
 // ListProducts 请求商品列表。
 func (client *Client) ListProducts(ctx context.Context, instance fulfillmentapp.Instance) ([]fulfillmentapp.Product, error) {
-	// payloads 是远程 data 字段中的商品列表。
-	var payloads productListPayload
-	if // callErr 是远程商品列表请求错误。
-	callErr := client.call(ctx, instance, "/api/v1/goods/list", map[string]any{}, &payloads); callErr != nil {
+	// page、pageErr 是兼容旧调用方的首个百条商品页及请求错误。
+	page, pageErr := client.ListProductPage(ctx, instance, fulfillmentapp.ProductListQuery{Page: 1, PageSize: 100})
+	return page.Items, pageErr
+}
+
+// ListCategories 请求卡速售完整商品目录树。
+func (client *Client) ListCategories(ctx context.Context, instance fulfillmentapp.Instance) ([]fulfillmentapp.Category, error) {
+	// payloads 是远程 data 字段中的目录节点。
+	var payloads []categoryPayload
+	if callErr := client.call(ctx, instance, "/api/v1/goods/cate", map[string]any{}, &payloads); callErr != nil { // callErr 是远程目录请求错误。
 		return nil, callErr
+	}
+	// categories 保存移除空节点后的应用目录树。
+	categories := make([]fulfillmentapp.Category, 0, len(payloads))
+	for _, payload := range payloads { // payload 是当前待转换的远程目录节点。
+		if category := payload.category(); category.ID > 0 && category.Name != "" { // category 是标准化后的有效目录节点。
+			categories = append(categories, category)
+		}
+	}
+	return categories, nil
+}
+
+// ListProductPage 按叶子目录、关键词和页码请求卡速售商品。
+func (client *Client) ListProductPage(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error) {
+	// body 是官方商品列表接口的分页筛选参数。
+	body := map[string]any{"page": query.Page, "limit": query.PageSize}
+	if query.CategoryID > 0 {
+		body["cate_id"] = query.CategoryID
+	}
+	if strings.TrimSpace(query.Keyword) != "" {
+		body["keyword"] = strings.TrimSpace(query.Keyword)
+	}
+	// payloads 是远程 data 字段中的商品页。
+	var payloads productListPayload
+	if callErr := client.call(ctx, instance, "/api/v1/goods/list", body, &payloads); callErr != nil { // callErr 是远程商品列表请求错误。
+		return fulfillmentapp.ProductPage{}, callErr
 	}
 	// products 是转换后不含站点特定字段的商品列表。
 	products := make([]fulfillmentapp.Product, 0, len(payloads.Items))
-	for _,// payload 是当前转换的远程商品。
-	payload := range payloads.Items {
+	for _, payload := range payloads.Items { // payload 是当前转换的远程商品。
 		products = append(products, payload.product())
 	}
-	return products, nil
+	// total 使用供应站总数；兼容直接数组响应时回退当前页数量。
+	total := payloads.Total
+	if total <= 0 {
+		total = len(products)
+	}
+	return fulfillmentapp.ProductPage{Items: products, Total: total, Page: query.Page, PageSize: query.PageSize}, nil
 }
 
 // GetProduct 请求商品详情及动态附加字段。
@@ -232,6 +267,8 @@ type responseEnvelope struct {
 type productListPayload struct {
 	// Items 是解析后的统一商品列表。
 	Items []productPayload
+	// Total 是供应站返回的匹配商品总数。
+	Total int
 }
 
 // UnmarshalJSON 将常见卡速售兼容站列表外形归一化。
@@ -245,37 +282,87 @@ func (payload *productListPayload) UnmarshalJSON(data []byte) error {
 	}
 	// wrapped 兼容部分部署额外的 list 或 data 包装。
 	var wrapped struct {
-		List []productPayload `json:"list"`
-		Data []productPayload `json:"data"`
+		List  []productPayload `json:"list"`
+		Data  []productPayload `json:"data"`
+		Total int              `json:"total"`
 	}
 	if // wrappedErr 是包装对象形式的解码错误。
 	wrappedErr := json.Unmarshal(data, &wrapped); wrappedErr != nil {
 		return wrappedErr
 	}
 	payload.Items = wrapped.List
+	payload.Total = wrapped.Total
 	if len(payload.Items) == 0 {
 		payload.Items = wrapped.Data
 	}
 	return nil
 }
 
+// categoryPayload 是卡速售目录接口的递归节点。
+type categoryPayload struct {
+	// ID 是官方目录主键。
+	ID int64 `json:"id"`
+	// CategoryID 兼容部分部署使用的 cate_id 字段。
+	CategoryID int64 `json:"cate_id"`
+	// Name 是部分兼容站的目录名称字段。
+	Name string `json:"name"`
+	// CategoryName 是官方 cate_name 目录名称字段。
+	CategoryName string `json:"cate_name"`
+	// Children 保存所有下级目录节点。
+	Children []categoryPayload `json:"children"`
+}
+
+// category 把远程目录递归转换为应用模型。
+func (payload categoryPayload) category() fulfillmentapp.Category {
+	// categoryID、categoryName 分别是兼容字段归一后的目录主键和名称。
+	categoryID, categoryName := payload.ID, strings.TrimSpace(payload.Name)
+	if categoryID <= 0 {
+		categoryID = payload.CategoryID
+	}
+	if categoryName == "" {
+		categoryName = strings.TrimSpace(payload.CategoryName)
+	}
+	// children 保存有效的下级目录节点。
+	children := make([]fulfillmentapp.Category, 0, len(payload.Children))
+	for _, childPayload := range payload.Children { // childPayload 是当前待转换的下级目录节点。
+		if child := childPayload.category(); child.ID > 0 && child.Name != "" { // child 是标准化后的有效下级目录。
+			children = append(children, child)
+		}
+	}
+	return fulfillmentapp.Category{ID: categoryID, Name: categoryName, Children: children}
+}
+
 // productPayload 是远程商品响应字段。
 type productPayload struct {
-	ID        int64                        `json:"id"`
-	Name      string                       `json:"goods_name"`
-	Image     string                       `json:"goods_img"`
-	GoodsType int                          `json:"goods_type"`
-	FaceValue json.Number                  `json:"face_value"`
-	Price     json.Number                  `json:"goods_price"`
-	Status    int                          `json:"status"`
-	Stock     int                          `json:"stock_num"`
-	CanBuy    any                          `json:"can_buy"`
-	Attach    []fulfillmentapp.AttachField `json:"attach"`
+	ID          int64                        `json:"id"`
+	Name        string                       `json:"goods_name"`
+	Image       string                       `json:"goods_img"`
+	GoodsType   int                          `json:"goods_type"`
+	FaceValue   json.Number                  `json:"face_value"`
+	Price       json.Number                  `json:"goods_price"`
+	Status      int                          `json:"status"`
+	Stock       int                          `json:"stock_num"`
+	CanBuy      any                          `json:"can_buy"`
+	CanNotBuy   any                          `json:"can_no_buy"`
+	CanPrice    any                          `json:"can_price"`
+	NeedBalance any                          `json:"need_balance"`
+	Description string                       `json:"goods_info"`
+	Notice      string                       `json:"goods_notice"`
+	StartCount  int                          `json:"start_count"`
+	EndCount    int                          `json:"end_count"`
+	Attach      []fulfillmentapp.AttachField `json:"attach"`
 }
 
 // product 把远程商品转换为应用层模型。
 func (payload productPayload) product() fulfillmentapp.Product {
-	return fulfillmentapp.Product{ID: payload.ID, Name: payload.Name, Image: payload.Image, GoodsType: payload.GoodsType, FaceValue: payload.FaceValue.String(), Price: payload.Price.String(), Status: payload.Status, Stock: payload.Stock, CanBuy: boolValue(payload.CanBuy), Attach: payload.Attach}
+	return fulfillmentapp.Product{
+		ID: payload.ID, Name: payload.Name, Image: payload.Image, GoodsType: payload.GoodsType,
+		FaceValue: payload.FaceValue.String(), Price: payload.Price.String(), Status: payload.Status,
+		Stock: payload.Stock, CanBuy: payload.Status == 1 && payload.Stock != 0,
+		Description: payload.Description, Notice: payload.Notice, StartCount: payload.StartCount, EndCount: payload.EndCount,
+		BuyChannels: protocolText(payload.CanBuy), BlockedChannels: protocolText(payload.CanNotBuy),
+		CanSetPrice: boolValue(payload.CanPrice), NeedBalance: boolValue(payload.NeedBalance), Attach: payload.Attach,
+	}
 }
 
 // orderPayload 是下单、查询和回调共用的订单字段。
@@ -425,6 +512,14 @@ func boolValue(value any) bool {
 	}
 }
 
+// protocolText 把供应站可选的字符串或数字协议字段转换为展示文本，空值保持为空。
+func protocolText(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(stringValue(value))
+}
+
 // firstText 返回第一个非空错误文本。
 func firstText(values ...string) string {
 	for _,// value 是当前候选错误文本。
@@ -435,3 +530,7 @@ func firstText(values ...string) string {
 	}
 	return "未知错误"
 }
+
+// 确保卡速售客户端同时实现基础履约和目录选品扩展能力。
+var _ fulfillmentapp.Gateway = (*Client)(nil)
+var _ fulfillmentapp.CatalogGateway = (*Client)(nil)

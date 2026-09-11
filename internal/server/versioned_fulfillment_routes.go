@@ -17,6 +17,7 @@ func (s *Server) mountVersionedFulfillmentRoutes(router chi.Router) {
 		router.Post("/api/v1/fulfillment/instances", s.createFulfillmentInstance)
 		router.Put("/api/v1/fulfillment/instances/{instance_id}", s.updateFulfillmentInstance)
 		router.Delete("/api/v1/fulfillment/instances/{instance_id}", s.deleteFulfillmentInstance)
+		router.Get("/api/v1/fulfillment/instances/{instance_id}/categories", s.listFulfillmentCategories)
 		router.Get("/api/v1/fulfillment/instances/{instance_id}/products", s.listFulfillmentProducts)
 		router.Get("/api/v1/fulfillment/instances/{instance_id}/products/{goods_id}", s.getFulfillmentProduct)
 		router.Get("/api/v1/fulfillment/mappings", s.listFulfillmentMappings)

@@ -138,6 +138,28 @@ type batchPublishAutomationConfig struct {
 	ReviewGift batchPublishCardAutomation `json:"review_gift"`
 	// ReviewRequest 保存超时求评价配置。
 	ReviewRequest batchPublishReviewRequest `json:"review_request"`
+	// ExternalDelivery 保存外部货源付款发货配置。
+	ExternalDelivery batchPublishExternalDelivery `json:"external_delivery"`
+}
+
+// batchPublishExternalDelivery 保存单规格货源商品的自动采购规则参数。
+type batchPublishExternalDelivery struct {
+	// Enabled 表示是否创建外部货源付款发货规则。
+	Enabled bool `json:"enabled"`
+	// InstanceID 是货源实例主键。
+	InstanceID int64 `json:"instance_id"`
+	// GoodsID 是货源商品主键。
+	GoodsID int64 `json:"goods_id"`
+	// GoodsName 是管理员识别用的货源商品名称。
+	GoodsName string `json:"goods_name"`
+	// SafePrice 是发布前的采购单价。
+	SafePrice string `json:"safe_price"`
+	// ProfitRate 是售价相对采购价的加价百分比。
+	ProfitRate string `json:"profit_rate"`
+	// PriceSyncEnabled 表示是否同步后续货源价格。
+	PriceSyncEnabled bool `json:"price_sync_enabled"`
+	// StopPurchaseOnInversion 表示成本倒挂时停止采购。
+	StopPurchaseOnInversion bool `json:"stop_purchase_on_inversion"`
 }
 
 // batchPublishCardAutomation 保存卡密动作开关和动作列表。
@@ -195,6 +217,27 @@ func (service *BatchLocalPublishService) ensureAutomationRules(ctx context.Conte
 		// err 表示付款后自动发货规则的幂等写入错误。
 		if err := service.ruleRepository.EnsurePublishRule(ctx, automationapp.RuleInput{UserID: userID, CookieID: row.CookieID, ItemID: result.ItemID, Name: "付款后自动发货 - " + title, TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 100, ConfigJSON: "{}", Actions: actions}); err != nil {
 			return err
+		}
+	}
+	if config.ExternalDelivery.Enabled {
+		// actionConfig 是现有自动化执行器消费的外部货源动作配置。
+		actionConfig, marshalErr := json.Marshal(map[string]any{
+			"source_type": "external", "instance_id": config.ExternalDelivery.InstanceID,
+			"goods_id": config.ExternalDelivery.GoodsID, "goods_name": config.ExternalDelivery.GoodsName,
+			"safe_price": config.ExternalDelivery.SafePrice, "profit_rate": config.ExternalDelivery.ProfitRate,
+			"price_sync_enabled":         config.ExternalDelivery.PriceSyncEnabled,
+			"stop_purchase_on_inversion": config.ExternalDelivery.StopPurchaseOnInversion,
+		})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		// actions 保存外部采购和确认发货两个顺序动作。
+		actions := []automationapp.ActionInput{
+			{ActionType: automationapp.ActionSendCard, DeliveryCount: 1, ConfigJSON: string(actionConfig), Enabled: true, SortOrder: 1},
+			{ActionType: automationapp.ActionConfirmShipment, Enabled: true, SortOrder: 2},
+		}
+		if ruleErr := service.ruleRepository.EnsurePublishRule(ctx, automationapp.RuleInput{UserID: userID, CookieID: row.CookieID, ItemID: result.ItemID, Name: "付款后货源自动发货 - " + title, TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 100, ConfigJSON: "{}", Actions: actions}); ruleErr != nil { // ruleErr 是外部货源规则的幂等写入错误。
+			return ruleErr
 		}
 	}
 	if config.ReviewGift.Enabled {

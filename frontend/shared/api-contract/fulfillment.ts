@@ -1,4 +1,4 @@
-import { contractClient, runContractRequest } from './client';
+import { contractClient, contractMultipartBody, runContractRequest } from './client';
 import type { components } from './generated/schema';
 
 /** FulfillmentInstance 是不包含 API Key 明文的货源实例。 */
@@ -7,6 +7,23 @@ export type FulfillmentInstance = components['schemas']['FulfillmentInstance'];
 export type FulfillmentInstanceInput = components['schemas']['FulfillmentInstanceInput'];
 /** FulfillmentProduct 是不同货源协议归一化后的商品。 */
 export type FulfillmentProduct = components['schemas']['FulfillmentProduct'];
+/** FulfillmentCategory 是卡速售返回的递归商品目录节点。 */
+export type FulfillmentCategory = components['schemas']['FulfillmentCategory'];
+/** FulfillmentProductPage 是目录选品使用的分页商品响应。 */
+export type FulfillmentProductPage = components['schemas']['FulfillmentProductListResponse'];
+/** FulfillmentBatchPreview 是复用商品批量发布流程的预检结果。 */
+export type FulfillmentBatchPreview = components['schemas']['ItemPublishBatchPreviewResponse'];
+/** FulfillmentBatchStart 是启动批量发布后的任务标识。 */
+export type FulfillmentBatchStart = components['schemas']['BatchIDResponse'];
+/** FulfillmentPublishAccount 是批量上架选择器需要的非敏感账号字段。 */
+export interface FulfillmentPublishAccount {
+  /** id 是闲鱼账号标识。 */
+  id: string;
+  /** name 是账号昵称或备注组成的展示名称。 */
+  name: string;
+  /** enabled 表示账号当前允许执行发布任务。 */
+  enabled: boolean;
+}
 /** FulfillmentMapping 是闲鱼规格和货源商品的映射。 */
 export type FulfillmentMapping = components['schemas']['FulfillmentMapping'];
 /** FulfillmentMappingInput 是商品映射表单输入。 */
@@ -38,6 +55,50 @@ export async function listFulfillmentProducts(instanceId: number): Promise<Fulfi
   // response 是 OpenAPI 契约返回的商品列表包装。
   const response = await runContractRequest(/* signal 控制远程商品请求。 */ signal => contractClient.GET('/api/v1/fulfillment/instances/{instance_id}/products', { params: { path: { instance_id: instanceId } }, signal }));
   return response.data;
+}
+
+/** listFulfillmentCategories 读取卡速售商品目录树。 */
+export async function listFulfillmentCategories(instanceId: number): Promise<FulfillmentCategory[]> {
+  // response 是 OpenAPI 契约返回的目录列表包装。
+  const response = await runContractRequest(/* signal 控制远程目录请求。 */ signal => contractClient.GET('/api/v1/fulfillment/instances/{instance_id}/categories', { params: { path: { instance_id: instanceId } }, signal }));
+  return response.data;
+}
+
+/** listFulfillmentProductPage 按最终目录、关键词和页码读取卡速售商品。 */
+export function listFulfillmentProductPage(instanceId: number, categoryId: number, keyword: string, page: number, pageSize = 50): Promise<FulfillmentProductPage> {
+  return runContractRequest(/* signal 控制目录商品分页请求。 */ signal => contractClient.GET('/api/v1/fulfillment/instances/{instance_id}/products', {
+    params: { path: { instance_id: instanceId }, query: { category_id: categoryId || undefined, keyword: keyword || undefined, page, page_size: pageSize } }, signal,
+  }));
+}
+
+/** listFulfillmentPublishAccounts 读取批量上架需要的非敏感闲鱼账号选择项。 */
+export async function listFulfillmentPublishAccounts(): Promise<FulfillmentPublishAccount[]> {
+  // response 是账号详情接口返回的非敏感账号数组。
+  const response = await runContractRequest(/* signal 控制发布账号请求。 */ signal => contractClient.GET('/api/v1/accounts/details', { signal }));
+  return response.map(/* account 是当前转换的账号传输对象。 */ account => ({
+    id: account.id,
+    name: account.nickname || account.remark || `账号 ${account.id.slice(0, 6)}`,
+    enabled: account.enabled === true,
+  }));
+}
+
+/** previewFulfillmentPublishBatch 把选品生成的 CSV 送入现有批量发布预检。 */
+export function previewFulfillmentPublishBatch(file: File, accountId: string, publishIntervalSeconds: number): Promise<FulfillmentBatchPreview> {
+  // body 保存无需图片压缩包的远程图片批量预检表单。
+  const body = new FormData();
+  body.set('file', file);
+  body.set('default_cookie_id', accountId);
+  body.set('fallback_category_id', '');
+  body.set('fallback_category_name', '');
+  body.set('fallback_channel_category_id', '');
+  body.set('fallback_tb_category_id', '');
+  body.set('publish_interval_seconds', String(publishIntervalSeconds));
+  return runContractRequest(/* signal 控制货源选品预检上传。 */ signal => contractClient.POST('/api/v1/items/publish-batches/preview', { body: contractMultipartBody(body), signal })) as unknown as Promise<FulfillmentBatchPreview>;
+}
+
+/** startFulfillmentPublishBatch 启动已全部通过预检的现有批量发布任务。 */
+export function startFulfillmentPublishBatch(previewId: string): Promise<FulfillmentBatchStart> {
+  return runContractRequest(/* signal 控制货源批量发布启动请求。 */ signal => contractClient.POST('/api/v1/items/publish-batches', { body: { preview_id: previewId }, signal })) as unknown as Promise<FulfillmentBatchStart>;
 }
 
 /** getFulfillmentProduct 按商品 ID 校验并读取货源商品详情。 */

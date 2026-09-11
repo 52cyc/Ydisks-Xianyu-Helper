@@ -118,6 +118,42 @@ func TestProductPayloadAcceptsStringOptions(t *testing.T) {
 	}
 }
 
+// TestClientCatalogUsesCategoryPaginationAndChannelFields 验证目录树、分页参数和官方渠道文本能够稳定归一化。
+func TestClientCatalogUsesCategoryPaginationAndChannelFields(t *testing.T) {
+	// server 按请求路径返回官方目录或商品列表外形。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/api/v1/goods/cate" {
+			_, _ = writer.Write([]byte(`{"code":1,"data":[{"id":10,"cate_name":"会员","children":[{"id":11,"cate_name":"视频"}]}]}`))
+			return
+		}
+		// body 是商品列表接口收到的目录和分页条件。
+		var body map[string]any
+		if decodeErr := json.NewDecoder(request.Body).Decode(&body); decodeErr != nil { // decodeErr 是测试请求体解析错误。
+			t.Fatal(decodeErr)
+		}
+		if body["cate_id"] != float64(11) || body["page"] != float64(2) || body["limit"] != float64(20) || body["keyword"] != "月卡" {
+			t.Fatalf("商品分页参数错误: %#v", body)
+		}
+		_, _ = writer.Write([]byte(`{"code":1,"data":{"list":[{"id":9,"goods_name":"视频月卡","goods_img":"https://img.example/a.jpg","goods_type":1,"goods_price":2.8,"status":1,"stock_num":5,"can_buy":"拼多多,京东","can_no_buy":"淘宝","can_price":1,"need_balance":1}],"total":31}}`))
+	}))
+	defer server.Close()
+	// client 是使用本地确定响应的卡速售协议客户端。
+	client := NewClient(server.Client())
+	// instance 只包含本地测试服务请求所需的协议身份。
+	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}
+	// categories、categoryErr 是目录树及请求错误。
+	categories, categoryErr := client.ListCategories(context.Background(), instance)
+	if categoryErr != nil || len(categories) != 1 || categories[0].Children[0].ID != 11 {
+		t.Fatalf("目录归一化失败: categories=%+v err=%v", categories, categoryErr)
+	}
+	// page、pageErr 是商品分页结果及请求错误。
+	page, pageErr := client.ListProductPage(context.Background(), instance, fulfillmentapp.ProductListQuery{CategoryID: 11, Keyword: "月卡", Page: 2, PageSize: 20})
+	if pageErr != nil || page.Total != 31 || len(page.Items) != 1 || !page.Items[0].CanBuy || page.Items[0].BuyChannels != "拼多多,京东" || !page.Items[0].CanSetPrice {
+		t.Fatalf("商品分页归一化失败: page=%+v err=%v", page, pageErr)
+	}
+}
+
 // TestVerifyOrderCallbackExcludesSensitiveLists 验证回调签名排除卡密和物流列表。
 func TestVerifyOrderCallbackExcludesSensitiveLists(t *testing.T) {
 	// key 是回调验签使用的实例密钥。
