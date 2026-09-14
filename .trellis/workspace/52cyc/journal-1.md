@@ -26,3 +26,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: 卡易信单规格批量上架与询价限速
+
+**Date**: 2026-09-14
+**Task**: 卡易信单规格批量上架与询价限速
+**Branch**: `main`
+
+### Summary
+
+接入卡易信 v3 分类和单规格卡密选品，统一起购份数、加价、库存与自动采购规则；后台货源报价改为 500ms 可取消串行节流，并补齐跨层契约和回归测试。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9fa6a88` | (see git log) |
+
+### Status
+
+[OK] **Completed**
