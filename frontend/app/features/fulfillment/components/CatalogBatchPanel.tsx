@@ -1,5 +1,6 @@
 import { LoaderCircle, PackagePlus, Search } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS } from "../../../../shared/config/publish";
 import {
   getFulfillmentProduct,
   listFulfillmentCategories,
@@ -50,7 +51,7 @@ export const CatalogBatchPanel: React.FC<CatalogBatchPanelProps> = ({ instances 
   // profitRate、setProfitRate 保存统一加价百分比。
   const [profitRate, setProfitRate] = useState(10);
   // publishInterval、setPublishInterval 保存相邻两次闲鱼发布的最小间隔秒数。
-  const [publishInterval, setPublishInterval] = useState(5);
+  const [publishInterval, setPublishInterval] = useState(DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
   // loading、setLoading 标记目录或商品请求正在进行。
   const [loading, setLoading] = useState(false);
   // publishing、setPublishing 标记预检和启动发布正在进行。
@@ -208,7 +209,7 @@ export const CatalogBatchPanel: React.FC<CatalogBatchPanelProps> = ({ instances 
           <input className="ios-input w-full rounded-xl" type="number" min="0" max="1000" step="0.01" value={profitRate} onChange={/* profitRateChangeHandler 更新售价加价比例。 */ event => setProfitRate(Number(event.target.value))} />
         </label>
         <label className="space-y-1 text-sm font-bold text-slate-700">发布间隔（秒）
-          <input className="ios-input w-full rounded-xl" type="number" min="5" max="3600" value={publishInterval} onChange={/* intervalChangeHandler 更新发布节流间隔。 */ event => setPublishInterval(Number(event.target.value))} />
+          <input className="ios-input w-full rounded-xl" type="number" min="1" max="3600" value={publishInterval} onChange={/* intervalChangeHandler 更新发布节流间隔。 */ event => setPublishInterval(Number(event.target.value))} />
         </label>
         <div className="flex gap-2 md:col-span-3">
           <input className="ios-input min-w-0 flex-1 rounded-xl" value={keyword} placeholder="按商品名称搜索，可留空" onChange={/* keywordChangeHandler 更新商品搜索词。 */ event => setKeyword(event.target.value)} />

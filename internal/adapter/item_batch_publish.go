@@ -132,18 +132,10 @@ func (p *ItemBatchPublishPort) PublishRemoteRow(ctx context.Context, userID int6
 		if ctx.Err() != nil {
 			return itemapp.BatchPublishOutcome{}, &itemapp.UncertainRemotePublishError{Err: fmt.Errorf("取消时远端发布结果未知: %w", ctx.Err())}
 		}
-		// publishErr 保存库存权限等可直接展示的确定性平台错误。
-		var publishErr *mtop.PublishError
-		if errors.As(callErr, &publishErr) && publishErr.Code == mtop.PublishErrorStockPermissionMissing {
-			return itemapp.BatchPublishOutcome{}, errors.New("该账号没有库存发布权限，无法按库存数量发布商品")
-		}
-		if errors.Is(callErr, mtop.ErrPublishCategoryUnrecognized) {
-			return itemapp.BatchPublishOutcome{}, callErr
-		}
-		return itemapp.BatchPublishOutcome{}, &itemapp.UncertainRemotePublishError{Err: fmt.Errorf("远端发布调用失败且结果未知: %w", callErr)}
+		return itemapp.BatchPublishOutcome{}, classifyBatchRemotePublishError(callErr)
 	}
 	if result == nil {
-		return itemapp.BatchPublishOutcome{}, errors.New("发布商品接口未返回结果")
+		return itemapp.BatchPublishOutcome{}, &itemapp.UncertainRemotePublishError{Err: errors.New("发布商品接口未返回结果，远端结果未知")}
 	}
 	// rawJSON 保存远端原始结果，供重试恢复和本地详情持久化使用。
 	rawJSON, _ := json.Marshal(result.RawData)
@@ -416,4 +408,22 @@ var _ itemapp.BatchPublishPort = (*ItemBatchPublishPort)(nil)
 // IsSessionExpiredError 判断批量发布错误是否要求终止剩余明细并进入账号恢复。
 func IsSessionExpiredError(err error) bool {
 	return mtop.IsSessionExpiredErr(err)
+}
+
+// ShouldStopBatchAfterPublishFailure 判断当前失败是否会让继续发布剩余商品产生账号或风控风险。
+func ShouldStopBatchAfterPublishFailure(err error) bool {
+	return IsSessionExpiredError(err) || mtop.IsRiskVerificationErr(err)
+}
+
+// classifyBatchRemotePublishError 区分平台明确拒绝与远端结果未知，避免确定性业务错误被禁止重试。
+func classifyBatchRemotePublishError(err error) error {
+	// publishErr 保存库存权限等可直接展示的确定性平台错误。
+	var publishErr *mtop.PublishError
+	if errors.As(err, &publishErr) && publishErr.Code == mtop.PublishErrorStockPermissionMissing {
+		return errors.New("该账号没有库存发布权限，无法按库存数量发布商品")
+	}
+	if errors.Is(err, mtop.ErrPublishCategoryUnrecognized) || mtop.IsDefinitePublishRejection(err) {
+		return err
+	}
+	return &itemapp.UncertainRemotePublishError{Err: fmt.Errorf("远端发布调用失败且结果未知: %w", err)}
 }

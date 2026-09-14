@@ -29,11 +29,19 @@ func (adapter *automationExternalFulfillmentAdapter) QuoteProduct(ctx context.Co
 	// product 是货源应用层归一化后的实时商品详情。
 	product, productErr := adapter.service.GetProduct(ctx, userID, instanceID, goodsID)
 	if productErr != nil {
-		return automation.ExternalProductQuote{}, productErr
+		return automation.ExternalProductQuote{}, externalProductQuoteError(productErr)
 	}
 	// canBuy 兼容部分卡速售站点不返回 can_buy、但用 status=1 表示商品正常销售的响应。
 	canBuy := product.CanBuy || product.Status == 1
 	return automation.ExternalProductQuote{Price: strings.TrimSpace(product.Price), CanBuy: canBuy}, nil
+}
+
+// externalProductQuoteError 把货源应用层的商品删除事实转换为自动化消费者自己的稳定错误。
+func externalProductQuoteError(err error) error {
+	if errors.Is(err, fulfillmentapp.ErrProductNotFound) {
+		return fmt.Errorf("%w: %v", automation.ErrExternalProductNotFound, err)
+	}
+	return err
 }
 
 // Fulfill 先幂等建单，对已有或处理中订单只使用原外部单号查询。

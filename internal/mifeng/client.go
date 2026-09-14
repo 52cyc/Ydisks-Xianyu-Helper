@@ -204,7 +204,7 @@ func (client *Client) getRemoteProduct(ctx context.Context, instance fulfillment
 			return product, nil
 		}
 	}
-	return productPayload{}, fulfillmentapp.ErrNotFound
+	return productPayload{}, fulfillmentapp.ErrProductNotFound
 }
 
 // queryOrderList 在不知远程单号或重复 third_id 时只查原单，绝不创建新单。

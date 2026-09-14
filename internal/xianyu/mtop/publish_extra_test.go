@@ -1066,6 +1066,35 @@ func TestClassifyPublishErrorUnknown(t *testing.T) {
 	}
 }
 
+// TestIsDefinitePublishRejection 验证普通业务拒绝和风控要求不会被误判为远端结果未知。
+func TestIsDefinitePublishRejection(t *testing.T) {
+	// cases 保存不同发布错误链及其确定性预期。
+	cases := []struct {
+		// name 是子测试名称。
+		name string
+		// err 是待分类的发布错误。
+		err error
+		// want 表示平台是否已给出确定拒绝结果。
+		want bool
+	}{
+		{name: "历史业务错误", err: &PublishError{Code: PublishErrorUnknown, Ret: []string{"FAIL_BIZ_TITLE::标题不合法"}}, want: true},
+		{name: "统一业务错误", err: &MTopResponseError{Kind: MTopErrorBusiness, Ret: []string{"FAIL_BIZ_TITLE::标题不合法"}}, want: true},
+		{name: "风控验证", err: &RiskVerificationError{Ret: []string{"FAIL_SYS_USER_VALIDATE::请完成验证"}}, want: true},
+		{name: "系统错误", err: &MTopResponseError{Kind: MTopErrorSystem, Ret: []string{"FAIL_SYS_BUSY::繁忙"}}, want: false},
+		{name: "传输错误", err: errors.New("connection reset"), want: false},
+	}
+	// testCase 表示当前错误分类用例。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// got 保存当前错误是否被识别为平台明确拒绝。
+			got := IsDefinitePublishRejection(testCase.err)
+			if got != testCase.want {
+				t.Fatalf("确定拒绝分类=%v want=%v err=%v", got, testCase.want, testCase.err)
+			}
+		})
+	}
+}
+
 // TestClassifyPublishErrorLoginInBody 封装TestClassify发布错误登录In请求体业务协调。
 func TestClassifyPublishErrorLoginInBody(t *testing.T) {
 	// ret 非空，但 body 含 login

@@ -3,6 +3,7 @@ package fulfillment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -95,6 +96,8 @@ type serviceGatewayStub struct {
 	buyCalls int
 	// buyError 是远程超时或传输失败。
 	buyError error
+	// productError 是远程商品详情查询的预置错误。
+	productError error
 }
 
 // ListProducts 返回空测试商品列表。
@@ -104,7 +107,25 @@ func (stub *serviceGatewayStub) ListProducts(context.Context, Instance) ([]Produ
 
 // GetProduct 返回空测试商品。
 func (stub *serviceGatewayStub) GetProduct(context.Context, Instance, int64) (Product, error) {
-	return Product{}, nil
+	return Product{}, stub.productError
+}
+
+// TestGetProductPreservesRemoteProductMissingClassification 验证应用服务只透传供应商网关已经确认的商品删除语义。
+func TestGetProductDistinguishesRemoteProductMissing(t *testing.T) {
+	// service 是实例查询成功但远程商品已删除的应用服务。
+	service := NewService(&serviceRepositoryStub{instance: Instance{ID: 8}}, &serviceGatewayStub{productError: fmt.Errorf("%w: 商品不存在", ErrProductNotFound)})
+	// productErr 保存商品详情查询返回的专用不存在错误。
+	_, productErr := service.GetProduct(context.Background(), 1, 8, 5435)
+	if !errors.Is(productErr, ErrProductNotFound) {
+		t.Fatalf("远程商品不存在分类=%v", productErr)
+	}
+	// genericService 模拟网关只报告泛资源不存在，应用服务不得自行升级为商品删除。
+	genericService := NewService(&serviceRepositoryStub{instance: Instance{ID: 8}}, &serviceGatewayStub{productError: ErrNotFound})
+	// genericErr 保存泛资源不存在的透传结果。
+	_, genericErr := genericService.GetProduct(context.Background(), 1, 8, 5435)
+	if errors.Is(genericErr, ErrProductNotFound) {
+		t.Fatalf("泛资源不存在被误判为商品删除: %v", genericErr)
+	}
 }
 
 // Buy 记录外部副作用并返回测试配置的错误。

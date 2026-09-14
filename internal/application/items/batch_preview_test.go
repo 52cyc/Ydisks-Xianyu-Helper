@@ -90,6 +90,28 @@ func TestBatchPreviewAcceptsExternalCardDelivery(t *testing.T) {
 	}
 }
 
+// TestBatchPreviewNormalizesSupplierPublishText 验证货源选品和上传表格共同经过批量发布文本清洗边界。
+func TestBatchPreviewNormalizesSupplierPublishText(t *testing.T) {
+	// service、serviceErr 保存批量预检服务及构造错误。
+	service, serviceErr := NewBatchPreviewService(batchPreviewOwnershipFake{cookieOwned: "acc1"}, batchPreviewImageFake{})
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	// rows、previewErr 保存含货源 HTML 文本的预检结果及执行错误。
+	rows, previewErr := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, DefaultCookieID: "acc1", Rows: []map[string]any{{"title": "套餐&lt;4+4&gt;\t限定", "description": "<p>购买须知</p><div>规格&lt;VIP&gt;</div>", "price": "9.9"}}})
+	if previewErr != nil || len(rows) != 1 {
+		t.Fatalf("批量预检失败: rows=%+v err=%v", rows, previewErr)
+	}
+	if rows[0].Title != "套餐＜4+4＞ 限定" || rows[0].Description != "购买须知\n规格＜VIP＞" {
+		t.Fatalf("批量发布文本未清理: title=%q description=%q", rows[0].Title, rows[0].Description)
+	}
+	// fallbackRows、fallbackErr 保存清理后仅剩空白的描述预检结果及错误。
+	fallbackRows, fallbackErr := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, DefaultCookieID: "acc1", Rows: []map[string]any{{"title": "回退标题", "description": "<p>\t</p>", "price": "9.9"}}})
+	if fallbackErr != nil || len(fallbackRows) != 1 || fallbackRows[0].Description != "回退标题" {
+		t.Fatalf("清理后空描述未回退标题: rows=%+v err=%v", fallbackRows, fallbackErr)
+	}
+}
+
 // TestParseSheetRejectsEmptyAndUnsupportedInput 验证空输入、旧版 XLS 和表头缺行错误。
 func TestParseSheetRejectsEmptyAndUnsupportedInput(t *testing.T) {
 	// cases 保存不同无效表格输入。

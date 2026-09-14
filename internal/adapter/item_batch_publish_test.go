@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,32 @@ import (
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/xianyu/mtop"
 )
+
+// TestBatchRemotePublishFailureClassification 验证明确业务拒绝可重试，而传输结果未知仍禁止自动重试。
+func TestBatchRemotePublishFailureClassification(t *testing.T) {
+	// businessError 是平台明确返回的标题规则拒绝。
+	businessError := &mtop.PublishError{Code: mtop.PublishErrorUnknown, Ret: []string{"FAIL_BIZ_ERR_RULE_TITLE::标题不合法"}}
+	// classified 保存业务拒绝经过批量错误边界后的结果。
+	classified := classifyBatchRemotePublishError(businessError)
+	if classified != businessError {
+		t.Fatalf("业务拒绝被错误包装: %T %v", classified, classified)
+	}
+	// riskError 是平台明确要求用户完成安全验证的错误。
+	riskError := &mtop.RiskVerificationError{Ret: []string{"FAIL_SYS_USER_VALIDATE::请完成验证"}}
+	classified = classifyBatchRemotePublishError(riskError)
+	if classified != riskError || !ShouldStopBatchAfterPublishFailure(classified) {
+		t.Fatalf("风控错误分类异常: %T %v", classified, classified)
+	}
+	// transportError 是无法确认远端是否创建商品的传输失败。
+	transportError := errors.New("connection reset")
+	// uncertainError 保存传输失败转换后的远端未知错误。
+	uncertainError := classifyBatchRemotePublishError(transportError)
+	// uncertain 保存错误链中可阻止自动重试的类型断言结果。
+	var uncertain *itemapp.UncertainRemotePublishError
+	if !errors.As(uncertainError, &uncertain) || ShouldStopBatchAfterPublishFailure(uncertainError) {
+		t.Fatalf("传输失败分类异常: %T %v", uncertainError, uncertainError)
+	}
+}
 
 // batchPublishClientStub 是批量远端发布测试使用的平台客户端替身。
 type batchPublishClientStub struct {
@@ -123,6 +150,62 @@ func TestItemBatchPublishPortRejectsMissingDependencies(t *testing.T) {
 	_, publishErr := port.PublishRemoteRow(context.Background(), 1, itemapp.BatchRow{BatchID: "batch"}, "worker", nil)
 	if publishErr == nil {
 		t.Fatal("缺少数据库时不应伪装批量远端发布成功")
+	}
+}
+
+// TestItemBatchPublishPortTreatsMissingRemoteResultAsUncertain 验证远端返回空结果时仍保持防重放分类。
+func TestItemBatchPublishPortTreatsMissingRemoteResultAsUncertain(t *testing.T) {
+	// store、cleanup 保存空远端结果测试使用的 SQLite 存储及清理函数。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是测试调用和状态检查共用的上下文。
+	ctx := context.Background()
+	// admin、adminErr 保存测试批次所属用户及读取错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// batch 保存即将进入远端发布的单行批次。
+	batch := &db.ItemPublishBatch{ID: "batch-empty-remote-result", UserID: admin.ID, DefaultCookieID: "cid", UploadDir: t.TempDir(), LocationJSON: `{}`, Status: "pending"}
+	// rows 保存使用测试图片回调的有效发布明细。
+	rows := []db.ItemPublishBatchRow{{RowNo: 1, CookieID: "cid", Title: "批量商品", Description: "批量描述", Price: "12.50", Quantity: 1, PostageMode: "free", ImagesJSON: `["image.png"]`, Status: "pending"}}
+	// createErr 保存单行测试批次的创建错误。
+	if createErr := store.PublishBatches.Create(ctx, batch, rows); createErr != nil {
+		t.Fatal(createErr)
+	}
+	// workerToken 是批次和明细远端检查点共用的租约令牌。
+	workerToken := "worker-empty-result"
+	// claimed、claimErr 保存批次租约抢占结果及错误。
+	claimed, claimErr := store.PublishBatches.ClaimBatch(ctx, batch.ID, workerToken, time.Now().Add(time.Minute).Unix())
+	if claimErr != nil || !claimed {
+		t.Fatalf("抢占批次失败: claimed=%v err=%v", claimed, claimErr)
+	}
+	// storedRows、storedRowsErr 保存已创建明细及读取错误。
+	storedRows, storedRowsErr := store.PublishBatches.Rows(ctx, batch.ID)
+	if storedRowsErr != nil || len(storedRows) != 1 {
+		t.Fatalf("读取明细失败: rows=%+v err=%v", storedRows, storedRowsErr)
+	}
+	// rowClaimed、rowClaimErr 保存单行租约抢占结果及错误。
+	rowClaimed, rowClaimErr := store.PublishBatches.ClaimRow(ctx, storedRows[0].ID, workerToken)
+	if rowClaimErr != nil || !rowClaimed {
+		t.Fatalf("抢占明细失败: claimed=%v err=%v", rowClaimed, rowClaimErr)
+	}
+	// client 模拟平台调用没有传输错误，但也没有返回可确认的发布结果。
+	client := batchPublishClientStub{publish: func(context.Context, string, mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		return nil, nil
+	}}
+	// port 是绑定空结果平台替身的批量远端发布适配器。
+	port := NewItemBatchPublishPort(store, func() mtop.Client { return client }, nil, nil, nil,
+		func(string, string) ([]byte, string, string, error) {
+			return []byte("image"), "image/png", "image.png", nil
+		},
+		func(context.Context, string) ([]byte, string, error) { return nil, "", nil })
+	// _, publishErr 保存空远端结果返回的分类错误。
+	_, publishErr := port.PublishRemoteRow(ctx, admin.ID, batchRowApplicationModel(storedRows[0]), workerToken, nil)
+	// uncertainErr 保存防重放错误链的类型断言结果。
+	var uncertainErr *itemapp.UncertainRemotePublishError
+	if !errors.As(publishErr, &uncertainErr) {
+		t.Fatalf("空远端结果应为结果未知: %T %v", publishErr, publishErr)
 	}
 }
 

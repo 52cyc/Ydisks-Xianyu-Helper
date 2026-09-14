@@ -160,7 +160,7 @@ describe('useItemPublishBatch', /* 当前回调处理批量发布的表单、任
     expect(previewBatchMock).toHaveBeenCalledWith(expect.objectContaining({
       file: cloneFile,
       defaultCookieId: 'target-account',
-      publishIntervalSeconds: 5,
+      publishIntervalSeconds: 15,
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(hook.result.current.showBatchModal).toBe(true);
     expect(hook.result.current.batchPhase).toBe('preview');

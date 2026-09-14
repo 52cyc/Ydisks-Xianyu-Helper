@@ -226,6 +226,8 @@ type BatchRunOptions struct {
 	Now func() time.Time
 	// IsSessionExpired 判断错误是否要求立即中断剩余明细。
 	IsSessionExpired func(error) bool
+	// ShouldStopAfterFailure 判断当前失败是否要求在落库后终止剩余明细；为空时兼容沿用会话失效判断。
+	ShouldStopAfterFailure func(error) bool
 	// ClassifyFailure 生成失败明细的消息和分类。
 	ClassifyFailure FailureClassifier
 }
@@ -259,6 +261,9 @@ func NewBatchRunner(repository BatchRepository, publisher BatchPublisher, option
 	}
 	if options.IsSessionExpired == nil {
 		options.IsSessionExpired = func(error) bool { return false }
+	}
+	if options.ShouldStopAfterFailure == nil {
+		options.ShouldStopAfterFailure = options.IsSessionExpired
 	}
 	if options.ClassifyFailure == nil {
 		options.ClassifyFailure = defaultFailureClassifier
@@ -317,7 +322,7 @@ func (runner *BatchRunner) Run(ctx context.Context, userID int64, batchID, worke
 			if markErr != nil || !marked {
 				return errors.Join(fmt.Errorf("保存批量发布失败状态失败: %w", firstNonNil(markErr, ErrBatchLeaseLost)), runner.finishInterrupted(ctx, userID, batchID, workerToken))
 			}
-			if runner.options.IsSessionExpired(rowErr) {
+			if runner.options.ShouldStopAfterFailure(rowErr) {
 				return errors.Join(rowErr, runner.finishInterrupted(ctx, userID, batchID, workerToken))
 			}
 		}

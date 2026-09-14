@@ -10,6 +10,9 @@ import (
 // ErrExternalSafePriceExceeded 表示协议适配器已确认供应站因实时采购价超过保护价而拒绝下单。
 var ErrExternalSafePriceExceeded = errors.New("外部货源实时价格超过保护价")
 
+// ErrExternalProductNotFound 表示货源实例有效，但对应远程商品已被供应站删除。
+var ErrExternalProductNotFound = errors.New("外部货源商品不存在")
+
 // CenterDependencies 保存自动化中心启动时必须固定的外部协作依赖。
 type CenterDependencies struct {
 	// MTop 提供确认发货使用的 MTOP 协议客户端；为空时使用默认实现。

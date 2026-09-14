@@ -24,6 +24,8 @@ const (
 var (
 	// ErrNotFound 表示当前用户名下不存在指定资源。
 	ErrNotFound = errors.New("外部履约资源不存在")
+	// ErrProductNotFound 表示货源实例存在，但供应站明确确认远程商品已经不存在。
+	ErrProductNotFound = errors.New("外部货源商品不存在")
 	// ErrConflict 表示幂等键、名称或映射冲突。
 	ErrConflict = errors.New("外部履约资源冲突")
 	// ErrSafePriceExceeded 表示供应站明确因为实时采购价超过保护价而拒绝下单。
@@ -38,6 +40,20 @@ func IsSafePriceExceededMessage(message string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(message), ""))
 	return strings.Contains(normalized, "保护价") || strings.Contains(normalized, "安全价") ||
 		strings.Contains(normalized, "safeprice") || strings.Contains(normalized, "safe_price")
+}
+
+// IsProductNotFoundMessage 判断供应站业务文案是否明确表示商品已删除或下架，不把商户、用户等其他资源缺失误判为商品删除。
+func IsProductNotFoundMessage(message string) bool {
+	// normalized 是去除空白并统一小写后的供应站业务提示。
+	normalized := strings.ToLower(strings.Join(strings.Fields(message), ""))
+	// phrases 是供应站明确指向商品本身缺失的短语，避免“商品查询失败：商户不存在”等混合文案误判。
+	phrases := []string{"商品不存在", "商品未找到", "找不到商品", "商品已删除", "商品被删除", "商品已被删除", "商品已下架", "商品被下架", "商品已被下架"}
+	for _, phrase := range phrases { // phrase 是当前待匹配的商品删除短语。
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // Capabilities 记录一个外部货源实例实际支持的可选能力。

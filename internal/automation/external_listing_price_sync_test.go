@@ -25,6 +25,23 @@ type listingPriceQuoteStub struct {
 	firstStarted chan struct{}
 }
 
+// listingPriceEditorStub 复用测试 MTOP 客户端并记录商品页改价请求。
+type listingPriceEditorStub struct {
+	// fakeMTop 提供价格扫描未使用的 MTOP 客户端方法。
+	*fakeMTop
+	// itemIDs 保存商品页改价的闲鱼商品标识。
+	itemIDs []string
+	// prices 保存商品页改价的目标分值。
+	prices []int64
+}
+
+// UpdateItemPriceContext 记录商品页改价并模拟平台明确成功。
+func (stub *listingPriceEditorStub) UpdateItemPriceContext(_ context.Context, _ string, itemID string, priceCents int64) (bool, []string, string, error) {
+	stub.itemIDs = append(stub.itemIDs, itemID)
+	stub.prices = append(stub.prices, priceCents)
+	return true, []string{"SUCCESS::调用成功"}, "", nil
+}
+
 // QuoteProduct 记录报价开始事实并返回固定一元采购价，不创建远程订单。
 func (stub *listingPriceQuoteStub) QuoteProduct(_ context.Context, _ int64, _ int64, goodsID int64) (ExternalProductQuote, error) {
 	stub.mu.Lock()
@@ -135,6 +152,52 @@ func TestScanExternalListingPricesQuotesDuplicateItemOnce(t *testing.T) {
 	starts, _ := fulfillment.snapshot()
 	if len(starts) != 1 {
 		t.Fatalf("同账号商品本轮应只报价一次: %d", len(starts))
+	}
+}
+
+// TestScanExternalListingPricesMarksMissingProductAt9999 验证货源商品删除后远端和本地商品都调整为人工核对价。
+func TestScanExternalListingPricesMarksMissingProductAt9999(t *testing.T) {
+	// store、cleanup 是隔离数据库和测试结束后的连接清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	createListingPriceSyncRules(t, store, 5435)
+	// fulfillment 明确返回远程商品已经不存在。
+	fulfillment := &listingPriceQuoteStub{quoteErrors: map[int64]error{5435: ErrExternalProductNotFound}}
+	// editor 记录应当执行一次的闲鱼商品页保护价修改。
+	editor := &listingPriceEditorStub{fakeMTop: &fakeMTop{}}
+	// scheduler 使用真实商品页同步编排和本地持久化路径。
+	scheduler := NewScheduler(NewWithDependencies(store, nil, nil, CenterDependencies{MTop: editor, ExternalFulfillment: fulfillment}))
+	scheduler.scanExternalListingPrices(context.Background())
+	if len(editor.prices) != 1 || editor.prices[0] != missingExternalProductListingPriceCents || editor.itemIDs[0] != "paced-item-00" {
+		t.Fatalf("货源商品删除后的改价请求异常: items=%v prices=%v", editor.itemIDs, editor.prices)
+	}
+	// item、itemErr 是远端改价成功后写回的本地商品价格。
+	item, itemErr := store.Items.GetByCookieItem(context.Background(), "paced-account", "paced-item-00")
+	if itemErr != nil || item.ItemPrice != "9999.00" {
+		t.Fatalf("人工核对价未写回本地: item=%+v err=%v", item, itemErr)
+	}
+}
+
+// TestScanExternalListingPricesDoesNotMarkOrdinaryQuoteFailure 验证限流等普通报价失败不会触发人工核对价。
+func TestScanExternalListingPricesDoesNotMarkOrdinaryQuoteFailure(t *testing.T) {
+	// store、cleanup 是隔离数据库和测试结束后的连接清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	createListingPriceSyncRules(t, store, 5436)
+	// fulfillment 模拟供应站限流，该错误不能被视为商品删除。
+	fulfillment := &listingPriceQuoteStub{quoteErrors: map[int64]error{5436: errors.New("请求频繁，剩余3秒")}}
+	// editor 记录本轮扫描是否错误调用闲鱼商品改价。
+	editor := &listingPriceEditorStub{fakeMTop: &fakeMTop{}}
+	// scheduler 使用真实商品页同步编排执行限流失败分支。
+	scheduler := NewScheduler(NewWithDependencies(store, nil, nil, CenterDependencies{MTop: editor, ExternalFulfillment: fulfillment}))
+	scheduler.scanExternalListingPrices(context.Background())
+	if len(editor.prices) != 0 {
+		t.Fatalf("普通报价失败不应修改闲鱼商品价格: items=%v prices=%v", editor.itemIDs, editor.prices)
+	}
+	// item、itemErr 是普通失败后仍应保持原价的本地商品。
+	item, itemErr := store.Items.GetByCookieItem(context.Background(), "paced-account", "paced-item-00")
+	if itemErr != nil || item.ItemPrice != "1.00" {
+		t.Fatalf("普通报价失败误写本地价格: item=%+v err=%v", item, itemErr)
 	}
 }
 

@@ -1,4 +1,5 @@
 import { useCallback,useEffect,useRef,useState } from 'react';
+import { DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS } from '../../../shared/config/publish';
 import {
 cancelItemPublishBatch,
 deleteItemPublishBatch,
@@ -45,8 +46,8 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
   const [batchLocations, setBatchLocations] = useState<NonNullable<ItemPublishBatchState['batchLocations']>>([]);
   // batchLocation 保存批量任务当前选中的发货地。
   const [batchLocation, setBatchLocation] = useState<ItemPublishBatchState['batchLocation']>(null);
-  // batchPublishIntervalSeconds 保存当前批量任务的最终发布最小间隔，默认五秒。
-  const [batchPublishIntervalSeconds, setBatchPublishIntervalSeconds] = useState(5);
+  // batchPublishIntervalSeconds 保存当前批量任务的最终发布最小间隔，新建任务默认十五秒。
+  const [batchPublishIntervalSeconds, setBatchPublishIntervalSeconds] = useState(DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
   // batchLoading 表示批量任务请求是否正在执行。
   const [batchLoading, setBatchLoading] = useState(false);
   // batchRequestGeneration 用于丢弃弹窗关闭后返回的过期轮询响应。
@@ -97,7 +98,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     setBatchFallbackCategory({ catId: '', catName: '', channelCatId: '', tbCatId: '' });
     setBatchLocations([]);
     setBatchLocation(null);
-    setBatchPublishIntervalSeconds(5);
+    setBatchPublishIntervalSeconds(DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
     setShowBatchModal(true);
     setBatchLoading(true);
     try {
@@ -112,7 +113,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
         if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return;
         setRecentBatch(detail);
         setBatchDetail(detail);
-        setBatchPublishIntervalSeconds(detail.publish_interval_seconds || 5);
+        setBatchPublishIntervalSeconds(detail.publish_interval_seconds || DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
         setBatchPhase(isBatchInProgress(detail.status) ? 'running' : 'done');
       }
     } catch (error /* 恢复任务错误 */) {
@@ -142,7 +143,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     setBatchFallbackCategory({ catId: '', catName: '', channelCatId: '', tbCatId: '' });
     setBatchLocations([]);
     setBatchLocation(null);
-    setBatchPublishIntervalSeconds(5);
+    setBatchPublishIntervalSeconds(DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
     setBatchPreview(null);
     setBatchDetail(null);
     setShowBatchModal(true);
@@ -153,7 +154,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
         file,
         defaultCookieId: targetAccountID,
         fallbackCategory: { catId: '', catName: '', channelCatId: '', tbCatId: '' },
-        publishIntervalSeconds: 5,
+        publishIntervalSeconds: DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS,
       }, { signal: request.controller.signal });
       if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return false;
       setBatchPreview(result);
@@ -226,7 +227,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
       const detail = await getItemPublishBatch(recentBatch.id, { signal: request.controller.signal });
       if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return;
       setBatchDetail(detail);
-      setBatchPublishIntervalSeconds(detail.publish_interval_seconds || 5);
+      setBatchPublishIntervalSeconds(detail.publish_interval_seconds || DEFAULT_BATCH_PUBLISH_INTERVAL_SECONDS);
       setBatchPhase(isBatchInProgress(detail.status) ? 'running' : 'done');
     } catch (error /* 最近结果读取错误 */) {
       if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return;

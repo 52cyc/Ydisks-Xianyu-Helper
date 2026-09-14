@@ -51,6 +51,7 @@ describe("CatalogBatchPanel", () => {
     vi.mocked(previewFulfillmentPublishBatch).mockResolvedValue({ success: true, preview_id: "preview-1", total: 1, valid: 1, invalid: 0, rows: [] });
     render(<CatalogBatchPanel instances={instances} />);
     await waitFor(/* accountReadyAssertion 等待默认发布账号加载。 */ () => expect((screen.getByLabelText("闲鱼账号") as HTMLSelectElement).value).toBe("acc1"));
+    expect((screen.getByLabelText("发布间隔（秒）") as HTMLInputElement).value).toBe("15");
     fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "1" } });
     await waitFor(/* categoryReadyAssertion 等待一级目录加载。 */ () => expect(screen.getByRole("option", { name: "会员" })).toBeTruthy());
     fireEvent.change(screen.getByLabelText("一级目录"), { target: { value: "10" } });

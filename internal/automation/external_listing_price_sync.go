@@ -10,6 +10,9 @@ import (
 	"xianyu-go/internal/db"
 )
 
+// missingExternalProductListingPriceCents 是货源商品删除后用于提醒人工核对的闲鱼商品售价，单位为分。
+const missingExternalProductListingPriceCents int64 = 999900
+
 // scanExternalListingPrices 每轮检查全部开启同步的普通商品，仅在计算售价发生变化时调用闲鱼改价接口。
 func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 	if s == nil || s.center == nil || s.center.dependencies.externalFulfillment == nil {
@@ -61,9 +64,15 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 		processedItems[itemKey] = struct{}{}
 		// targetCents、enabled、quoteErr 是目标售价分值、同步开关命中状态和实时报价错误。
 		targetCents, enabled, quoteErr := s.center.externalListingTargetCentsBeforeQuote(ctx, rule, beforeQuote)
+		// productMissing 表示供应站已经明确确认关联商品被删除。
+		productMissing := errors.Is(quoteErr, ErrExternalProductNotFound)
 		if quoteErr != nil {
-			s.center.logger.Warn("查询商品自动同步价格失败", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "err", quoteErr)
-			continue
+			if !productMissing {
+				s.center.logger.Warn("查询商品自动同步价格失败", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "err", quoteErr)
+				continue
+			}
+			targetCents = missingExternalProductListingPriceCents
+			enabled = true
 		}
 		if !enabled {
 			continue
@@ -97,7 +106,11 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 			s.center.logger.Warn("闲鱼商品已改价但本地价格保存失败", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice, "err", saveErr)
 			continue
 		}
-		s.center.logger.Info("已按货源采购价和利润率同步闲鱼商品售价", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice)
+		if productMissing {
+			s.center.logger.Warn("货源商品不存在，已将闲鱼商品调整为人工核对价", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "target_price", item.ItemPrice)
+		} else {
+			s.center.logger.Info("已按货源采购价和利润率同步闲鱼商品售价", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice)
+		}
 	}
 }
 

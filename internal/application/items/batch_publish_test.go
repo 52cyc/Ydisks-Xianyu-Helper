@@ -170,6 +170,33 @@ func TestBatchRunnerStopsOnCancellation(t *testing.T) {
 	}
 }
 
+// TestBatchRunnerStopsAfterConfiguredFailure 验证风控类失败先落库当前行，再中断后续商品发布。
+func TestBatchRunnerStopsAfterConfiguredFailure(t *testing.T) {
+	// stopError 是模拟平台要求立即停止剩余明细的风控错误。
+	stopError := errors.New("触发闲鱼安全验证")
+	// repository 保存两条待处理明细和运行状态。
+	repository := &batchRunnerRepository{rows: []BatchRow{{ID: 1, BatchID: "batch-risk"}, {ID: 2, BatchID: "batch-risk"}}, batch: BatchInfo{ID: "batch-risk", UserID: 7, Status: "running", WorkerToken: "worker"}}
+	// publisher 在首条商品返回可确定的风控失败。
+	publisher := &batchRunnerPublisher{err: stopError}
+	// shouldStop 是测试注入的停止谓词，只识别当前风控错误。
+	shouldStop := func(failure error) bool {
+		return errors.Is(failure, stopError)
+	}
+	// runner、err 保存配置了停止谓词的批量 worker 及构造错误。
+	runner, err := NewBatchRunner(repository, publisher, BatchRunOptions{ShouldStopAfterFailure: shouldStop})
+	if err != nil {
+		t.Fatalf("构造 worker 失败: %v", err)
+	}
+	// runErr 保存中断批次返回的原始风控错误。
+	runErr := runner.Run(context.Background(), 7, "batch-risk", "worker", false)
+	if !errors.Is(runErr, stopError) {
+		t.Fatalf("中断错误=%v", runErr)
+	}
+	if publisher.calls != 1 || repository.failed[1] != stopError.Error() || repository.finalized != 1 {
+		t.Fatalf("风控中断状态异常: calls=%d failed=%v finalized=%d", publisher.calls, repository.failed, repository.finalized)
+	}
+}
+
 // TestBatchPublishErrorsAndHelpers 验证批量发布错误包装、等待和失败分类辅助函数的边界语义。
 func TestBatchPublishErrorsAndHelpers(t *testing.T) {
 	// cause 是后置步骤和远端结果包装使用的原始错误。

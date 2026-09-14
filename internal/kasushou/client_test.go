@@ -14,6 +14,37 @@ import (
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
 )
 
+// TestClientGetProductClassifiesOnlyProductMissing 验证商品详情明确删除时产生专用错误，其他资源缺失不误触发保护价。
+func TestClientGetProductClassifiesOnlyProductMissing(t *testing.T) {
+	// cases 保存供应站业务文案及其商品删除分类预期。
+	cases := []struct {
+		// name 是子测试名称。
+		name string
+		// message 是供应站业务失败文案。
+		message string
+		// wantMissing 表示是否应识别为商品已删除。
+		wantMissing bool
+	}{
+		{name: "商品不存在", message: "商品不存在", wantMissing: true},
+		{name: "商户不存在", message: "商品查询失败：商户不存在", wantMissing: false},
+	}
+	for _, testCase := range cases { // testCase 是当前商品详情失败分类用例。
+		t.Run(testCase.name, func(t *testing.T) { // t 是当前供应站文案子测试上下文。
+			// server 返回当前用例的卡速售业务失败文案。
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是当前商品详情错误响应器。
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"code":500,"msg":"` + testCase.message + `","data":null}`))
+			}))
+			defer server.Close()
+			// productErr 是商品详情接口返回的分类错误。
+			_, productErr := NewClient(server.Client()).GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}, 5435)
+			if gotMissing := errors.Is(productErr, fulfillmentapp.ErrProductNotFound); gotMissing != testCase.wantMissing { // gotMissing 是实际商品删除分类。
+				t.Fatalf("message=%q err=%v missing=%v", testCase.message, productErr, gotMissing)
+			}
+		})
+	}
+}
+
 // TestClientBuyClassifiesSafePriceExceeded 验证卡速售保护价业务拒绝保留稳定错误分类供自动化选择重新报价文案。
 func TestClientBuyClassifiesSafePriceExceeded(t *testing.T) {
 	// server 返回兼容站常见的保护价拦截业务文案。

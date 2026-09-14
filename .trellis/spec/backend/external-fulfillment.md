@@ -13,6 +13,7 @@ The current catalog-capable providers are `kasushou_v2` and `kayixin_v3`. One su
 - The multi-provider adapter selects a provider by instance configuration. HTTP handlers do not contain supplier protocol rules.
 - The frontend uses the shared fulfillment API adapter and never calls supplier endpoints directly.
 - The automation scheduler owns background quote pacing. Provider clients remain safe for explicit user queries and purchase flows without an unconditional delay.
+- `fulfillment.ErrProductNotFound` is emitted by a provider product-detail path only after the instance has been resolved and the response explicitly reports that the product itself is missing, deleted, or delisted. The application service only propagates this typed result. The adapter maps it to consumer-owned `automation.ErrExternalProductNotFound`; generic instance, merchant, user, order, or ownership `ErrNotFound` must not cross this boundary as a deleted product.
 
 ## 3. Kayixin protocol mapping
 
@@ -38,6 +39,8 @@ For a detail response whose minimum purchase quantity is greater than one, the b
 | Stock is below the supplier minimum, or minimum exceeds maximum | Reject that product before starting the listing batch. |
 | Detail request fails | Stop batch preparation and show the product-specific failure. |
 | One background quote fails | Record the rule failure and continue scanning later rules. |
+| Background listing quote confirms the supplier product no longer exists | Reuse the normal Xianyu item-price update path to set `9999.00`, persist the local item price after remote success, and continue the scan. |
+| Instance missing, rate limit, timeout, authentication, or supplier system failure | Log and skip the rule; never apply the `9999.00` deleted-product price. |
 | Scheduler context is cancelled while pacing | Stop waiting and exit without starting another supplier quote. |
 
 ## 5. Examples
@@ -65,11 +68,13 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 - The first eligible quote starts immediately. Rules skipped before a supplier call do not consume a delay slot.
 - Waiting uses the scheduler context so shutdown interrupts the delay.
 - The pacing hook is limited to scheduled external-listing price scans; explicit quote, purchase, and order-query paths are unaffected.
+- The deleted-product fallback applies only to scheduled listing-price sync. Pending-order repricing and purchase flows keep returning the original error and must not use the `9999.00` value.
 
 ## 7. Verification requirements
 
 - Provider tests use a local HTTP server and assert endpoint paths, signed payloads, request filters, recursive categories, pagination, and response normalization.
 - Automation tests cover serial order, minimum quote-start spacing, continuation after one failure, context cancellation, and duplicate-item handling.
+- Automation tests also assert a typed deleted-product error performs exactly one `999900`-cent item update and persists `9999.00`, while ordinary quote failures perform no update.
 - Adapter and handler contract tests prove the provider route and optional `total_pages` field.
 - Frontend behavior tests cover Kayixin instance selection, category/page parameters, sequential detail checks, invalid-detail rejection, and Kasushou regression.
 - Run API generation/check, architecture checks, comment checks for every touched file, focused Go tests including race coverage, frontend type-check/tests/build, server build, and `git diff --check`.

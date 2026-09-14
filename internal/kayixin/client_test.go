@@ -166,6 +166,37 @@ func TestClientGetProductRejectsMissingSKUType(t *testing.T) {
 	}
 }
 
+// TestClientGetProductClassifiesOnlyProductMissing 验证详情接口仅把明确的商品缺失转换为保护价错误。
+func TestClientGetProductClassifiesOnlyProductMissing(t *testing.T) {
+	// cases 保存卡易信业务文案及其商品删除分类预期。
+	cases := []struct {
+		// name 是子测试名称。
+		name string
+		// message 是卡易信详情失败文案。
+		message string
+		// wantMissing 表示是否应识别为商品已删除。
+		wantMissing bool
+	}{
+		{name: "商品已下架", message: "商品已下架", wantMissing: true},
+		{name: "用户不存在", message: "商品查询失败：用户不存在", wantMissing: false},
+	}
+	for _, testCase := range cases { // testCase 是当前商品详情失败分类用例。
+		t.Run(testCase.name, func(t *testing.T) { // t 是当前供应站文案子测试上下文。
+			// server 返回当前用例的卡易信业务错误。
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是当前商品详情错误响应器。
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"code":2404,"msg":"` + testCase.message + `","data":null}`))
+			}))
+			defer server.Close()
+			// productErr 是商品详情接口返回的分类错误。
+			_, productErr := NewClient(server.Client()).GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, 5435)
+			if gotMissing := errors.Is(productErr, fulfillmentapp.ErrProductNotFound); gotMissing != testCase.wantMissing { // gotMissing 是实际商品删除分类。
+				t.Fatalf("message=%q err=%v missing=%v", testCase.message, productErr, gotMissing)
+			}
+		})
+	}
+}
+
 // TestProductKeepsUnknownGoodsTypeOutOfCardFlow 验证未知远程类型不会默认归类为卡密。
 func TestProductKeepsUnknownGoodsTypeOutOfCardFlow(t *testing.T) {
 	// product 是已声明单规格但 goodsType 不在已知映射中的统一结果。

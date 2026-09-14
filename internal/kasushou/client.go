@@ -109,6 +109,9 @@ func (client *Client) GetProduct(ctx context.Context, instance fulfillmentapp.In
 	var payload productPayload
 	if // callErr 是远程商品详情请求错误。
 	callErr := client.call(ctx, instance, "/api/v1/goods/info", map[string]any{"id": goodsID}, &payload); callErr != nil {
+		if fulfillmentapp.IsProductNotFoundMessage(callErr.Error()) {
+			return fulfillmentapp.Product{}, fmt.Errorf("%w: %v", fulfillmentapp.ErrProductNotFound, callErr)
+		}
 		return fulfillmentapp.Product{}, callErr
 	}
 	// attach 是独立附加字段接口返回的字段列表。

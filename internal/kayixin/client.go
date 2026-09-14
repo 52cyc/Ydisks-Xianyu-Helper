@@ -123,6 +123,9 @@ func (client *Client) GetProduct(ctx context.Context, instance fulfillmentapp.In
 	// payload 是卡易信商品详情响应。
 	var payload productPayload
 	if callErr := client.call(ctx, instance, "/api/v3/goods/getDetail", goodsDetailRequest{GoodsID: goodsID}, &payload); callErr != nil { // callErr 是商品详情请求错误。
+		if fulfillmentapp.IsProductNotFoundMessage(callErr.Error()) {
+			return fulfillmentapp.Product{}, fmt.Errorf("%w: %v", fulfillmentapp.ErrProductNotFound, callErr)
+		}
 		return fulfillmentapp.Product{}, callErr
 	}
 	if payload.SKUType == nil || intValue(payload.SKUType) != 0 {

@@ -223,6 +223,8 @@ func (service *BatchPreviewService) parseRow(ctx context.Context, input BatchPre
 	if row.CookieID == "" {
 		row.CookieID = input.DefaultCookieID
 	}
+	row.Title = normalizeBatchPublishTitle(row.Title)
+	row.Description = normalizeBatchPublishDescription(row.Description)
 	if row.Description == "" {
 		row.Description = row.Title
 	}

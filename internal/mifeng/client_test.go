@@ -68,6 +68,20 @@ func TestClientGetProductAndBuyCard(t *testing.T) {
 	}
 }
 
+// TestClientGetProductClassifiesMissingListItem 验证按商品编号查询空列表时产生专用商品删除错误。
+func TestClientGetProductClassifiesMissingListItem(t *testing.T) {
+	// server 返回没有任何匹配商品的正常列表响应。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是空商品列表响应器。
+		writeJSON(t, writer, map[string]any{"code": 0, "message": "ok", "data": map[string]any{"count": 0, "data": []any{}}})
+	}))
+	defer server.Close()
+	// productErr 是空列表转换后的商品删除错误。
+	_, productErr := NewClient(server.Client()).GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app-key", APIKey: testSecret}, 5435)
+	if !errors.Is(productErr, fulfillmentapp.ErrProductNotFound) {
+		t.Fatalf("空商品列表分类=%v", productErr)
+	}
+}
+
 // TestClientGetDiningProductAsCard 验证餐饮代下商品无需充值账号并按卡券链接履约。
 func TestClientGetDiningProductAsCard(t *testing.T) {
 	// server 模拟蜜蜂返回 b_id=18 的餐饮商品及放单结果。
