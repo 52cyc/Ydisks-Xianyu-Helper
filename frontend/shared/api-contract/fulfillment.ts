@@ -57,14 +57,14 @@ export async function listFulfillmentProducts(instanceId: number): Promise<Fulfi
   return response.data;
 }
 
-/** listFulfillmentCategories 读取卡速售商品目录树。 */
+/** listFulfillmentCategories 读取当前目录型货源实例的商品目录树。 */
 export async function listFulfillmentCategories(instanceId: number): Promise<FulfillmentCategory[]> {
   // response 是 OpenAPI 契约返回的目录列表包装。
   const response = await runContractRequest(/* signal 控制远程目录请求。 */ signal => contractClient.GET('/api/v1/fulfillment/instances/{instance_id}/categories', { params: { path: { instance_id: instanceId } }, signal }));
   return response.data;
 }
 
-/** listFulfillmentProductPage 按最终目录、关键词和页码读取卡速售商品。 */
+/** listFulfillmentProductPage 按最终目录、关键词和页码读取货源商品。 */
 export function listFulfillmentProductPage(instanceId: number, categoryId: number, keyword: string, page: number, pageSize = 50): Promise<FulfillmentProductPage> {
   return runContractRequest(/* signal 控制目录商品分页请求。 */ signal => contractClient.GET('/api/v1/fulfillment/instances/{instance_id}/products', {
     params: { path: { instance_id: instanceId }, query: { category_id: categoryId || undefined, keyword: keyword || undefined, page, page_size: pageSize } }, signal,

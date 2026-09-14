@@ -19,6 +19,9 @@ const defaultReviewRequestScanInterval = time.Minute
 // defaultExternalListingPriceSyncInterval 控制货源价到闲鱼商品页的后台同步频率。
 const defaultExternalListingPriceSyncInterval = 10 * time.Minute
 
+// defaultExternalListingQuoteInterval 限制后台连续查询货源实时价格的最小起始间隔。
+const defaultExternalListingQuoteInterval = 500 * time.Millisecond
+
 // defaultDeferredTaskScanInterval 是持久化延迟动作的轮询周期，保证秒级动作不会被分钟级业务扫描额外延后。
 const defaultDeferredTaskScanInterval = time.Second
 
@@ -41,15 +44,18 @@ type Scheduler struct {
 	done chan struct{}
 	// lastExternalListingPriceSync 保存最近一次货源商品页价格扫描时间。
 	lastExternalListingPriceSync time.Time
+	// externalListingQuoteInterval 是单轮后台同步中相邻货源报价的最小起始间隔；仅测试可缩短。
+	externalListingQuoteInterval time.Duration
 }
 
 // NewScheduler 构造计划任务调度器。
 func NewScheduler(center *Center) *Scheduler {
 	return &Scheduler{
-		center:           center,
-		interval:         defaultReviewRequestScanInterval,
-		deferredInterval: defaultDeferredTaskScanInterval,
-		done:             make(chan struct{}),
+		center:                       center,
+		interval:                     defaultReviewRequestScanInterval,
+		deferredInterval:             defaultDeferredTaskScanInterval,
+		externalListingQuoteInterval: defaultExternalListingQuoteInterval,
+		done:                         make(chan struct{}),
 	}
 }
 

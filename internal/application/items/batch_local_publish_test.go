@@ -115,10 +115,10 @@ func TestBatchLocalPublishServiceCreatesExternalFulfillmentRule(t *testing.T) {
 		t.Fatal(serviceErr)
 	}
 	// automationJSON 是选品批次持久化的外部货源配置。
-	automationJSON := `{"external_delivery":{"enabled":true,"instance_id":3,"goods_id":9,"goods_name":"视频月卡","safe_price":"2.80","profit_rate":"10.00","price_sync_enabled":true,"stop_purchase_on_inversion":true}}`
+	automationJSON := `{"external_delivery":{"enabled":true,"instance_id":3,"goods_id":9,"goods_name":"视频月卡","delivery_count":2,"safe_price":"5.60","profit_rate":"10.00","price_sync_enabled":true,"stop_purchase_on_inversion":true}}`
 	// completeErr 是平台发布成功后的本地收口结果。
 	completeErr := service.Complete(context.Background(), 1, BatchRow{ID: 7, BatchID: "batch-1", CookieID: "acc1", Title: "视频月卡", Quantity: 1, AutomationJSON: automationJSON}, "worker", &BatchPublishResult{ItemID: "item-9", Title: "视频月卡", PriceText: "3.08"})
-	if completeErr != nil || len(ruleRepository.inputs) != 1 || len(ruleRepository.inputs[0].Actions) != 2 || ruleRepository.inputs[0].Actions[1].ActionType != automationapp.ActionConfirmShipment {
+	if completeErr != nil || len(ruleRepository.inputs) != 1 || len(ruleRepository.inputs[0].Actions) != 2 || ruleRepository.inputs[0].Actions[0].DeliveryCount != 2 || ruleRepository.inputs[0].Actions[1].ActionType != automationapp.ActionConfirmShipment {
 		t.Fatalf("外部货源规则收口失败: rules=%+v err=%v", ruleRepository.inputs, completeErr)
 	}
 	// config 是发送卡密动作中供现有执行器消费的结构化配置。

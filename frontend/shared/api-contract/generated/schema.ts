@@ -2266,6 +2266,7 @@ export interface components {
             total: number;
             page: number;
             page_size: number;
+            total_pages?: number;
         };
         FulfillmentMappingInput: {
             account_id: string;

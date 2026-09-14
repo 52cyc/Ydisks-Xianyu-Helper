@@ -49,6 +49,51 @@ func NewClient(httpClient *http.Client) *Client {
 	return &Client{HTTPClient: httpClient, Now: time.Now}
 }
 
+// ListCategories 读取卡易信递归展示目录，空对象正文仍参与 API 3.0 签名。
+func (client *Client) ListCategories(ctx context.Context, instance fulfillmentapp.Instance) ([]fulfillmentapp.Category, error) {
+	// payloads 是卡易信分类接口返回的顶级目录。
+	var payloads []categoryPayload
+	if callErr := client.call(ctx, instance, "/api/v3/goods/getDirs", map[string]any{}, &payloads); callErr != nil { // callErr 是远程分类请求错误。
+		return nil, callErr
+	}
+	// categories 保存过滤无效标识或空名称后的统一目录树。
+	categories := make([]fulfillmentapp.Category, 0, len(payloads))
+	for _, payload := range payloads { // payload 是当前待归一化的卡易信目录节点。
+		if category := payload.category(); category.ID > 0 && category.Name != "" { // category 是可供前端选择的统一目录节点。
+			categories = append(categories, category)
+		}
+	}
+	return categories, nil
+}
+
+// ListProductPage 按目录和关键词读取单规格卡券商品，列表库存缺失时保留未知状态。
+func (client *Client) ListProductPage(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error) {
+	// body 固定限制卡券和单规格，防止直充或多规格商品进入本次批量上架入口。
+	body := productListRequest{Page: query.Page, GoodsType: "1", Keyword: strings.TrimSpace(query.Keyword), SKUType: "0", ShowDirID: "1"}
+	if query.CategoryID > 0 {
+		body.DirID = strconv.FormatInt(query.CategoryID, 10)
+	}
+	// payload 是卡易信当前页、总条数和总页数包装。
+	var payload productListPayload
+	if callErr := client.call(ctx, instance, "/api/v3/goods/getList", body, &payload); callErr != nil { // callErr 是远程分页商品请求错误。
+		return fulfillmentapp.ProductPage{}, callErr
+	}
+	// products 保存当前页归一化后的商品摘要。
+	products := make([]fulfillmentapp.Product, 0, len(payload.Items))
+	for _, item := range payload.Items { // item 是当前页待转换的单规格卡券商品。
+		products = append(products, item.product(false))
+	}
+	// total、totalPages 分别采用协议字段 allCount、allPage；异常空值回退当前页和一页。
+	total, totalPages := intValue(payload.AllCount), intValue(payload.AllPage)
+	if total <= 0 {
+		total = len(products)
+	}
+	if totalPages <= 0 {
+		totalPages = 1
+	}
+	return fulfillmentapp.ProductPage{Items: products, Total: total, Page: query.Page, PageSize: len(products), TotalPages: totalPages}, nil
+}
+
 // ListProducts 分页读取卡易信全部商品摘要。
 func (client *Client) ListProducts(ctx context.Context, instance fulfillmentapp.Instance) ([]fulfillmentapp.Product, error) {
 	// products 保存逐页归一后的商品结果。
@@ -80,7 +125,7 @@ func (client *Client) GetProduct(ctx context.Context, instance fulfillmentapp.In
 	if callErr := client.call(ctx, instance, "/api/v3/goods/getDetail", goodsDetailRequest{GoodsID: goodsID}, &payload); callErr != nil { // callErr 是商品详情请求错误。
 		return fulfillmentapp.Product{}, callErr
 	}
-	if intValue(payload.SKUType) != 0 {
+	if payload.SKUType == nil || intValue(payload.SKUType) != 0 {
 		return fulfillmentapp.Product{}, errors.New("卡易信多规格商品暂不能直接采购，请选择单规格商品")
 	}
 	return payload.product(true), nil
@@ -236,10 +281,34 @@ type productListRequest struct {
 
 // productListPayload 是卡易信分页商品数据。
 type productListPayload struct {
+	// AllCount 是当前筛选条件下的商品总条数。
+	AllCount any `json:"allCount"`
 	// AllPage 是远程声明的总页数。
 	AllPage any `json:"allPage"`
 	// Items 是当前页商品列表。
 	Items []productPayload `json:"items"`
+}
+
+// categoryPayload 是卡易信递归展示目录节点。
+type categoryPayload struct {
+	// ID 是卡易信目录主键。
+	ID any `json:"id"`
+	// Name 是目录展示名称。
+	Name string `json:"name"`
+	// Children 保存不限层级的下级目录。
+	Children []categoryPayload `json:"children"`
+}
+
+// category 递归转换一个卡易信目录节点，并过滤无效子节点。
+func (payload categoryPayload) category() fulfillmentapp.Category {
+	// children 保存能够作为目录筛选条件的有效子节点。
+	children := make([]fulfillmentapp.Category, 0, len(payload.Children))
+	for _, childPayload := range payload.Children { // childPayload 是当前待转换的下级目录。
+		if child := childPayload.category(); child.ID > 0 && child.Name != "" { // child 是通过基础字段校验的统一下级目录。
+			children = append(children, child)
+		}
+	}
+	return fulfillmentapp.Category{ID: int64(intValue(payload.ID)), Name: strings.TrimSpace(payload.Name), Children: children}
 }
 
 // goodsDetailRequest 是商品详情请求。
@@ -268,6 +337,16 @@ type productPayload struct {
 	StockCount any `json:"stockCount"`
 	// SKUType 中 0 表示当前系统可直接采购的单规格商品。
 	SKUType any `json:"skuType"`
+	// Description 是卡易信商品简介。
+	Description string `json:"goodsDescribe"`
+	// Detail 是卡易信商品详细说明。
+	Detail string `json:"goodsDetail"`
+	// BuyNotice 是卡易信购买前提示。
+	BuyNotice string `json:"buyNotice"`
+	// MinQuantity 是单次采购的最小数量。
+	MinQuantity any `json:"minQuantity"`
+	// MaxQuantity 是单次采购的最大数量。
+	MaxQuantity any `json:"maxQuantity"`
 	// RechargeTemplates 是直充商品要求的动态字段。
 	RechargeTemplates []rechargeTemplate `json:"rechargeTemplates"`
 }
@@ -290,10 +369,10 @@ type rechargeTemplate struct {
 
 // product 把卡易信商品转换为应用层统一商品。
 func (payload productPayload) product(detail bool) fulfillmentapp.Product {
-	// goodsType 是卡易信类型到统一卡密或直充类型的映射。
-	goodsType := fulfillmentapp.GoodsTypeCard
-	if intValue(payload.GoodsType) == 3 {
-		goodsType = fulfillmentapp.GoodsTypeRecharge
+	// goodsType 只有协议明确的类型一才映射为卡密，其他类型按非卡密兼容值返回以防误上架。
+	goodsType := fulfillmentapp.GoodsTypeRecharge
+	if intValue(payload.GoodsType) == 1 {
+		goodsType = fulfillmentapp.GoodsTypeCard
 	}
 	// attach 是转换后的直充字段列表。
 	attach := make([]fulfillmentapp.AttachField, 0, len(payload.RechargeTemplates))
@@ -301,13 +380,30 @@ func (payload productPayload) product(detail bool) fulfillmentapp.Product {
 		attach = append(attach, template.attachField())
 	}
 	// status、stock、singleSKU 是商品可售状态、库存和规格能力。
-	status, stock, singleSKU := intValue(payload.Status), intValue(payload.StockCount), intValue(payload.SKUType) == 0
+	status, stock, singleSKU := intValue(payload.Status), intValue(payload.StockCount), payload.SKUType != nil && intValue(payload.SKUType) == 0
+	if !detail && payload.StockCount == nil {
+		stock = -1
+	}
 	// canBuy 在列表无库存字段时只判断销售和规格，详情同时要求正库存。
 	canBuy := status == 1 && singleSKU
 	if detail {
 		canBuy = canBuy && stock > 0
 	}
-	return fulfillmentapp.Product{ID: int64(intValue(payload.GoodsID)), Name: payload.Name, Image: payload.ImageURL, GoodsType: goodsType, FaceValue: textValue(payload.FaceValue), Price: textValue(payload.SalesPrice), Status: status, Stock: stock, CanBuy: canBuy, Attach: attach}
+	// description 合并简介和详情，避免任一字段为空时产生多余空行。
+	description := joinNonEmptyText(payload.Description, payload.Detail)
+	return fulfillmentapp.Product{ID: int64(intValue(payload.GoodsID)), Name: payload.Name, Image: payload.ImageURL, GoodsType: goodsType, FaceValue: textValue(payload.FaceValue), Price: textValue(payload.SalesPrice), Status: status, Stock: stock, CanBuy: canBuy, Description: description, Notice: strings.TrimSpace(payload.BuyNotice), StartCount: intValue(payload.MinQuantity), EndCount: intValue(payload.MaxQuantity), CanSetPrice: true, Attach: attach}
+}
+
+// joinNonEmptyText 按原顺序合并供应站非空说明段落。
+func joinNonEmptyText(values ...string) string {
+	// parts 保存去除首尾空白后的有效说明段落。
+	parts := make([]string, 0, len(values))
+	for _, value := range values { // value 是当前候选说明段落。
+		if normalized := strings.TrimSpace(value); normalized != "" { // normalized 是可直接写入发布描述的文本。
+			parts = append(parts, normalized)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // attachField 把卡易信字段类型和候选值转换为统一直充字段。
@@ -518,3 +614,7 @@ func md5Hex(value string) string {
 	digest := md5.Sum([]byte(value))
 	return hex.EncodeToString(digest[:])
 }
+
+// 确保卡易信客户端同时提供基础履约和目录选品能力。
+var _ fulfillmentapp.Gateway = (*Client)(nil)
+var _ fulfillmentapp.CatalogGateway = (*Client)(nil)

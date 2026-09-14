@@ -152,6 +152,8 @@ type batchPublishExternalDelivery struct {
 	GoodsID int64 `json:"goods_id"`
 	// GoodsName 是管理员识别用的货源商品名称。
 	GoodsName string `json:"goods_name"`
+	// DeliveryCount 是每卖出一件闲鱼商品需要采购的供应商商品份数。
+	DeliveryCount int `json:"delivery_count"`
 	// SafePrice 是发布前的采购单价。
 	SafePrice string `json:"safe_price"`
 	// ProfitRate 是售价相对采购价的加价百分比。
@@ -231,9 +233,14 @@ func (service *BatchLocalPublishService) ensureAutomationRules(ctx context.Conte
 		if marshalErr != nil {
 			return marshalErr
 		}
+		// deliveryCount 是每件闲鱼商品对应的供应商采购份数；兼容旧批次缺失字段时按一份处理。
+		deliveryCount := config.ExternalDelivery.DeliveryCount
+		if deliveryCount <= 0 {
+			deliveryCount = 1
+		}
 		// actions 保存外部采购和确认发货两个顺序动作。
 		actions := []automationapp.ActionInput{
-			{ActionType: automationapp.ActionSendCard, DeliveryCount: 1, ConfigJSON: string(actionConfig), Enabled: true, SortOrder: 1},
+			{ActionType: automationapp.ActionSendCard, DeliveryCount: deliveryCount, ConfigJSON: string(actionConfig), Enabled: true, SortOrder: 1},
 			{ActionType: automationapp.ActionConfirmShipment, Enabled: true, SortOrder: 2},
 		}
 		if ruleErr := service.ruleRepository.EnsurePublishRule(ctx, automationapp.RuleInput{UserID: userID, CookieID: row.CookieID, ItemID: result.ItemID, Name: "付款后货源自动发货 - " + title, TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 100, ConfigJSON: "{}", Actions: actions}); ruleErr != nil { // ruleErr 是外部货源规则的幂等写入错误。

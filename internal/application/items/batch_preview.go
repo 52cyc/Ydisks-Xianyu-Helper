@@ -338,6 +338,9 @@ func (service *BatchPreviewService) validateAutomation(ctx context.Context, user
 		if config.ExternalDelivery.GoodsType != 1 {
 			errorsFound = append(errorsFound, "首版批量上架仅支持卡密类单规格货源商品")
 		}
+		if config.ExternalDelivery.DeliveryCount <= 0 {
+			errorsFound = append(errorsFound, "外部货源每件采购份数必须大于 0")
+		}
 		if strings.TrimSpace(config.ExternalDelivery.SafePrice) != "" {
 			if cents, priceErr := parseMoneyCents(config.ExternalDelivery.SafePrice); priceErr != nil || cents <= 0 { // cents、priceErr 是可选采购保护价分值和格式错误。
 				errorsFound = append(errorsFound, "外部货源采购保护价必须大于 0")
@@ -661,7 +664,7 @@ func parseAutomation(fields map[string]any) BatchPreviewAutomation {
 		ExternalDelivery: BatchPreviewExternalDelivery{
 			Enabled: parseBool(firstString(fields, "external_delivery_enabled")), InstanceID: int64(parseIntDefault(firstString(fields, "external_instance_id"), 0)),
 			GoodsID: int64(parseIntDefault(firstString(fields, "external_goods_id"), 0)), GoodsName: firstString(fields, "external_goods_name"),
-			GoodsType: parseIntDefault(firstString(fields, "external_goods_type"), 0), SafePrice: firstString(fields, "external_safe_price"),
+			GoodsType: parseIntDefault(firstString(fields, "external_goods_type"), 0), DeliveryCount: parseIntDefault(firstString(fields, "external_delivery_count"), 1), SafePrice: firstString(fields, "external_safe_price"),
 			ProfitRate: firstString(fields, "external_profit_rate"), PriceSyncEnabled: parseBool(firstString(fields, "external_price_sync_enabled")),
 			StopPurchaseOnInversion: parseBool(firstString(fields, "external_stop_purchase_on_inversion")),
 		},

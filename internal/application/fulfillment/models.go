@@ -180,6 +180,8 @@ type ProductPage struct {
 	Page int `json:"page"`
 	// PageSize 是当前请求的单页数量。
 	PageSize int `json:"page_size"`
+	// TotalPages 是供应站声明或按总数推导的总页数，避免前端假设固定页大小。
+	TotalPages int `json:"total_pages,omitempty"`
 }
 
 // AttachField 描述直充商品下单时要求的一个动态字段。

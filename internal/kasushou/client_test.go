@@ -149,7 +149,7 @@ func TestClientCatalogUsesCategoryPaginationAndChannelFields(t *testing.T) {
 	}
 	// page、pageErr 是商品分页结果及请求错误。
 	page, pageErr := client.ListProductPage(context.Background(), instance, fulfillmentapp.ProductListQuery{CategoryID: 11, Keyword: "月卡", Page: 2, PageSize: 20})
-	if pageErr != nil || page.Total != 31 || len(page.Items) != 1 || !page.Items[0].CanBuy || page.Items[0].BuyChannels != "拼多多,京东" || !page.Items[0].CanSetPrice {
+	if pageErr != nil || page.Total != 31 || page.TotalPages != 2 || len(page.Items) != 1 || !page.Items[0].CanBuy || page.Items[0].BuyChannels != "拼多多,京东" || !page.Items[0].CanSetPrice {
 		t.Fatalf("商品分页归一化失败: page=%+v err=%v", page, pageErr)
 	}
 }

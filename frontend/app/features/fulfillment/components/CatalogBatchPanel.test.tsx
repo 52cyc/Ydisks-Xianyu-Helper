@@ -25,10 +25,10 @@ vi.mock("../api", /* fulfillmentAPIMock 提供不访问网络的选品与发布�
 
 /** product 是所有页面行为测试共用的可采购单规格卡密商品。 */
 const product = { id: 9, goods_name: "视频月卡", goods_img: "https://img.example/a.jpg", goods_type: 1, goods_price: "2.80", status: 1, stock_num: 8, can_buy: true, can_price: true } as FulfillmentProduct;
-/** instances 是页面行为测试使用的两个卡速售实例。 */
+/** instances 是页面行为测试使用的卡速售和卡易信目录实例。 */
 const instances = [
   { id: 1, public_id: "one", name: "卡速售一", provider: "kasushou_v2", base_url: "https://one.example", merchant_user_id: "u1", has_api_key: true, enabled: true, capabilities: {}, created_at: "", updated_at: "" },
-  { id: 2, public_id: "two", name: "卡速售二", provider: "kasushou_v2", base_url: "https://two.example", merchant_user_id: "u2", has_api_key: true, enabled: true, capabilities: {}, created_at: "", updated_at: "" },
+  { id: 2, public_id: "two", name: "卡易信一", provider: "kayixin_v3", base_url: "https://two.example", merchant_user_id: "u2", has_api_key: true, enabled: true, capabilities: {}, created_at: "", updated_at: "" },
 ] as FulfillmentInstance[];
 
 /** CatalogBatchPanel 行为测试覆盖正常发布、预检失败和实例切换隔离。 */
@@ -47,11 +47,11 @@ describe("CatalogBatchPanel", () => {
 
   it("starts the existing publish batch after successful preflight", /* successCase 验证选品到启动发布的完整成功路径。 */ async () => {
     vi.mocked(listFulfillmentCategories).mockResolvedValue([{ id: 10, name: "会员", children: [{ id: 11, name: "视频" }] }]);
-    vi.mocked(listFulfillmentProductPage).mockResolvedValue({ data: [product], total: 1, page: 1, page_size: 50 });
+    vi.mocked(listFulfillmentProductPage).mockResolvedValue({ data: [product], total: 1, page: 1, page_size: 50, total_pages: 1 });
     vi.mocked(previewFulfillmentPublishBatch).mockResolvedValue({ success: true, preview_id: "preview-1", total: 1, valid: 1, invalid: 0, rows: [] });
     render(<CatalogBatchPanel instances={instances} />);
     await waitFor(/* accountReadyAssertion 等待默认发布账号加载。 */ () => expect((screen.getByLabelText("闲鱼账号") as HTMLSelectElement).value).toBe("acc1"));
-    fireEvent.change(screen.getByLabelText("卡速售实例"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "1" } });
     await waitFor(/* categoryReadyAssertion 等待一级目录加载。 */ () => expect(screen.getByRole("option", { name: "会员" })).toBeTruthy());
     fireEvent.change(screen.getByLabelText("一级目录"), { target: { value: "10" } });
     fireEvent.change(screen.getByLabelText("商品目录"), { target: { value: "11" } });
@@ -66,11 +66,11 @@ describe("CatalogBatchPanel", () => {
 
   it("keeps an invalid preview stopped", /* invalidCase 验证任一行预检失败时不会启动后台发布。 */ async () => {
     vi.mocked(listFulfillmentCategories).mockResolvedValue([{ id: 10, name: "会员", children: [{ id: 11, name: "视频" }] }]);
-    vi.mocked(listFulfillmentProductPage).mockResolvedValue({ data: [product], total: 1, page: 1, page_size: 50 });
+    vi.mocked(listFulfillmentProductPage).mockResolvedValue({ data: [product], total: 1, page: 1, page_size: 50, total_pages: 1 });
     vi.mocked(previewFulfillmentPublishBatch).mockResolvedValue({ success: true, preview_id: "preview-bad", total: 1, valid: 0, invalid: 1, rows: [{ row_no: 2, valid: false, errors: ["类目识别失败"], cookie_id: "acc1", title: "视频月卡", price: "3.08", quantity: 8, images: [], category: { cat_id: "", cat_name: "", channel_cat_id: "" }, automation: { paid_delivery: { enabled: false, actions: [] }, review_gift: { enabled: false, actions: [] }, review_request: { enabled: false, after_shipped_hours: 72, message: "", max_attempts: 1, delay_seconds: 0 } } }] });
     render(<CatalogBatchPanel instances={instances} />);
     await waitFor(/* accountReadyAssertion 等待账号加载后再执行选品。 */ () => expect((screen.getByLabelText("闲鱼账号") as HTMLSelectElement).value).toBe("acc1"));
-    fireEvent.change(screen.getByLabelText("卡速售实例"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "1" } });
     await waitFor(/* categoryReadyAssertion 等待目录加载。 */ () => expect(screen.getByRole("option", { name: "会员" })).toBeTruthy());
     fireEvent.change(screen.getByLabelText("一级目录"), { target: { value: "10" } });
     fireEvent.change(screen.getByLabelText("商品目录"), { target: { value: "11" } });
@@ -89,11 +89,46 @@ describe("CatalogBatchPanel", () => {
     const firstRequest = new Promise<FulfillmentCategory[]>(/* firstResolver 捕获旧请求完成函数。 */ resolve => { resolveFirst = resolve; });
     vi.mocked(listFulfillmentCategories).mockImplementation(/* categoryRequestMock 按实例返回延迟或即时目录。 */ instanceId => instanceId === 1 ? firstRequest : Promise.resolve([{ id: 20, name: "新目录" }]));
     render(<CatalogBatchPanel instances={instances} />);
-    fireEvent.change(screen.getByLabelText("卡速售实例"), { target: { value: "1" } });
-    fireEvent.change(screen.getByLabelText("卡速售实例"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "2" } });
     await waitFor(/* latestCategoryAssertion 等待第二个实例目录显示。 */ () => expect(screen.getByRole("option", { name: "新目录" })).toBeTruthy());
     resolveFirst?.([{ id: 10, name: "旧目录" }]);
     await Promise.resolve();
     expect(screen.queryByRole("option", { name: "旧目录" })).toBeNull();
+  });
+
+  it("lists Kayixin products with unknown stock and verifies details sequentially", /* kayixinCase 验证卡易信入口、未知库存和详情串行复核。 */ async () => {
+    // secondProduct 是同页选择的第二个卡易信单规格商品。
+    const secondProduct = { ...product, id: 10, goods_name: "音乐月卡", stock_num: -1 } as FulfillmentProduct;
+    // firstProduct 是列表库存未知但详情确认有货的第一个卡易信商品。
+    const firstProduct = { ...product, stock_num: -1 } as FulfillmentProduct;
+    // resolveFirstDetail 控制第一个详情请求何时完成，用于证明第二个请求不会并发启动。
+    let resolveFirstDetail: ((value: FulfillmentProduct) => void) | undefined;
+    // firstDetailRequest 在测试放行前保持等待。
+    const firstDetailRequest = new Promise<FulfillmentProduct>(/* firstDetailResolver 保存首个详情请求完成函数。 */ resolve => { resolveFirstDetail = resolve; });
+    vi.mocked(listFulfillmentCategories).mockResolvedValue([{ id: 20, name: "卡券", children: [{ id: 21, name: "会员" }] }]);
+    vi.mocked(listFulfillmentProductPage).mockResolvedValue({ data: [firstProduct, secondProduct], total: 52, page: 1, page_size: 2, total_pages: 2 });
+    vi.mocked(getFulfillmentProduct)
+      .mockImplementationOnce(/* firstDetailMock 让第一个详情保持未完成。 */ () => firstDetailRequest)
+      .mockResolvedValueOnce({ ...secondProduct, stock_num: 6 });
+    vi.mocked(previewFulfillmentPublishBatch).mockResolvedValue({ success: true, preview_id: "preview-kayixin", total: 2, valid: 2, invalid: 0, rows: [] });
+    render(<CatalogBatchPanel instances={instances} />);
+    await waitFor(/* accountReadyAssertion 等待默认发布账号加载。 */ () => expect((screen.getByLabelText("闲鱼账号") as HTMLSelectElement).value).toBe("acc1"));
+    expect(screen.getByRole("option", { name: "卡易信一（卡易信 API 3.0）" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("货源实例"), { target: { value: "2" } });
+    await waitFor(/* categoryReadyAssertion 等待卡易信目录加载。 */ () => expect(screen.getByRole("option", { name: "卡券" })).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("一级目录"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("商品目录"), { target: { value: "21" } });
+    fireEvent.click(screen.getByRole("button", { name: /查询商品/ }));
+    await waitFor(/* productReadyAssertion 等待两个卡易信商品显示。 */ () => expect(screen.getByText("音乐月卡")).toBeTruthy());
+    expect(screen.getAllByText("详情确认")).toHaveLength(2);
+    expect(screen.getByText("第 1/2 页，共 52 个；已选 0 个")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("选择 视频月卡"));
+    fireEvent.click(screen.getByLabelText("选择 音乐月卡"));
+    fireEvent.click(screen.getByRole("button", { name: "批量上架（2）" }));
+    await waitFor(/* firstDetailStartedAssertion 确认只有首个详情请求启动。 */ () => expect(getFulfillmentProduct).toHaveBeenCalledTimes(1));
+    resolveFirstDetail?.({ ...firstProduct, stock_num: 5 });
+    await waitFor(/* secondDetailStartedAssertion 等待首个完成后才启动第二个详情。 */ () => expect(getFulfillmentProduct).toHaveBeenCalledTimes(2));
+    await waitFor(/* publishStartedAssertion 等待串行复核后启动发布。 */ () => expect(startFulfillmentPublishBatch).toHaveBeenCalledWith("preview-kayixin"));
   });
 });

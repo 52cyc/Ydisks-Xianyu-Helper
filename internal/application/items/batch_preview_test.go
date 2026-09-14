@@ -76,10 +76,10 @@ func TestBatchPreviewAcceptsExternalCardDelivery(t *testing.T) {
 		t.Fatal(serviceErr)
 	}
 	// fields 保存选品流程生成的一条外部货源卡密记录。
-	fields := map[string]any{"title": "卡密商品", "price": "3.08", "quantity": "5", "images": "https://img.example/a.jpg", "external_delivery_enabled": "true", "external_instance_id": "3", "external_goods_id": "9", "external_goods_name": "卡密商品", "external_goods_type": "1", "external_safe_price": "2.80", "external_profit_rate": "10.00", "external_price_sync_enabled": "true", "external_stop_purchase_on_inversion": "true"}
+	fields := map[string]any{"title": "卡密商品", "price": "3.08", "quantity": "5", "images": "https://img.example/a.jpg", "external_delivery_enabled": "true", "external_instance_id": "3", "external_goods_id": "9", "external_goods_name": "卡密商品", "external_goods_type": "1", "external_delivery_count": "2", "external_safe_price": "2.80", "external_profit_rate": "10.00", "external_price_sync_enabled": "true", "external_stop_purchase_on_inversion": "true"}
 	// rows、previewErr 是外部卡密记录预检结果及错误。
 	rows, previewErr := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, DefaultCookieID: "acc1", Rows: []map[string]any{fields}})
-	if previewErr != nil || len(rows) != 1 || len(rows[0].Errors) != 0 || rows[0].Automation.ExternalDelivery.GoodsID != 9 {
+	if previewErr != nil || len(rows) != 1 || len(rows[0].Errors) != 0 || rows[0].Automation.ExternalDelivery.GoodsID != 9 || rows[0].Automation.ExternalDelivery.DeliveryCount != 2 {
 		t.Fatalf("外部卡密预检失败: rows=%+v err=%v", rows, previewErr)
 	}
 	fields["external_goods_type"] = "2"

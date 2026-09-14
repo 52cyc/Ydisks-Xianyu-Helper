@@ -12,6 +12,8 @@ type BatchPreviewExternalDelivery struct {
 	GoodsName string `json:"goods_name"`
 	// GoodsType 是货源商品交付类型；首版仅允许返回卡密的类型一。
 	GoodsType int `json:"goods_type"`
+	// DeliveryCount 是每卖出一件闲鱼商品需要采购的供应商商品份数。
+	DeliveryCount int `json:"delivery_count"`
 	// SafePrice 是发布前读取的采购单价，供直接付款倒挂保护使用。
 	SafePrice string `json:"safe_price"`
 	// ProfitRate 是售价相对采购价的加价百分比。

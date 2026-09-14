@@ -110,7 +110,7 @@ func (service *Service) ListProductPage(ctx context.Context, userID, instanceID 
 	if !supported {
 		// products、listErr 保留旧协议的一次性商品列表兼容能力。
 		products, listErr := service.gateway.ListProducts(ctx, instance)
-		return ProductPage{Items: products, Total: len(products), Page: 1, PageSize: len(products)}, listErr
+		return ProductPage{Items: products, Total: len(products), Page: 1, PageSize: len(products), TotalPages: 1}, listErr
 	}
 	return catalog.ListProductPage(ctx, instance, query)
 }

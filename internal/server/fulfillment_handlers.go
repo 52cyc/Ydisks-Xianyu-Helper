@@ -27,6 +27,8 @@ type fulfillmentProductListResponse struct {
 	Page int `json:"page"`
 	// PageSize 是当前请求的单页数量。
 	PageSize int `json:"page_size"`
+	// TotalPages 是供应站声明或按总数推导的总页数。
+	TotalPages int `json:"total_pages,omitempty"`
 }
 
 // fulfillmentCategoryListResponse 是货源商品目录树响应。
@@ -45,7 +47,7 @@ type fulfillmentOrderListResponse struct {
 	Data []fulfillmentapp.Order `json:"data"`
 }
 
-// listFulfillmentInstances 列出当前用户的多个卡速售兼容站。
+// listFulfillmentInstances 列出当前用户配置的多个外部货源实例。
 func (s *Server) listFulfillmentInstances(w http.ResponseWriter, r *http.Request) {
 	// session 是认证中间件注入的当前用户会话。
 	session := auth.SessionFromContext(r.Context())
@@ -58,7 +60,7 @@ func (s *Server) listFulfillmentInstances(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, fulfillmentInstanceListResponse{Data: instances})
 }
 
-// createFulfillmentInstance 创建卡速售 v2 兼容实例。
+// createFulfillmentInstance 创建受支持协议的外部货源实例。
 func (s *Server) createFulfillmentInstance(w http.ResponseWriter, r *http.Request) {
 	// input 是请求体中的实例配置。
 	var input fulfillmentapp.InstanceInput
@@ -144,10 +146,10 @@ func (s *Server) listFulfillmentProducts(w http.ResponseWriter, r *http.Request)
 		writeFulfillmentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, fulfillmentProductListResponse{Data: productPage.Items, Total: productPage.Total, Page: productPage.Page, PageSize: productPage.PageSize})
+	writeJSON(w, http.StatusOK, fulfillmentProductListResponse{Data: productPage.Items, Total: productPage.Total, Page: productPage.Page, PageSize: productPage.PageSize, TotalPages: productPage.TotalPages})
 }
 
-// listFulfillmentCategories 从指定卡速售实例读取商品目录树。
+// listFulfillmentCategories 从指定目录型货源实例读取商品目录树。
 func (s *Server) listFulfillmentCategories(w http.ResponseWriter, r *http.Request) {
 	// instanceID 是当前要请求的货源实例。
 	instanceID, parseErr := strconv.ParseInt(chi.URLParam(r, "instance_id"), 10, 64)

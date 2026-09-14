@@ -70,8 +70,13 @@ func (client *Client) ListCategories(ctx context.Context, instance fulfillmentap
 
 // ListProductPage 按叶子目录、关键词和页码请求卡速售商品。
 func (client *Client) ListProductPage(ctx context.Context, instance fulfillmentapp.Instance, query fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error) {
+	// pageSize 防御绕过应用服务直接调用协议客户端时的空页大小，避免总页数计算除零。
+	pageSize := query.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
 	// body 是官方商品列表接口的分页筛选参数。
-	body := map[string]any{"page": query.Page, "limit": query.PageSize}
+	body := map[string]any{"page": query.Page, "limit": pageSize}
 	if query.CategoryID > 0 {
 		body["cate_id"] = query.CategoryID
 	}
@@ -93,7 +98,9 @@ func (client *Client) ListProductPage(ctx context.Context, instance fulfillmenta
 	if total <= 0 {
 		total = len(products)
 	}
-	return fulfillmentapp.ProductPage{Items: products, Total: total, Page: query.Page, PageSize: query.PageSize}, nil
+	// totalPages 按卡速售可配置页大小推导，空结果也保留一页供前端稳定展示。
+	totalPages := max(1, (total+pageSize-1)/pageSize)
+	return fulfillmentapp.ProductPage{Items: products, Total: total, Page: query.Page, PageSize: pageSize, TotalPages: totalPages}, nil
 }
 
 // GetProduct 请求商品详情及动态附加字段。

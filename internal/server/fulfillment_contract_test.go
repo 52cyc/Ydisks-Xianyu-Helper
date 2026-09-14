@@ -43,7 +43,7 @@ func (fulfillmentContractPort) ListCategories(context.Context, int64, int64) ([]
 
 // ListProductPage 返回带总数和页码的远程商品页。
 func (fulfillmentContractPort) ListProductPage(context.Context, int64, int64, fulfillmentapp.ProductListQuery) (fulfillmentapp.ProductPage, error) {
-	return fulfillmentapp.ProductPage{Items: []fulfillmentapp.Product{fulfillmentContractProduct()}, Total: 1, Page: 1, PageSize: 50}, nil
+	return fulfillmentapp.ProductPage{Items: []fulfillmentapp.Product{fulfillmentContractProduct()}, Total: 1, Page: 1, PageSize: 50, TotalPages: 1}, nil
 }
 
 // GetProduct 返回带直充附加字段的商品详情。

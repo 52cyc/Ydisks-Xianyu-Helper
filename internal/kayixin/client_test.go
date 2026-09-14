@@ -76,6 +76,63 @@ func TestClientBuySignsExactBodyAndConvertsAttach(t *testing.T) {
 	}
 }
 
+// TestClientCatalogSignsAndNormalizesCategoriesAndPage 验证目录、单规格卡券筛选及 allCount/allPage 分页语义。
+func TestClientCatalogSignsAndNormalizesCategoriesAndPage(t *testing.T) {
+	// appID、secret 是本地协议夹具使用的非真实鉴权值。
+	appID, secret := "catalog-app", "catalog-secret"
+	// server 按路径校验分类空正文和商品列表筛选条件。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { // writer、request 是本地卡易信目录响应器和实际请求。
+		// bodyBytes 是必须与签名覆盖内容完全相同的请求正文。
+		var bodyBytes json.RawMessage
+		if decodeErr := json.NewDecoder(request.Body).Decode(&bodyBytes); decodeErr != nil { // decodeErr 是测试请求正文解析错误。
+			t.Fatal(decodeErr)
+		}
+		// canonical 是移除无关空白后的稳定签名正文。
+		canonical, _ := json.Marshal(bodyBytes)
+		// timestamp 是客户端固定时钟产生的秒级签名时间。
+		timestamp := request.Header.Get("X-Timestamp")
+		if request.Header.Get("X-APP-ID") != appID || request.Header.Get("X-Version") != "3.0" || timestamp != "1700000000" || request.Header.Get("X-Signature") != md5Hex(appID+secret+"3.0"+timestamp+string(canonical)) {
+			t.Fatalf("headers=%v body=%s", request.Header, canonical)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/api/v3/goods/getDirs":
+			if string(canonical) != "{}" {
+				t.Fatalf("分类接口必须发送空 JSON 对象: %s", canonical)
+			}
+			_, _ = writer.Write([]byte(`{"code":1000,"msg":"success","data":[{"id":10,"name":"会员","children":[{"id":"11","name":"视频","children":[]}]}]}`))
+		case "/api/v3/goods/getList":
+			// body 是用于断言固定卡券、单规格和目录条件的列表请求。
+			var body productListRequest
+			if decodeErr := json.Unmarshal(canonical, &body); decodeErr != nil { // decodeErr 是商品列表请求结构解析错误。
+				t.Fatal(decodeErr)
+			}
+			if body.Page != 2 || body.GoodsType != "1" || body.SKUType != "0" || body.ShowDirID != "1" || body.DirID != "11" || body.Keyword != "月卡" {
+				t.Fatalf("商品筛选参数错误: %+v", body)
+			}
+			_, _ = writer.Write([]byte(`{"code":1000,"msg":"success","data":{"allCount":31,"allPage":4,"items":[{"goodsId":6518,"name":"视频月卡","goodsType":1,"salesPrice":2.8,"status":1,"skuType":0,"imgUrl":"https://img.example/card.jpg","dirIds":[11]}]}}`))
+		default:
+			t.Fatalf("未预期路径: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	// client 使用固定时钟，使两类请求签名均可重复断言。
+	client := NewClient(server.Client())
+	client.Now = func() time.Time { return time.Unix(1700000000, 0) }
+	// instance 是本地服务所需的卡易信身份配置。
+	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: appID, APIKey: secret}
+	// categories、categoryErr 是递归归一后的分类树和读取错误。
+	categories, categoryErr := client.ListCategories(context.Background(), instance)
+	if categoryErr != nil || len(categories) != 1 || len(categories[0].Children) != 1 || categories[0].Children[0].ID != 11 {
+		t.Fatalf("categories=%+v err=%v", categories, categoryErr)
+	}
+	// page、pageErr 是单规格卡券分页结果和读取错误。
+	page, pageErr := client.ListProductPage(context.Background(), instance, fulfillmentapp.ProductListQuery{CategoryID: 11, Keyword: " 月卡 ", Page: 2, PageSize: 50})
+	if pageErr != nil || page.Total != 31 || page.TotalPages != 4 || page.Page != 2 || len(page.Items) != 1 || page.Items[0].Stock != -1 || !page.Items[0].CanBuy {
+		t.Fatalf("page=%+v err=%v", page, pageErr)
+	}
+}
+
 // TestClientGetProductConvertsRechargeTemplate 验证商品详情类型、价格和直充模板归一化。
 func TestClientGetProductConvertsRechargeTemplate(t *testing.T) {
 	// server 返回包含下拉模板的单规格直充商品。
@@ -84,13 +141,37 @@ func TestClientGetProductConvertsRechargeTemplate(t *testing.T) {
 			t.Fatalf("path=%s", request.URL.Path)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"code":1000,"msg":"success","data":{"goodsId":4994,"name":"测试直充","goodsType":3,"faceValue":100,"salesPrice":0.02,"status":1,"stockCount":9,"skuType":0,"rechargeTemplates":[{"type":14,"title":"区服","placeholder":"请选择","required":1,"regex":"","options":[{"name":"一区","value":"1"},{"name":"二区","value":"2"}]}]}}`))
+		_, _ = writer.Write([]byte(`{"code":1000,"msg":"success","data":{"goodsId":4994,"name":"测试直充","goodsType":3,"faceValue":100,"salesPrice":0.02,"status":1,"stockCount":9,"skuType":0,"goodsDescribe":"商品简介","goodsDetail":"商品详情","buyNotice":"购买提醒","minQuantity":2,"maxQuantity":20,"rechargeTemplates":[{"type":14,"title":"区服","placeholder":"请选择","required":1,"regex":"","options":[{"name":"一区","value":"1"},{"name":"二区","value":"2"}]}]}}`))
 	}))
 	defer server.Close()
 	// product、productErr 是归一化商品及读取错误。
 	product, productErr := NewClient(server.Client()).GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, 4994)
-	if productErr != nil || product.ID != 4994 || product.GoodsType != fulfillmentapp.GoodsTypeRecharge || product.Price != "0.02" || !product.CanBuy || len(product.Attach) != 1 || product.Attach[0].Key != "区服" || strings.Join(product.Attach[0].Options, ",") != "一区,二区" {
+	if productErr != nil || product.ID != 4994 || product.GoodsType != fulfillmentapp.GoodsTypeRecharge || product.Price != "0.02" || !product.CanBuy || !product.CanSetPrice || product.Description != "商品简介\n\n商品详情" || product.Notice != "购买提醒" || product.StartCount != 2 || product.EndCount != 20 || len(product.Attach) != 1 || product.Attach[0].Key != "区服" || strings.Join(product.Attach[0].Options, ",") != "一区,二区" {
 		t.Fatalf("product=%+v err=%v", product, productErr)
+	}
+}
+
+// TestClientGetProductRejectsMissingSKUType 验证详情缺少规格类型时不能被当作已确认的单规格商品。
+func TestClientGetProductRejectsMissingSKUType(t *testing.T) {
+	// server 返回在售且有库存但缺少 skuType 的不完整详情。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是本地卡易信详情响应器。
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":1000,"msg":"success","data":{"goodsId":7001,"name":"规格未知","goodsType":1,"salesPrice":1.2,"status":1,"stockCount":5}}`))
+	}))
+	defer server.Close()
+	// productErr 必须明确拒绝未能证明是单规格的详情。
+	_, productErr := NewClient(server.Client()).GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "app", APIKey: "secret"}, 7001)
+	if productErr == nil || !strings.Contains(productErr.Error(), "多规格") {
+		t.Fatalf("缺少 skuType 应被拒绝: %v", productErr)
+	}
+}
+
+// TestProductKeepsUnknownGoodsTypeOutOfCardFlow 验证未知远程类型不会默认归类为卡密。
+func TestProductKeepsUnknownGoodsTypeOutOfCardFlow(t *testing.T) {
+	// product 是已声明单规格但 goodsType 不在已知映射中的统一结果。
+	product := (productPayload{GoodsID: 7002, GoodsType: 2, Status: 1, StockCount: 5, SKUType: 0}).product(true)
+	if product.GoodsType == fulfillmentapp.GoodsTypeCard {
+		t.Fatalf("未知商品类型不得进入卡密上架流程: %+v", product)
 	}
 }
 
