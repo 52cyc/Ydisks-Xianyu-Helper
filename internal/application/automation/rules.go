@@ -427,6 +427,14 @@ func (s *RuleService) normalize(ctx context.Context, userID int64, draft RuleDra
 	if combinationErr := validateTriggerActionCombination(draft.TriggerType, flags); combinationErr != nil {
 		return RuleInput{}, combinationErr
 	}
+	if allowedDisabledTemplateIDs == nil && draft.TriggerType == TriggerOrderPaid && draft.ItemID != "" && flags.hasDynamicPrice && flags.hasExternalFulfillment {
+		// defaultConfig、defaultErr 是新建外部跟价规则默认开启的两个买家通知开关及合并错误。
+		defaultConfig, defaultErr := withDefaultExternalPriceMessages(draft.ConfigJSON)
+		if defaultErr != nil {
+			return RuleInput{}, defaultErr
+		}
+		draft.ConfigJSON = defaultConfig
+	}
 	if messageErr := validateExternalPriceMessageConfig(draft.ConfigJSON, draft.TriggerType, draft.ItemID, flags.hasDynamicPrice, flags.hasExternalFulfillment); messageErr != nil { // messageErr 是外部货源买家消息的适用范围或长度错误。
 		return RuleInput{}, messageErr
 	}

@@ -160,6 +160,15 @@ export const buildExternalPriceMessageConfig = (
   patch: Record<string, boolean | string>,
 ) => JSON.stringify({ ...parseJSONObject(raw), ...patch });
 
+// withDefaultExternalPriceMessages 为新进入跟价流程的规则补齐通知开关，不覆盖用户已明确关闭的值。
+export const withDefaultExternalPriceMessages = (raw?: string): string => {
+  // config 保留当前规则的其他扩展配置。
+  const config = parseJSONObject(raw);
+  if (typeof config.price_guidance_enabled !== "boolean") config.price_guidance_enabled = true;
+  if (typeof config.price_adjusted_notice_enabled !== "boolean") config.price_adjusted_notice_enabled = true;
+  return JSON.stringify(config);
+};
+
 // defaultRuleName 根据触发类型和商品标签生成规则默认名称。
 export const defaultRuleName = (
   trigger: AutomationTriggerType,

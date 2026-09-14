@@ -243,7 +243,9 @@ func (service *BatchLocalPublishService) ensureAutomationRules(ctx context.Conte
 			{ActionType: automationapp.ActionSendCard, DeliveryCount: deliveryCount, ConfigJSON: string(actionConfig), Enabled: true, SortOrder: 1},
 			{ActionType: automationapp.ActionConfirmShipment, Enabled: true, SortOrder: 2},
 		}
-		if ruleErr := service.ruleRepository.EnsurePublishRule(ctx, automationapp.RuleInput{UserID: userID, CookieID: row.CookieID, ItemID: result.ItemID, Name: "付款后货源自动发货 - " + title, TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 100, ConfigJSON: "{}", Actions: actions}); ruleErr != nil { // ruleErr 是外部货源规则的幂等写入错误。
+		// ruleConfig 使批量上架创建的货源跟价规则默认发送首次询价和改价成功通知。
+		ruleConfig := `{"price_guidance_enabled":true,"price_adjusted_notice_enabled":true}`
+		if ruleErr := service.ruleRepository.EnsurePublishRule(ctx, automationapp.RuleInput{UserID: userID, CookieID: row.CookieID, ItemID: result.ItemID, Name: "付款后货源自动发货 - " + title, TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 100, ConfigJSON: ruleConfig, Actions: actions}); ruleErr != nil { // ruleErr 是外部货源规则的幂等写入错误。
 			return ruleErr
 		}
 	}

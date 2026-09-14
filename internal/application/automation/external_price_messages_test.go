@@ -1,9 +1,29 @@
 package automation
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// TestWithDefaultExternalPriceMessages 验证新规则补齐两个通知开关，同时保留用户明确关闭和其他配置。
+func TestWithDefaultExternalPriceMessages(t *testing.T) {
+	// raw 包含用户已明确关闭的询价开关和不相关扩展字段。
+	raw := `{"price_guidance_enabled":false,"existing":"keep"}`
+	// defaulted、defaultErr 是补齐缺失开关后的 JSON 和处理错误。
+	defaulted, defaultErr := withDefaultExternalPriceMessages(raw)
+	if defaultErr != nil {
+		t.Fatal(defaultErr)
+	}
+	// config 用于按字段验证默认值与保留语义，不依赖 JSON 键顺序。
+	var config map[string]any
+	if decodeErr := json.Unmarshal([]byte(defaulted), &config); decodeErr != nil { // decodeErr 是测试读取合并结果的错误。
+		t.Fatal(decodeErr)
+	}
+	if config["price_guidance_enabled"] != false || config["price_adjusted_notice_enabled"] != true || config["existing"] != "keep" {
+		t.Fatalf("默认通知配置错误: %#v", config)
+	}
+}
 
 // TestValidateExternalPriceMessageConfig 验证咨询引导只能绑定商品级外部跟价规则，并限制超长聊天文案。
 func TestValidateExternalPriceMessageConfig(t *testing.T) {

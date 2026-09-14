@@ -54,6 +54,7 @@ import {
   shouldReplaceGeneratedName,
   triggerMeta,
   withAllItemsConfirmation,
+  withDefaultExternalPriceMessages,
 } from "./utils";
 
 // RuleActionsOptions 描述规则动作协调器依赖的页面数据、刷新函数和外部联动目标。
@@ -527,10 +528,15 @@ export const useRuleActions = ({
             /* 当前回调合并指定规格字段。 */ (variant, variantIndex) =>
               variantIndex === index ? { ...variant, ...patch } : variant,
           );
+          // enablesExternalPricing 表示当前草稿已进入可询价和改价通知的外部跟价流程。
+          const enablesExternalPricing = next.some(/* externalPricingVariantMatcher 识别已开启价格同步的外部货源内容。 */ variant =>
+            variant.source_type === "external" && variant.price_sync_enabled === true,
+          );
           return {
             ...currentRule,
             variants: next,
             card_group_id: next[0]?.card_id || 0,
+            config_json: enablesExternalPricing ? withDefaultExternalPriceMessages(currentRule.config_json) : currentRule.config_json,
           };
         },
       );

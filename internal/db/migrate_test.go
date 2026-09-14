@@ -271,8 +271,8 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 51 {
-		t.Fatalf("final migration version=%d, want 51", finalVersion)
+	if finalVersion != 52 {
+		t.Fatalf("final migration version=%d, want 52", finalVersion)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")

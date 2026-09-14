@@ -21,6 +21,7 @@ externalSalePrice,
 needsAllItemsConfirmation,
 parseJSONObject,
 recommendedExternalPricing,
+withDefaultExternalPriceMessages,
 shouldReplaceGeneratedName,
 statusPill,
 withAllItemsConfirmation,
@@ -129,6 +130,11 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(isValidProfitRate('2.50')).toBe(true);
     expect(isValidProfitRate('1000.01')).toBe(false);
     expect(externalSalePrice('9.50', '2.00')).toBe('9.69');
+  });
+
+  test('外部跟价默认开启询价和改价通知且保留明确关闭', /* 当前回调验证新建规则的通知默认值。 */ () => {
+    expect(JSON.parse(withDefaultExternalPriceMessages('{"existing":1}'))).toEqual({ existing: 1, price_guidance_enabled: true, price_adjusted_notice_enabled: true });
+    expect(JSON.parse(withDefaultExternalPriceMessages('{"price_guidance_enabled":false}'))).toEqual({ price_guidance_enabled: false, price_adjusted_notice_enabled: true });
   });
 
   test('汇总动作、主题样式和布尔标志', /* 当前回调处理规则配置和展示状态。 */ () => {

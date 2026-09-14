@@ -40,6 +40,8 @@ For a detail response whose minimum purchase quantity is greater than one, the b
 | Detail request fails | Stop batch preparation and show the product-specific failure. |
 | One background quote fails | Record the rule failure and continue scanning later rules. |
 | Background listing quote confirms the supplier product no longer exists | Reuse the normal Xianyu item-price update path to set `9999.00`, persist the local item price after remote success, and continue the scan. |
+| A product-bound external fulfillment rule enables dynamic price sync | New manual/API rules and batch-publish rules default both first-inquiry quote guidance and adjusted-price notice to enabled; an explicit `false` remains respected. |
+| Existing product-bound external fulfillment rules already enable dynamic price sync | Migration `00052` sets both buyer-message switches to `true` once; local-card, account-wide, deleted, disabled-action, and non-dynamic rules remain unchanged. |
 | Instance missing, rate limit, timeout, authentication, or supplier system failure | Log and skip the rule; never apply the `9999.00` deleted-product price. |
 | Scheduler context is cancelled while pacing | Stop waiting and exit without starting another supplier quote. |
 
@@ -78,6 +80,45 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 - Adapter and handler contract tests prove the provider route and optional `total_pages` field.
 - Frontend behavior tests cover Kayixin instance selection, category/page parameters, sequential detail checks, invalid-detail rejection, and Kasushou regression.
 - Run API generation/check, architecture checks, comment checks for every touched file, focused Go tests including race coverage, frontend type-check/tests/build, server build, and `git diff --check`.
+
+## Scenario: buyer-message defaults for external dynamic pricing
+
+### 1. Scope / Trigger
+
+- Trigger: a product-bound `order_paid` rule has an enabled external `send_card` action whose `price_sync_enabled` or legacy `pending_price_enabled` value is true.
+
+### 2. Signatures
+
+- Rule JSON fields: `price_guidance_enabled: boolean` and `price_adjusted_notice_enabled: boolean`.
+- Database upgrade: aligned SQLite, MySQL, and PostgreSQL migration `00052_external_price_message_defaults.sql`.
+
+### 3. Contracts
+
+- New manual/API and batch-publish rules write both fields as `true` when they are absent.
+- An explicitly supplied `false` remains false for new rules and later edits.
+- Migration `00052` intentionally overwrites both fields to `true` once for every eligible existing rule.
+
+### 4. Validation & Error Matrix
+
+- Missing product binding, non-`order_paid` trigger, local action, disabled action, or dynamic pricing disabled -> do not apply defaults.
+- Invalid rule or action JSON in migration input -> do not broaden the target; valid eligible records continue to migrate.
+
+### 5. Good/Base/Bad Cases
+
+- Good: external product rule with price sync enabled receives both switches while unrelated JSON fields remain unchanged.
+- Base: a new rule with `price_guidance_enabled:false` preserves that user choice and defaults only the missing adjusted-price switch.
+- Bad: enabling buyer messages on account-wide or local-card rules would create a configuration rejected by application validation.
+
+### 6. Tests Required
+
+- Application tests assert creation defaults, explicit-false preservation, and batch-publish rule JSON.
+- Frontend tests assert enabling external price sync updates the draft immediately.
+- Migration tests assert eligible historical rules are enabled and ineligible rules remain byte-for-byte unchanged.
+
+### 7. Wrong vs Correct
+
+- Wrong: apply defaults during every startup or update, which would reopen switches that a user deliberately closed.
+- Correct: default only absent fields during creation, and use one irreversible migration to satisfy the explicit existing-data rollout.
 
 ## Wrong and correct implementations
 

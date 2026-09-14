@@ -29,6 +29,27 @@ type externalPriceMessageDraft struct {
 	SuccessNoticeText string `json:"fulfillment_success_notice_text"`
 }
 
+// withDefaultExternalPriceMessages 为新建的外部货源跟价规则补齐默认开启的询价和改价通知；显式 false 始终保留。
+func withDefaultExternalPriceMessages(raw string) (string, error) {
+	// config 保留规则已有扩展字段，只在目标开关缺失时写入默认值。
+	var config map[string]any
+	if decodeErr := json.Unmarshal([]byte(raw), &config); decodeErr != nil || config == nil { // decodeErr 表示规则扩展配置不是可合并的 JSON 对象。
+		return "", errors.New("实时跟价消息配置格式无效")
+	}
+	if _, exists := config["price_guidance_enabled"]; !exists { // exists 区分“未设置”和用户明确关闭。
+		config["price_guidance_enabled"] = true
+	}
+	if _, exists := config["price_adjusted_notice_enabled"]; !exists { // exists 区分“未设置”和用户明确关闭。
+		config["price_adjusted_notice_enabled"] = true
+	}
+	// encoded 是保留原有字段并补齐默认开关后的稳定 JSON。
+	encoded, encodeErr := json.Marshal(config)
+	if encodeErr != nil {
+		return "", encodeErr
+	}
+	return string(encoded), nil
+}
+
 // validateExternalPriceMessageConfig 校验询价消息和采购失败提示的规则范围，并限制聊天文案长度。
 func validateExternalPriceMessageConfig(raw, triggerType, itemID string, dynamicPriceEnabled, externalFulfillmentEnabled bool) error {
 	// config 是从规则扩展 JSON 中提取的跟价消息开关和文案。

@@ -129,6 +129,14 @@ func TestBatchLocalPublishServiceCreatesExternalFulfillmentRule(t *testing.T) {
 	if config["source_type"] != "external" || config["goods_id"] != float64(9) || config["profit_rate"] != "10.00" {
 		t.Fatalf("外部货源动作配置错误: %#v", config)
 	}
+	// ruleConfig 是批量创建的规则级买家通知配置。
+	var ruleConfig map[string]any
+	if decodeErr := json.Unmarshal([]byte(ruleRepository.inputs[0].ConfigJSON), &ruleConfig); decodeErr != nil { // decodeErr 是测试读取规则配置的错误。
+		t.Fatal(decodeErr)
+	}
+	if ruleConfig["price_guidance_enabled"] != true || ruleConfig["price_adjusted_notice_enabled"] != true {
+		t.Fatalf("批量货源规则未默认开启买家通知: %#v", ruleConfig)
+	}
 }
 
 // TestBatchLocalPublishServiceRejectsLeaseLoss 验证租约丢失时不写入本地商品或成功检查点。

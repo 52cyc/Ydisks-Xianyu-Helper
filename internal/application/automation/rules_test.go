@@ -164,10 +164,21 @@ func TestRuleServiceValidatesExternalPendingPrice(t *testing.T) {
 		t.Fatalf("有效外部跟价规则被拒绝: %v", err)
 	}
 	// simplified 是新版利润率、价格同步和倒挂保护配置。
-	simplified := RuleDraft{CookieID: "account-1", TriggerType: TriggerOrderPaid, Enabled: true, Actions: []ActionDraft{{ActionType: ActionSendCard,
+	simplified := RuleDraft{CookieID: "account-1", ItemID: "item-1", TriggerType: TriggerOrderPaid, Enabled: true, Actions: []ActionDraft{{ActionType: ActionSendCard,
 		ConfigJSON: `{"source_type":"external","instance_id":3,"goods_id":4366,"price_sync_enabled":true,"profit_rate":"2.00","stop_purchase_on_inversion":true}`}}}
-	if _, err := service.Normalize(context.Background(), 7, simplified); err != nil {
+	normalized, err := service.Normalize(context.Background(), 7, simplified)
+	if err != nil {
 		t.Fatalf("有效利润率价格同步规则被拒绝: %v", err)
+	}
+	if !strings.Contains(normalized.ConfigJSON, `"price_guidance_enabled":true`) || !strings.Contains(normalized.ConfigJSON, `"price_adjusted_notice_enabled":true`) {
+		t.Fatalf("新建外部跟价规则未默认开启买家通知: %s", normalized.ConfigJSON)
+	}
+	// explicitOff 模拟用户在新建时明确关闭询价通知。
+	explicitOff := simplified
+	explicitOff.ConfigJSON = `{"price_guidance_enabled":false}`
+	offNormalized, offErr := service.Normalize(context.Background(), 7, explicitOff)
+	if offErr != nil || !strings.Contains(offNormalized.ConfigJSON, `"price_guidance_enabled":false`) || !strings.Contains(offNormalized.ConfigJSON, `"price_adjusted_notice_enabled":true`) { // offNormalized、offErr 验证明确 false 保留且只补齐缺失开关。
+		t.Fatalf("用户明确关闭的开关未保留: config=%s err=%v", offNormalized.ConfigJSON, offErr)
 	}
 	simplified.Actions[0].ConfigJSON = `{"source_type":"external","instance_id":3,"goods_id":4366,"price_sync_enabled":true,"profit_rate":"1000.01"}`
 	if _, err := service.Normalize(context.Background(), 7, simplified); err == nil || !strings.Contains(err.Error(), "利润率") {

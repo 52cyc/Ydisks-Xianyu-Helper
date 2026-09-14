@@ -122,6 +122,15 @@ describe('useRuleActions', /* 当前回调验证规则页面动作协调器的�
     hook.unmount();
   });
 
+  test('手动开启货源跟价时默认开启两个买家通知', /* 当前回调验证规则编辑器的通知默认值。 */ () => {
+    // hook 是手动新建规则的真实 React 状态容器。
+    const hook = renderHook(() => useRuleActionsHarness());
+    act(/* 当前回调打开新建规则。 */ () => hook.result.current.openNewAutomationRule());
+    act(/* 当前回调开启外部货源跟价。 */ () => hook.result.current.updateVariant(0, { source_type: 'external', price_sync_enabled: true }));
+    expect(JSON.parse(hook.result.current.editingAutomationRule?.config_json || '{}')).toEqual(expect.objectContaining({ price_guidance_enabled: true, price_adjusted_notice_enabled: true }));
+    hook.unmount();
+  });
+
   test('账号通用授权随保存保留，切换商品后要求重新确认', /* 当前回调验证范围切换撤销。 */ async () => {
     const hook = renderHook(() => useRuleActionsHarness());
     act(() => hook.result.current.openNewAutomationRule());
