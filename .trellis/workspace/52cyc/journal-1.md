@@ -68,3 +68,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 默认开启货源跟价买家通知
+
+**Date**: 2026-09-14
+**Task**: 默认开启货源跟价买家通知
+**Branch**: `main`
+
+### Summary
+
+手动新建和批量上架的外部货源跟价规则默认开启首次询价报价与改价成功通知；00052 三方言迁移一次性开启符合条件的既有规则，并保留后续用户显式关闭。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `359f495` | (see git log) |
+
+### Status
+
+[OK] **Completed**
