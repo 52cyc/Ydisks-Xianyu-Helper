@@ -61,6 +61,8 @@ type CookieSummary struct {
 	UserID int64
 	// AutoConfirm 表示账号是否启用自动确认收货。
 	AutoConfirm bool
+	// AutoConsign 表示自动发货后是否自动转已发货。
+	AutoConsign bool
 	// Remark 是用户为账号设置的备注。
 	Remark string
 	// PauseDuration 是账号暂停时长，单位为分钟。
@@ -96,7 +98,7 @@ func (c *Cookies) ListSummaries(ctx context.Context, userID int64) ([]CookieSumm
 		SELECT id, user_id, auto_confirm, COALESCE(remark,''), pause_duration,
 		       COALESCE(paused_until,0), COALESCE(username,''), show_browser,
 		       COALESCE(nickname,''), COALESCE(avatar_url,''), COALESCE(last_refresh_at,0),
-		       COALESCE(login_method,''), COALESCE(last_login_at,0), created_at
+		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), created_at
 		FROM cookies WHERE user_id=? ORDER BY created_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -107,8 +109,8 @@ func (c *Cookies) ListSummaries(ctx context.Context, userID int64) ([]CookieSumm
 	for rows.Next() {
 		// summary 是当前数据库行对应的账号摘要。
 		var summary CookieSummary
-		// autoConfirm 和 showBrowser 将 SQLite 整数布尔值转换为 Go bool。
-		var autoConfirm, showBrowser int
+		// autoConfirm、autoConsign 和 showBrowser 将 SQLite 整数布尔值转换为 Go bool。
+		var autoConfirm, autoConsign, showBrowser int
 		// pauseDuration 允许兼容历史 NULL 值，同时保留默认暂停时长 10 分钟。
 		var pauseDuration sql.NullInt64
 		// scanErr 表示当前摘要行无法映射到非敏感模型的原因。
@@ -116,11 +118,12 @@ func (c *Cookies) ListSummaries(ctx context.Context, userID int64) ([]CookieSumm
 			&summary.ID, &summary.UserID, &autoConfirm, &summary.Remark, &pauseDuration,
 			&summary.PausedUntil, &summary.Username, &showBrowser, &summary.Nickname,
 			&summary.AvatarURL, &summary.LastRefreshAt, &summary.LoginMethod,
-			&summary.LastLoginAt, &summary.CreatedAt,
+			&summary.LastLoginAt, &autoConsign, &summary.CreatedAt,
 		); scanErr != nil {
 			return nil, scanErr
 		}
 		summary.AutoConfirm = autoConfirm != 0
+		summary.AutoConsign = autoConsign != 0
 		summary.ShowBrowser = showBrowser != 0
 		summary.PauseDuration = 10
 		if pauseDuration.Valid {
@@ -139,8 +142,8 @@ func (c *Cookies) GetSummaryOwned(ctx context.Context, userID int64, cookieID st
 	}
 	// summary 保存按账号和用户联合过滤得到的非敏感摘要。
 	var summary CookieSummary
-	// autoConfirm 和 showBrowser 将 SQLite 整数布尔值转换为 Go bool。
-	var autoConfirm, showBrowser int
+	// autoConfirm、autoConsign 和 showBrowser 将 SQLite 整数布尔值转换为 Go bool。
+	var autoConfirm, autoConsign, showBrowser int
 	// pauseDuration 允许兼容历史 NULL 值，同时保留默认暂停时长 10 分钟。
 	var pauseDuration sql.NullInt64
 	// queryErr 表示按账号和用户联合条件读取摘要失败的原因。
@@ -148,12 +151,12 @@ func (c *Cookies) GetSummaryOwned(ctx context.Context, userID int64, cookieID st
 		SELECT id, user_id, auto_confirm, COALESCE(remark,''), pause_duration,
 		       COALESCE(paused_until,0), COALESCE(username,''), show_browser,
 		       COALESCE(nickname,''), COALESCE(avatar_url,''), COALESCE(last_refresh_at,0),
-		       COALESCE(login_method,''), COALESCE(last_login_at,0), created_at
+		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), created_at
 		FROM cookies WHERE id=? AND user_id=?`, cookieID, userID).Scan(
 		&summary.ID, &summary.UserID, &autoConfirm, &summary.Remark, &pauseDuration,
 		&summary.PausedUntil, &summary.Username, &showBrowser, &summary.Nickname,
 		&summary.AvatarURL, &summary.LastRefreshAt, &summary.LoginMethod,
-		&summary.LastLoginAt, &summary.CreatedAt)
+		&summary.LastLoginAt, &autoConsign, &summary.CreatedAt)
 	if queryErr != nil {
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return CookieSummary{}, ErrNotFound
@@ -161,6 +164,7 @@ func (c *Cookies) GetSummaryOwned(ctx context.Context, userID int64, cookieID st
 		return CookieSummary{}, queryErr
 	}
 	summary.AutoConfirm = autoConfirm != 0
+	summary.AutoConsign = autoConsign != 0
 	summary.ShowBrowser = showBrowser != 0
 	summary.PauseDuration = 10
 	if pauseDuration.Valid {
@@ -256,6 +260,8 @@ type CookieRuntimeData struct {
 	Value string
 	// MetadataJSON 是 repository 解密后的 Cookie 运行 metadata，用于恢复或识别完整 Cookie Jar 的变化。
 	MetadataJSON string
+	// LastRefreshAt 是凭证最近一次写回的修订时间戳，用于拒绝旧请求覆盖新登录。
+	LastRefreshAt int64
 }
 
 // CookiePlatformRuntimeData 表示平台调用流程所需的最小账号视图，不包含用户名、登录密码或其他账号资料。
@@ -268,6 +274,8 @@ type CookiePlatformRuntimeData struct {
 	Value string
 	// MetadataJSON 是 Cookie 快照等平台请求元数据，不包含登录密码。
 	MetadataJSON string
+	// LastRefreshAt 是凭证最近一次写回的修订时间戳，用于续期响应冲突检测。
+	LastRefreshAt int64
 	// ShowBrowser 表示 token 风控恢复是否允许使用可视化浏览器。
 	ShowBrowser bool
 }
@@ -280,8 +288,8 @@ func (c *Cookies) GetCookieRuntimeData(ctx context.Context, cookieID string) (Co
 	var encryptedValue, encryptedMetadata string
 	// queryErr 表示账号不存在或指纹输入查询失败的原因。
 	if queryErr := c.DB.QueryRowContext(ctx,
-		`SELECT value, COALESCE(metadata_json,'') FROM cookies WHERE id=?`, cookieID).
-		Scan(&encryptedValue, &encryptedMetadata); queryErr != nil {
+		`SELECT value, COALESCE(metadata_json,''), COALESCE(last_refresh_at,0) FROM cookies WHERE id=?`, cookieID).
+		Scan(&encryptedValue, &encryptedMetadata, &data.LastRefreshAt); queryErr != nil {
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return CookieRuntimeData{}, ErrNotFound
 		}
@@ -310,8 +318,8 @@ func (c *Cookies) GetCookiePlatformRuntimeData(ctx context.Context, cookieID str
 	var encryptedValue, encryptedMetadata string
 	// queryErr 表示账号不存在或平台运行时查询失败的原因。
 	if queryErr := c.DB.QueryRowContext(ctx,
-		`SELECT id, user_id, value, COALESCE(show_browser,0), COALESCE(metadata_json,'') FROM cookies WHERE id=?`, cookieID).
-		Scan(&data.ID, &data.UserID, &encryptedValue, &showBrowser, &encryptedMetadata); queryErr != nil {
+		`SELECT id, user_id, value, COALESCE(show_browser,0), COALESCE(metadata_json,''), COALESCE(last_refresh_at,0) FROM cookies WHERE id=?`, cookieID).
+		Scan(&data.ID, &data.UserID, &encryptedValue, &showBrowser, &encryptedMetadata, &data.LastRefreshAt); queryErr != nil {
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return CookiePlatformRuntimeData{}, ErrNotFound
 		}

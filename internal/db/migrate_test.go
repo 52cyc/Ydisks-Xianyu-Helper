@@ -36,6 +36,7 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"orders", "receiver_city"},
 		{"orders", "version"},
 		{"orders", "deleted_at"},
+		{"cookies", "auto_consign"},
 		{"cards", "image_url"},
 		{"cards", "delay_seconds"},
 		{"keywords", "item_id"},
@@ -150,9 +151,13 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if idErr != nil {
 		t.Fatal(idErr)
 	}
-	// cookieErr 保存历史账号写入错误。
-	if _, cookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id) VALUES ('migration-cookie','cv',?)`, userID); cookieErr != nil {
+	// cookieErr 保存历史账号写入错误；显式保留旧开关开启状态以验证迁移回填。
+	if _, cookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id,auto_confirm) VALUES ('migration-cookie','cv',?,1)`, userID); cookieErr != nil {
 		t.Fatal(cookieErr)
+	}
+	// disabledCookieErr 保存旧自动发货总开关关闭账号的写入错误，用于验证关闭状态也能准确回填。
+	if _, disabledCookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id,auto_confirm) VALUES ('migration-cookie-disabled','cv',?,0)`, userID); disabledCookieErr != nil {
+		t.Fatal(disabledCookieErr)
 	}
 	// ruleResult、ruleErr 保存历史自动化规则写入结果。
 	ruleResult, ruleErr := rawDB.Exec(`INSERT INTO automation_rules (user_id,cookie_id,item_id,name,trigger_type,enabled,priority,config_json) VALUES (?,?,?,?,?,1,100,'{}')`, userID, "migration-cookie", "migration-item", "migration-rule", "paid")
@@ -181,10 +186,26 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
 	}
-	// finalVersion、versionErr 验证升级包含聊天删除截止线、认证代次和会话角色迁移，不能仅证明旧 delivery_proof 列存在。
+	// enabledAutoConsign、disabledAutoConsign 验证迁移分别继承旧 auto_confirm 的开关状态。
+	var enabledAutoConsign, disabledAutoConsign int
+	// scanErr 表示读取迁移回填后的开启账号自动确认发货值时的数据库错误。
+	if scanErr := rawDB.QueryRow(`SELECT auto_consign FROM cookies WHERE id='migration-cookie'`).Scan(&enabledAutoConsign); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	// scanErr 表示读取迁移回填后的关闭账号自动确认发货值时的数据库错误。
+	if scanErr := rawDB.QueryRow(`SELECT auto_consign FROM cookies WHERE id='migration-cookie-disabled'`).Scan(&disabledAutoConsign); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if enabledAutoConsign != 1 || disabledAutoConsign != 0 {
+		t.Fatalf("迁移回填 auto_consign 错误: enabled=%d disabled=%d", enabledAutoConsign, disabledAutoConsign)
+	}
+	// finalVersion、versionErr 验证升级包含本地既有迁移及上游账号任务重试、自动确认发货迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 51 {
+	if versionErr != nil || finalVersion != 54 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
+	}
+	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
+		t.Fatal("account_task_runs should include the retry attempt counter")
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("升级后必须创建订单归属修正审计表")
@@ -196,7 +217,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 }
 
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到包含 fork 迁移 00038-00047 和上游聊天安全迁移 00048-00051 的最终版本。
+// 聊天迁移可以原样升级到包含 fork 迁移 00038-00047、本地 00048-00052 与上游账号任务重试及自动确认发货 00053-00054 的最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -240,7 +261,7 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续至合并后 00051 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至合并后 00054 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
@@ -266,13 +287,19 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到会话角色语义的 00051，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到账号自动确认发货语义的 00054，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 52 {
-		t.Fatalf("final migration version=%d, want 52", finalVersion)
+	if finalVersion != 54 {
+		t.Fatalf("final migration version=%d, want 54", finalVersion)
+	}
+	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
+		t.Fatal("account_task_runs should include the retry attempt counter")
+	}
+	if !columnExists(t, rawDB, "cookies", "auto_consign") {
+		t.Fatal("cookies should include the auto consign switch")
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")

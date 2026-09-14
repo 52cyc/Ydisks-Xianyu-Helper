@@ -260,7 +260,10 @@ func (c *ClientImpl) PublishItem(ctx context.Context, cookiesStr string, req Pub
 			return nil, err
 		}
 	}
-	return c.publishItemOnce(ctx, currentCookies, req, uploaded, uploadedSpecImages, category)
+	// publishCtx、publishCancel 为最终发布 HTTP 请求创建独立的两分钟网络超时预算，不计入前置节流等待。
+	publishCtx, publishCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer publishCancel()
+	return c.publishItemOnce(publishCtx, currentCookies, req, uploaded, uploadedSpecImages, category)
 }
 
 // RecommendPublishCategory 根据关键词调用闲鱼推荐接口，返回可直接用于发布的完整类目。
@@ -638,7 +641,7 @@ func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req
 	result := &PublishItemResult{
 		ItemID:         itemID,
 		Title:          req.Title,
-		PriceText:      centsText(req.PriceCents),
+		PriceText:      publishRepresentativePriceText(req),
 		CategoryID:     mtopString(cat["catId"]),
 		CategoryName:   mtopString(cat["catName"]),
 		ImageURL:       images[0].URL,
@@ -718,82 +721,4 @@ func postageDTO(req PublishItemRequest) map[string]any {
 		out["supportFreight"] = true
 	}
 	return out
-}
-
-// classifyPublishError 封装classify发布错误业务协调。
-func classifyPublishError(ret []string, decoded map[string]any) error {
-	// bodyBytes 用于本次流程后续判断的请求体Bytes
-	bodyBytes, _ := json.Marshal(decoded)
-	// body 用于本次流程后续判断的请求体
-	body := string(bodyBytes)
-	// joined 用于本次流程后续判断的joined
-	joined := strings.ToLower(strings.Join(append(ret, body), " "))
-	if isTokenExpiredRet(ret) || strings.Contains(joined, "login") || strings.Contains(joined, "session") {
-		return &PublishError{Code: PublishErrorTokenExpired, Ret: ret, Body: body}
-	}
-	// stockTerms 用于本次流程后续判断的stockTerms
-	stockTerms := []string{"库存", "数量", "多库存", "多件", "quantity", "stock", "inventory"}
-	// permissionTerms 用于本次流程后续判断的permissionTerms
-	permissionTerms := []string{"权限", "未开通", "不支持", "没有", "无法", "permission", "forbidden", "not allow", "not support"}
-	if containsAny(joined, stockTerms) && containsAny(joined, permissionTerms) {
-		return &PublishError{Code: PublishErrorStockPermissionMissing, Ret: ret, Body: body}
-	}
-	return &PublishError{Code: PublishErrorUnknown, Ret: ret, Body: body}
-}
-
-// containsAny 封装containsAny业务协调。
-func containsAny(s string, terms []string) bool {
-	// term 表示当前遍历过程中的term
-	for _, term := range terms {
-		if strings.Contains(s, strings.ToLower(term)) {
-			return true
-		}
-	}
-	return false
-}
-
-// retFromDecoded 封装retFromDecoded业务协调。
-func retFromDecoded(decoded map[string]any) []string {
-	// raw 用于本次流程后续判断的原始
-	raw, _ := decoded["ret"].([]any)
-	// out 用于本次流程后续判断的out
-	out := make([]string, 0, len(raw))
-	// r 表示当前遍历过程中的r
-	for _, r := range raw {
-		out = append(out, mtopString(r))
-	}
-	return out
-}
-
-// mapFromAny 封装mapFromAny业务协调。
-func mapFromAny(v any) map[string]any {
-	if // m、ok 用于本次流程后续判断的m、ok
-	m, ok := v.(map[string]any); ok {
-		return m
-	}
-	return nil
-}
-
-// parsePix 封装parsePix业务协调。
-func parsePix(pix string) (int, int) {
-	// parts 用于本次流程后续判断的parts
-	parts := strings.Split(pix, "x")
-	if len(parts) != 2 {
-		return 0, 0
-	}
-	// w 用于本次流程后续判断的w
-	w, _ := strconv.Atoi(parts[0])
-	// h 用于本次流程后续判断的h
-	h, _ := strconv.Atoi(parts[1])
-	return w, h
-}
-
-// centsText 封装cents文本业务协调。
-func centsText(cents int64) string {
-	return strconv.FormatFloat(float64(cents)/100, 'f', 2, 64)
-}
-
-// escapeMultipartFilename 封装escapeMultipartFilename业务协调。
-func escapeMultipartFilename(s string) string {
-	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(s)
 }

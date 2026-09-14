@@ -51,7 +51,7 @@ const OrderList: React.FC = () => {
   const [pageDraft,setPageDraft] = React.useState('1');
   React.useEffect(/* 筛选或翻页改变真实页码时，同步“前往页”输入框的显示值。 */ () => setPageDraft(String(page)),[page]);
   // orderActions 集中管理订单动作、弹窗状态和异步结果。
-  const orderActions = useOrderActions({ orders, page, accountFilter, filter, setPage, loadOrders });
+  const orderActions = useOrderActions({ orders, page, accountFilter, filter, searchText, setPage, loadOrders });
   // actionState 解构得到页面动作协调器的状态和操作函数。
   const {
     showDetailModal,

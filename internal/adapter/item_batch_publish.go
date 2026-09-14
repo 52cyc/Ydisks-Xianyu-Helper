@@ -26,7 +26,7 @@ type ItemBatchPublishPort struct {
 	logger *slog.Logger
 	// updateRunningCookie 将平台返回的新 Cookie 同步到运行中的账号实例。
 	updateRunningCookie func(context.Context, string, string)
-	// recoverExpiredSession 在平台报告会话失效时触发账号恢复协调。
+	// recoverExpiredSession 在平台报告 Session 或 MTOP Token 失效时触发账号恢复协调。
 	recoverExpiredSession func(context.Context, string, error)
 	// readImage 从受控上传目录读取并校验本地图片。
 	readImage ReadPublishImageFile
@@ -105,20 +105,26 @@ func (p *ItemBatchPublishPort) PublishRemoteRow(ctx context.Context, userID int6
 	}
 	// initialValue、initialMetadata 用于远端返回后复核期间的凭证一致性。
 	initialValue, initialMetadata := latest.Value, latest.MetadataJSON
-	// requestCtx、cancel 控制单行远端发布的最长执行时间。
-	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// requestCtx 承载图片上传、类目准备和最终发布共用的任务取消生命周期；最终网络请求的
+	// 独立超时由 MTOP 客户端在节流闸门返回后创建，避免长间隔等待提前耗尽网络预算。
+	requestCtx := ctx
 	// mtopCtx、cookieSession 挂载本次调用使用的 Cookie 会话。
 	mtopCtx, cookieSession := withCookieSnapshot(requestCtx, latest)
 	// unlock 在远端 I/O 前释放，避免凭证锁覆盖慢速平台请求。
 	unlock()
+	// publishGate 将批次节流绑定到平台客户端传入的任务上下文，保留取消和租约失效信号。
+	var publishGate func(context.Context) error
+	if beforePublish != nil {
+		publishGate = beforePublish
+	}
 	// result、callErr 保存平台返回结果及调用错误。
 	result, callErr := p.mtopClient().PublishItem(mtopCtx, latest.Value, mtop.PublishItemRequest{
 		Title: row.Title, Description: firstBatchNonEmpty(row.Description, row.Title), PriceCents: priceCents,
 		OriginalPriceCents: originalPriceCents, Quantity: row.Quantity, PostageMode: row.PostageMode,
 		PostageCents: postageCents, Virtual: true, Location: location, PreferredCategory: preferredCategory, Images: images,
-		BeforePublish: beforePublish,
+		// BeforePublish 由 MTOP 客户端在图片上传和类目准备完成后、最终发布请求前调用。
+		BeforePublish: publishGate,
 	})
-	cancel()
 	// runtimeCookie、persistErr 保存会话写回后的运行时 Cookie 和错误。
 	runtimeCookie, persistErr := p.persistBatchSession(ctx, userID, row.CookieID, initialValue, initialMetadata, cookieSession, result, callErr)
 	if runtimeCookie != "" && p.updateRunningCookie != nil {
@@ -405,9 +411,14 @@ func firstBatchNonEmpty(values ...string) string {
 // 确保批量远端适配器实现应用层定义的端口。
 var _ itemapp.BatchPublishPort = (*ItemBatchPublishPort)(nil)
 
-// IsSessionExpiredError 判断批量发布错误是否要求终止剩余明细并进入账号恢复。
+// IsSessionExpiredError 保留批量发布旧接口名，并覆盖 Session 与 MTOP Token 失效。
 func IsSessionExpiredError(err error) bool {
-	return mtop.IsSessionExpiredErr(err)
+	return IsCredentialExpiredError(err)
+}
+
+// IsCredentialExpiredError 判断批量发布错误是否要求终止剩余明细并进入账号恢复。
+func IsCredentialExpiredError(err error) bool {
+	return mtop.IsCredentialRefreshableErr(err)
 }
 
 // ShouldStopBatchAfterPublishFailure 判断当前失败是否会让继续发布剩余商品产生账号或风控风险。
