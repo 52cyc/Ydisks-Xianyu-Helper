@@ -21,6 +21,8 @@ type listingPriceQuoteStub struct {
 	goodsIDs []int64
 	// quoteErrors 保存需要模拟供应站限频或业务失败的商品错误。
 	quoteErrors map[int64]error
+	// unavailableGoods 标记供应站查询成功但当前不允许采购的商品。
+	unavailableGoods map[int64]bool
 	// firstStarted 在首次报价开始后通知取消测试；由首次调用方关闭。
 	firstStarted chan struct{}
 }
@@ -51,11 +53,13 @@ func (stub *listingPriceQuoteStub) QuoteProduct(_ context.Context, _ int64, _ in
 	callCount := len(stub.starts)
 	// quoteErr 是当前商品预设的供应站错误。
 	quoteErr := stub.quoteErrors[goodsID]
+	// canBuy 是当前商品的可采购状态，默认可采购以保持其他测试语义。
+	canBuy := !stub.unavailableGoods[goodsID]
 	stub.mu.Unlock()
 	if callCount == 1 && stub.firstStarted != nil {
 		close(stub.firstStarted)
 	}
-	return ExternalProductQuote{Price: "1.00", CanBuy: true}, quoteErr
+	return ExternalProductQuote{Price: "1.00", CanBuy: canBuy}, quoteErr
 }
 
 // Fulfill 满足自动化依赖接口；价格扫描不会调用采购入口。
@@ -168,13 +172,36 @@ func TestScanExternalListingPricesMarksMissingProductAt9999(t *testing.T) {
 	// scheduler 使用真实商品页同步编排和本地持久化路径。
 	scheduler := NewScheduler(NewWithDependencies(store, nil, nil, CenterDependencies{MTop: editor, ExternalFulfillment: fulfillment}))
 	scheduler.scanExternalListingPrices(context.Background())
-	if len(editor.prices) != 1 || editor.prices[0] != missingExternalProductListingPriceCents || editor.itemIDs[0] != "paced-item-00" {
+	if len(editor.prices) != 1 || editor.prices[0] != externalProductReviewListingPriceCents || editor.itemIDs[0] != "paced-item-00" {
 		t.Fatalf("货源商品删除后的改价请求异常: items=%v prices=%v", editor.itemIDs, editor.prices)
 	}
 	// item、itemErr 是远端改价成功后写回的本地商品价格。
 	item, itemErr := store.Items.GetByCookieItem(context.Background(), "paced-account", "paced-item-00")
 	if itemErr != nil || item.ItemPrice != "9999.00" {
 		t.Fatalf("人工核对价未写回本地: item=%+v err=%v", item, itemErr)
+	}
+}
+
+// TestScanExternalListingPricesMarksUnavailableProductAt9999 验证货源商品存在但不可采购时也会调整为人工核对价。
+func TestScanExternalListingPricesMarksUnavailableProductAt9999(t *testing.T) {
+	// store、cleanup 是隔离数据库和测试结束后的连接清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	createListingPriceSyncRules(t, store, 46)
+	// fulfillment 返回存在但状态或库存导致不可采购的货源商品。
+	fulfillment := &listingPriceQuoteStub{unavailableGoods: map[int64]bool{46: true}}
+	// editor 记录应当执行一次的闲鱼商品页人工核对价修改。
+	editor := &listingPriceEditorStub{fakeMTop: &fakeMTop{}}
+	// scheduler 使用真实商品页同步编排和本地持久化路径。
+	scheduler := NewScheduler(NewWithDependencies(store, nil, nil, CenterDependencies{MTop: editor, ExternalFulfillment: fulfillment}))
+	scheduler.scanExternalListingPrices(context.Background())
+	if len(editor.prices) != 1 || editor.prices[0] != externalProductReviewListingPriceCents || editor.itemIDs[0] != "paced-item-00" {
+		t.Fatalf("货源商品不可采购时的改价请求异常: items=%v prices=%v", editor.itemIDs, editor.prices)
+	}
+	// item、itemErr 是远程改价成功后写回的本地商品价格。
+	item, itemErr := store.Items.GetByCookieItem(context.Background(), "paced-account", "paced-item-00")
+	if itemErr != nil || item.ItemPrice != "9999.00" {
+		t.Fatalf("不可采购商品的人工核对价未写回本地: item=%+v err=%v", item, itemErr)
 	}
 }
 

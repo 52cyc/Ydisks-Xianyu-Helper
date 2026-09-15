@@ -67,7 +67,7 @@ type ExternalFulfillmentResult struct {
 type ExternalProductQuote struct {
 	// Price 是货源返回的当前单件采购价，使用十进制元字符串。
 	Price string
-	// CanBuy 表示货源商品当前允许采购；停用或无库存时不得修改闲鱼价格。
+	// CanBuy 表示货源商品当前允许采购；后台商品页同步会将不可采购商品调整为人工核对价，下单和待付款路径仍必须拒绝采购。
 	CanBuy bool
 }
 

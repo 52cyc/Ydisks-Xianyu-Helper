@@ -10,8 +10,11 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// missingExternalProductListingPriceCents 是货源商品删除后用于提醒人工核对的闲鱼商品售价，单位为分。
-const missingExternalProductListingPriceCents int64 = 999900
+// externalProductReviewListingPriceCents 是货源商品不存在或不可采购时用于提醒人工核对的闲鱼售价，单位为分。
+const externalProductReviewListingPriceCents int64 = 999900
+
+// errExternalProductUnavailable 表示供应站已返回商品详情，但明确标记当前不允许采购。
+var errExternalProductUnavailable = errors.New("外部货源商品当前不可采购")
 
 // scanExternalListingPrices 每轮检查全部开启同步的普通商品，仅在计算售价发生变化时调用闲鱼改价接口。
 func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
@@ -66,12 +69,16 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 		targetCents, enabled, quoteErr := s.center.externalListingTargetCentsBeforeQuote(ctx, rule, beforeQuote)
 		// productMissing 表示供应站已经明确确认关联商品被删除。
 		productMissing := errors.Is(quoteErr, ErrExternalProductNotFound)
+		// productUnavailable 表示供应站返回了商品，但其状态或库存明确不允许采购。
+		productUnavailable := errors.Is(quoteErr, errExternalProductUnavailable)
+		// productNeedsReview 表示该商品应进入 9999 元人工核对价，而不是保留原价等待临时故障恢复。
+		productNeedsReview := productMissing || productUnavailable
 		if quoteErr != nil {
-			if !productMissing {
+			if !productNeedsReview {
 				s.center.logger.Warn("查询商品自动同步价格失败", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "err", quoteErr)
 				continue
 			}
-			targetCents = missingExternalProductListingPriceCents
+			targetCents = externalProductReviewListingPriceCents
 			enabled = true
 		}
 		if !enabled {
@@ -106,8 +113,13 @@ func (s *Scheduler) scanExternalListingPrices(ctx context.Context) {
 			s.center.logger.Warn("闲鱼商品已改价但本地价格保存失败", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice, "err", saveErr)
 			continue
 		}
-		if productMissing {
-			s.center.logger.Warn("货源商品不存在，已将闲鱼商品调整为人工核对价", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "target_price", item.ItemPrice)
+		if productNeedsReview {
+			// reviewReason 区分货源商品被删除和暂时不可采购，便于运维日志快速定位。
+			reviewReason := "unavailable"
+			if productMissing {
+				reviewReason = "missing"
+			}
+			s.center.logger.Warn("货源商品无法采购，已将闲鱼商品调整为人工核对价", "account", rule.CookieID, "item_id", rule.ItemID, "rule_id", rule.ID, "reason", reviewReason, "target_price", item.ItemPrice)
 		} else {
 			s.center.logger.Info("已按货源采购价和利润率同步闲鱼商品售价", "account", rule.CookieID, "item_id", rule.ItemID, "target_price", item.ItemPrice)
 		}
@@ -152,7 +164,7 @@ func (c *Center) externalListingTargetCentsBeforeQuote(ctx context.Context, rule
 			return 0, true, fmt.Errorf("查询货源商品 %d 实时价格: %w", config.GoodsID, quoteErr)
 		}
 		if !product.CanBuy {
-			return 0, true, fmt.Errorf("货源商品 %d 当前不可采购", config.GoodsID)
+			return 0, true, fmt.Errorf("%w: 货源商品 %d 当前不可采购", errExternalProductUnavailable, config.GoodsID)
 		}
 		// costCents、costErr 是实时采购单价分值和金额解析错误。
 		costCents, costErr := parseYuanToCents(product.Price)

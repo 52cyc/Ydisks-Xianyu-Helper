@@ -40,9 +40,10 @@ For a detail response whose minimum purchase quantity is greater than one, the b
 | Detail request fails | Stop batch preparation and show the product-specific failure. |
 | One background quote fails | Record the rule failure and continue scanning later rules. |
 | Background listing quote confirms the supplier product no longer exists | Reuse the normal Xianyu item-price update path to set `9999.00`, persist the local item price after remote success, and continue the scan. |
+| Background listing quote returns the product with `CanBuy=false` | Treat the status or stock as explicitly unavailable, reuse the normal Xianyu item-price update path to set `9999.00`, persist the local item price after remote success, and continue the scan. |
 | A product-bound external fulfillment rule enables dynamic price sync | New manual/API rules and batch-publish rules default both first-inquiry quote guidance and adjusted-price notice to enabled; an explicit `false` remains respected. |
 | Existing product-bound external fulfillment rules already enable dynamic price sync | Migration `00052` sets both buyer-message switches to `true` once; local-card, account-wide, deleted, disabled-action, and non-dynamic rules remain unchanged. |
-| Instance missing, rate limit, timeout, authentication, or supplier system failure | Log and skip the rule; never apply the `9999.00` deleted-product price. |
+| Instance missing, rate limit, timeout, authentication, or supplier system failure | Log and skip the rule; never apply the `9999.00` product-review price. |
 | Scheduler context is cancelled while pacing | Stop waiting and exit without starting another supplier quote. |
 
 ## 5. Examples
@@ -70,13 +71,13 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 - The first eligible quote starts immediately. Rules skipped before a supplier call do not consume a delay slot.
 - Waiting uses the scheduler context so shutdown interrupts the delay.
 - The pacing hook is limited to scheduled external-listing price scans; explicit quote, purchase, and order-query paths are unaffected.
-- The deleted-product fallback applies only to scheduled listing-price sync. Pending-order repricing and purchase flows keep returning the original error and must not use the `9999.00` value.
+- The missing-or-unavailable product fallback applies only to scheduled listing-price sync. Pending-order repricing and purchase flows keep returning the original error and must not use the `9999.00` value.
 
 ## 7. Verification requirements
 
 - Provider tests use a local HTTP server and assert endpoint paths, signed payloads, request filters, recursive categories, pagination, and response normalization.
 - Automation tests cover serial order, minimum quote-start spacing, continuation after one failure, context cancellation, and duplicate-item handling.
-- Automation tests also assert a typed deleted-product error performs exactly one `999900`-cent item update and persists `9999.00`, while ordinary quote failures perform no update.
+- Automation tests assert both a typed deleted-product error and a successful quote with `CanBuy=false` perform exactly one `999900`-cent item update and persist `9999.00`, while ordinary quote failures perform no update.
 - Adapter and handler contract tests prove the provider route and optional `total_pages` field.
 - Frontend behavior tests cover Kayixin instance selection, category/page parameters, sequential detail checks, invalid-detail rejection, and Kasushou regression.
 - Run API generation/check, architecture checks, comment checks for every touched file, focused Go tests including race coverage, frontend type-check/tests/build, server build, and `git diff --check`.
