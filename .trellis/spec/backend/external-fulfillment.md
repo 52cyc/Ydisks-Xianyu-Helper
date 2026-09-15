@@ -12,7 +12,7 @@ The current catalog-capable providers are `kasushou_v2` and `kayixin_v3`. One su
 - `fulfillment.ProductPage.TotalPages` carries the supplier's page count when available. It is optional at the HTTP boundary so older providers and callers remain compatible.
 - The multi-provider adapter selects a provider by instance configuration. HTTP handlers do not contain supplier protocol rules.
 - The frontend uses the shared fulfillment API adapter and never calls supplier endpoints directly.
-- The automation scheduler owns background quote pacing. Provider clients remain safe for explicit user queries and purchase flows without an unconditional delay.
+- The Kasushou protocol client owns its upstream request pacing. Every catalog, detail, quote, purchase, and order-query call for the same normalized station URL and merchant ID shares one serial queue. Other providers keep their existing protocol-specific behavior.
 - `fulfillment.ErrProductNotFound` is emitted by a provider product-detail path only after the instance has been resolved and the response explicitly reports that the product itself is missing, deleted, or delisted. The application service only propagates this typed result. The adapter maps it to consumer-owned `automation.ErrExternalProductNotFound`; generic instance, merchant, user, order, or ownership `ErrNotFound` must not cross this boundary as a deleted product.
 
 ## 3. Kayixin protocol mapping
@@ -67,10 +67,13 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 ## 6. Background quote pacing
 
 - The scan loop is sequential and must not add quote goroutines.
-- Starts of actual supplier quote calls are spaced by at least 500 milliseconds in production.
+- The scheduler keeps at least 500 milliseconds between eligible background quote starts as supplemental protection across providers.
+- Kasushou additionally permits only one in-flight request for the same station and merchant, and spaces actual HTTP request starts by at least 3.5 seconds. This conservative interval keeps the fourth request outside a rolling ten-second window.
+- Kasushou catalog, detail, explicit quote, scheduled price sync, purchase, and order-query calls consume the same queue; the API key must not appear in the queue key or logs.
+- A Kasushou card-product detail uses only `goods/info`; only direct-recharge products request `goods/attach`, avoiding an unnecessary second quota unit for card products.
 - The first eligible quote starts immediately. Rules skipped before a supplier call do not consume a delay slot.
-- Waiting uses the scheduler context so shutdown interrupts the delay.
-- The pacing hook is limited to scheduled external-listing price scans; explicit quote, purchase, and order-query paths are unaffected.
+- Scheduler and Kasushou-client waits both use the caller context so shutdown or request cancellation interrupts the delay before HTTP I/O.
+- The limiter coordinates one application process. Multiple replicas using the same supplier credentials require an external shared limiter or separate upstream quota.
 - The missing-or-unavailable product fallback applies only to scheduled listing-price sync. Pending-order repricing and purchase flows keep returning the original error and must not use the `9999.00` value.
 
 ## 7. Verification requirements
@@ -125,7 +128,7 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 
 Wrong: use `Promise.all` for pre-publish detail calls or spawn one goroutine per background rule. Both can burst supplier APIs and trigger rate limits.
 
-Correct: use an explicit sequential loop in the frontend and a context-cancellable 500-millisecond start interval in the scheduler.
+Correct: use an explicit sequential loop in the frontend, retain the scheduler's context-cancellable 500-millisecond supplemental pacing, and enforce Kasushou's shared serial 3.5-second request queue at the protocol-client boundary.
 
 Wrong: infer Kayixin total pages using a locally assumed page size when the supplier returns `allPage`.
 

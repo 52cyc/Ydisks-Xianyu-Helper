@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,6 +172,18 @@ func TestClientCatalogUsesCategoryPaginationAndChannelFields(t *testing.T) {
 	defer server.Close()
 	// client 是使用本地确定响应的卡速售协议客户端。
 	client := NewClient(server.Client())
+	// limiterNow 是目录和商品列表共享限频配额时的可控时钟。
+	limiterNow := time.Unix(1700000000, 0)
+	// waits 记录后续请求获得的限速等待时长，测试不真实休眠。
+	waits := make([]time.Duration, 0, 1)
+	client.rateLimiter.now = func() time.Time { // limiterClock 返回当前可控限速时钟。
+		return limiterNow
+	}
+	client.rateLimiter.waiter = func(_ context.Context, delay time.Duration) error { // limiterWaiter 记录等待并推进可控时钟。
+		waits = append(waits, delay)
+		limiterNow = limiterNow.Add(delay)
+		return nil
+	}
 	// instance 只包含本地测试服务请求所需的协议身份。
 	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}
 	// categories、categoryErr 是目录树及请求错误。
@@ -182,6 +195,146 @@ func TestClientCatalogUsesCategoryPaginationAndChannelFields(t *testing.T) {
 	page, pageErr := client.ListProductPage(context.Background(), instance, fulfillmentapp.ProductListQuery{CategoryID: 11, Keyword: "月卡", Page: 2, PageSize: 20})
 	if pageErr != nil || page.Total != 31 || page.TotalPages != 2 || len(page.Items) != 1 || !page.Items[0].CanBuy || page.Items[0].BuyChannels != "拼多多,京东" || !page.Items[0].CanSetPrice {
 		t.Fatalf("商品分页归一化失败: page=%+v err=%v", page, pageErr)
+	}
+	if len(waits) != 1 || waits[0] != defaultRequestInterval {
+		t.Fatalf("目录和商品列表未共享卡速售限频队列: %v", waits)
+	}
+}
+
+// TestClientGetProductSkipsCardAttachRequest 验证卡密商品详情不额外消耗直充附加字段接口配额。
+func TestClientGetProductSkipsCardAttachRequest(t *testing.T) {
+	// paths 按服务端实际收到的顺序保存卡速售接口路径。
+	paths := make([]string, 0, 2)
+	// server 返回可采购卡密商品，任何 attach 请求都会被记录供断言。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { // writer、request 是当前本地协议请求的响应器和请求快照。
+		paths = append(paths, request.URL.Path)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":1,"data":{"id":46,"goods_name":"卡密商品","goods_type":1,"goods_price":2.8,"status":1,"stock_num":5}}`))
+	}))
+	defer server.Close()
+	// client 使用真实默认限速器；卡密分支只发起首次请求，不会发生真实等待。
+	client := NewClient(server.Client())
+	// product、productErr 是卡密商品详情归一结果和请求错误。
+	product, productErr := client.GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}, 46)
+	if productErr != nil || product.GoodsType != 1 {
+		t.Fatalf("卡密商品详情读取失败: product=%+v err=%v", product, productErr)
+	}
+	if len(paths) != 1 || paths[0] != "/api/v1/goods/info" {
+		t.Fatalf("卡密商品不应请求直充附加字段: %v", paths)
+	}
+}
+
+// TestClientGetProductLoadsRechargeAttachRequest 验证减少卡密请求后，直充商品仍保留必需的附加字段。
+func TestClientGetProductLoadsRechargeAttachRequest(t *testing.T) {
+	// paths 按服务端实际收到的顺序保存详情与附加字段路径。
+	paths := make([]string, 0, 2)
+	// server 分别返回直充商品主体和一个必填附加字段。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) { // writer、request 是当前本地协议请求的响应器和请求快照。
+		paths = append(paths, request.URL.Path)
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/api/v1/goods/attach" {
+			_, _ = writer.Write([]byte(`{"code":1,"data":[{"key":"account","name":"充值账号","type":"text"}]}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"code":1,"data":{"id":47,"goods_name":"直充商品","goods_type":2,"goods_price":2.8,"status":1,"stock_num":5}}`))
+	}))
+	defer server.Close()
+	// client 关闭测试中的真实等待，该用例仅验证直充请求分支。
+	client := NewClient(server.Client())
+	client.rateLimiter = nil
+	// product、productErr 是直充商品详情与附加字段的归一结果和请求错误。
+	product, productErr := client.GetProduct(context.Background(), fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}, 47)
+	if productErr != nil || len(product.Attach) != 1 || product.Attach[0].Key != "account" {
+		t.Fatalf("直充商品附加字段读取失败: product=%+v err=%v", product, productErr)
+	}
+	if len(paths) != 2 || paths[0] != "/api/v1/goods/info" || paths[1] != "/api/v1/goods/attach" {
+		t.Fatalf("直充商品应按顺序请求详情和附加字段: %v", paths)
+	}
+}
+
+// TestClientRateLimitCancellationPreventsHTTPCall 验证排队中的请求被取消后不会继续访问卡速售。
+func TestClientRateLimitCancellationPreventsHTTPCall(t *testing.T) {
+	// requestCount 记录本地服务端真正收到的请求数，第二次请求应在限速等待阶段终止。
+	var requestCount atomic.Int32
+	// server 为首次目录请求返回空目录树。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是首次真实进入的本地响应器。
+		requestCount.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":1,"data":[]}`))
+	}))
+	defer server.Close()
+	// client 使用生产限速间隔，但已取消的第二次请求不会真实等待。
+	client := NewClient(server.Client())
+	// instance 是两次目录请求共享限频配额的同一站点商户。
+	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}
+	if _, firstErr := client.ListCategories(context.Background(), instance); firstErr != nil { // firstErr 是占用首个限速时间槽的目录请求错误。
+		t.Fatal(firstErr)
+	}
+	// canceledContext、cancel 创建进入第二个时间槽前已取消的请求生命周期。
+	canceledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, secondErr := client.ListCategories(canceledContext, instance); !errors.Is(secondErr, context.Canceled) { // secondErr 应保留 Context 取消语义供上层识别。
+		t.Fatalf("限速取消未原样传递: %v", secondErr)
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("已取消的排队请求仍访问了卡速售: %d", requestCount.Load())
+	}
+}
+
+// TestClientRateLimiterPreventsOverlappingRequests 验证上一个卡速售请求未完成时，同站点商户的下一个请求不会并发进入。
+func TestClientRateLimiterPreventsOverlappingRequests(t *testing.T) {
+	// firstStarted 在首个请求进入本地服务时关闭，供测试确认阻塞已生效。
+	firstStarted := make(chan struct{})
+	// releaseFirst 控制首个响应的完成时机，用于观察第二个请求是否重叠。
+	releaseFirst := make(chan struct{})
+	// entered 记录已真实进入 HTTP 处理器的请求数。
+	var entered atomic.Int32
+	// server 在首个请求中等待测试放行，第二个请求应停留在客户端串行门。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { // writer 是当前目录请求的本地响应器。
+		// current 是当前请求进入后的累计次数。
+		current := entered.Add(1)
+		if current == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":1,"data":[]}`))
+	}))
+	defer server.Close()
+	// client 使用极短间隔排除真实休眠对串行断言的影响。
+	client := NewClient(server.Client())
+	client.rateLimiter.interval = time.Nanosecond
+	// instance 是两个并发目录请求共享的站点商户。
+	instance := fulfillmentapp.Instance{BaseURL: server.URL, MerchantUserID: "user", APIKey: "key"}
+	// firstDone 传递首个请求完成后的错误。
+	firstDone := make(chan error, 1)
+	go func() { // firstRequest 占用串行门并停留在服务端响应阶段。
+		_, firstErr := client.ListCategories(context.Background(), instance) // firstErr 是首个目录请求结果。
+		firstDone <- firstErr
+	}()
+	<-firstStarted
+	// secondDone 传递第二个请求在首个释放后的最终错误。
+	secondDone := make(chan error, 1)
+	go func() { // secondRequest 尝试在首个响应未完成时请求同一限速键。
+		_, secondErr := client.ListCategories(context.Background(), instance) // secondErr 是第二个目录请求结果。
+		secondDone <- secondErr
+	}()
+	// overlapWindow 给第二个 goroutine 留出足够调度时间，如未串行则会进入处理器。
+	overlapWindow := time.NewTimer(50 * time.Millisecond)
+	<-overlapWindow.C
+	if entered.Load() != 1 {
+		close(releaseFirst)
+		t.Fatalf("卡速售请求发生并发重叠: entered=%d", entered.Load())
+	}
+	close(releaseFirst)
+	if firstErr := <-firstDone; firstErr != nil { // firstErr 是放行后首个请求的完成结果。
+		t.Fatal(firstErr)
+	}
+	if secondErr := <-secondDone; secondErr != nil { // secondErr 是获得串行权后第二个请求的完成结果。
+		t.Fatal(secondErr)
+	}
+	if entered.Load() != 2 {
+		t.Fatalf("释放后第二个请求未进入: entered=%d", entered.Load())
 	}
 }
 

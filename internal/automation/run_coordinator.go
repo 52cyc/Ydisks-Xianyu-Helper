@@ -472,55 +472,14 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 	for cursor := run.ActionCursor; cursor < len(actions); cursor++ {
 		// action 是当前待执行的动作定义。
 		action := actions[cursor]
-		if !skipDelays {
-			// delaySeconds 是当前动作生效后的等待秒数。
-			delaySeconds, err := r.actionDelaySeconds(ctx, action)
-			if err != nil {
-				return sent, false, err
-			}
-			if delaySeconds > 0 && taskDelayCursor(task) != cursor {
-				if task.Raw == nil {
-					task.Raw = map[string]any{}
-				}
-				task.Raw["automation_run_id"] = run.ID
-				task.Raw["automation_rule_id"] = ruleID
-				task.Raw["automation_delay_cursor"] = cursor
-				// dueAt 是延迟动作重新进入可执行状态的 UTC 时间点，同时用于续租当前运行。
-				dueAt := time.Now().UTC().Add(time.Duration(delaySeconds) * time.Second)
-				// leaseErr 保存延期运行续租失败的原因。
-				if leaseErr := r.store.Automation.RenewRunLease(ctx, run.ID, run.AttemptCount, dueAt.Add(5*time.Minute).Unix()); leaseErr != nil {
-					return sent, false, leaseErr
-				}
-				// deferErr 保存延迟任务写入失败的原因。
-				if deferErr := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil {
-					return sent, false, deferErr
-				}
-				return sent, true, nil
-			}
+		// preparedTask、deferred、prepareErr 是延迟与聊天输入准备后的任务、延期状态和错误。
+		preparedTask, deferred, prepareErr := r.prepareRunAction(ctx, task, ruleID, run, action, cursor, skipDelays)
+		if prepareErr != nil {
+			return sent, false, prepareErr
 		}
-		if r.prepareAction != nil {
-			// preparedTask、waiting、prepareErr 是当前动作的聊天输入准备结果。
-			preparedTask, waiting, prepareErr := r.prepareAction(ctx, task, run.ID, action)
-			if prepareErr != nil {
-				return sent, false, prepareErr
-			}
-			task = preparedTask
-			if waiting {
-				if task.Raw == nil {
-					task.Raw = map[string]any{}
-				}
-				task.Raw["automation_run_id"] = run.ID
-				task.Raw["automation_rule_id"] = ruleID
-				// dueAt 仅作为服务端最长保底期，买家确认时会立即把任务唤醒。
-				dueAt := time.Now().UTC().Add(365 * 24 * time.Hour)
-				if leaseErr /* leaseErr 是等待买家期间的运行续租错误。 */ := r.store.Automation.RenewRunLease(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(5*time.Minute).Unix()); leaseErr != nil {
-					return sent, false, leaseErr
-				}
-				if deferErr /* deferErr 是等待聊天确认任务的持久化错误。 */ := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil {
-					return sent, false, deferErr
-				}
-				return sent, true, nil
-			}
+		task = preparedTask
+		if deferred {
+			return sent, true, nil
 		}
 		// started 表示当前 worker 是否成功占用动作检查点。
 		started, err := r.store.Automation.StartRunAction(ctx, run.ID, run.AttemptCount, cursor, time.Now().UTC().Add(5*time.Minute).Unix())
@@ -662,6 +621,60 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 		return pendingUncertainty.sent, false, fmt.Errorf("%w: %v", errAutomationNeedsReview, pendingUncertainty.err)
 	}
 	return sent, false, nil
+}
+
+// prepareRunAction 处理当前动作的延迟和聊天输入准备；返回更新后任务、是否已持久化延期以及准备错误。
+func (r automationRunCoordinator) prepareRunAction(ctx context.Context, task Task, ruleID int64, run *db.AutomationRun, action db.AutomationAction, cursor int, skipDelays bool) (Task, bool, error) {
+	if !skipDelays {
+		// delaySeconds 是当前动作生效前的等待秒数。
+		delaySeconds, delayErr := r.actionDelaySeconds(ctx, action)
+		if delayErr != nil {
+			return task, false, delayErr
+		}
+		if delaySeconds > 0 && taskDelayCursor(task) != cursor {
+			if task.Raw == nil {
+				task.Raw = map[string]any{}
+			}
+			task.Raw["automation_run_id"] = run.ID
+			task.Raw["automation_rule_id"] = ruleID
+			task.Raw["automation_delay_cursor"] = cursor
+			// dueAt 是延迟动作重新进入可执行状态的 UTC 时间点，同时用于续租当前运行。
+			dueAt := time.Now().UTC().Add(time.Duration(delaySeconds) * time.Second)
+			if leaseErr := r.store.Automation.RenewRunLease(ctx, run.ID, run.AttemptCount, dueAt.Add(5*time.Minute).Unix()); leaseErr != nil { // leaseErr 是延期运行续租失败原因。
+				return task, false, leaseErr
+			}
+			if deferErr := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil { // deferErr 是延迟任务写入失败原因。
+				return task, false, deferErr
+			}
+			return task, true, nil
+		}
+	}
+	if r.prepareAction == nil {
+		return task, false, nil
+	}
+	// preparedTask、waiting、prepareErr 是当前动作的聊天输入准备结果。
+	preparedTask, waiting, prepareErr := r.prepareAction(ctx, task, run.ID, action)
+	if prepareErr != nil {
+		return task, false, prepareErr
+	}
+	task = preparedTask
+	if !waiting {
+		return task, false, nil
+	}
+	if task.Raw == nil {
+		task.Raw = map[string]any{}
+	}
+	task.Raw["automation_run_id"] = run.ID
+	task.Raw["automation_rule_id"] = ruleID
+	// dueAt 仅作为服务端最长保底期，买家确认时会立即把任务唤醒。
+	dueAt := time.Now().UTC().Add(365 * 24 * time.Hour)
+	if leaseErr := r.store.Automation.RenewRunLease(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(5*time.Minute).Unix()); leaseErr != nil { // leaseErr 是等待买家期间的运行续租错误。
+		return task, false, leaseErr
+	}
+	if deferErr := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil { // deferErr 是等待聊天确认任务的持久化错误。
+		return task, false, deferErr
+	}
+	return task, true, nil
 }
 
 // executeActionNow 在动作真正触达外部系统前执行账号门禁，并把前序发卡动作的凭证传给当前动作。

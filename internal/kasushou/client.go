@@ -28,12 +28,14 @@ const (
 // Clock 提供可测试的毫秒时间戳。
 type Clock func() time.Time
 
-// Client 使用官方 v2 签名规则请求任意兼容站。
+// Client 使用官方 v2 签名规则请求任意兼容站，并在所有业务入口之间共享站点商户级限速。
 type Client struct {
 	// HTTPClient 是由组合根注入的受限出站客户端。
 	HTTPClient *http.Client
 	// Now 生成签名所需的 13 位毫秒时间戳。
 	Now Clock
+	// rateLimiter 在签名和 HTTP I/O 前统一排队，自身管理短锁且不持有任何明文密钥。
+	rateLimiter *requestRateLimiter
 }
 
 // NewClient 创建卡速售 v2 协议客户端。
@@ -41,7 +43,7 @@ func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
-	return &Client{HTTPClient: httpClient, Now: time.Now}
+	return &Client{HTTPClient: httpClient, Now: time.Now, rateLimiter: newRequestRateLimiter(defaultRequestInterval)}
 }
 
 // ListProducts 请求商品列表。
@@ -114,11 +116,14 @@ func (client *Client) GetProduct(ctx context.Context, instance fulfillmentapp.In
 		}
 		return fulfillmentapp.Product{}, callErr
 	}
-	// attach 是独立附加字段接口返回的字段列表。
-	var attach []fulfillmentapp.AttachField
-	if // attachErr 是可选附加字段请求错误，失败时保留详情结果。
-	attachErr := client.call(ctx, instance, "/api/v1/goods/attach", map[string]any{"goods_id": strconv.FormatInt(goodsID, 10)}, &attach); attachErr == nil && len(attach) > 0 {
-		payload.Attach = attach
+	// 卡密商品不需要直充附加字段，避免每次选品或报价额外消耗一次限频配额。
+	if payload.GoodsType != 1 {
+		// attach 是独立附加字段接口返回的字段列表。
+		var attach []fulfillmentapp.AttachField
+		if // attachErr 是可选附加字段请求错误，失败时保留详情结果。
+		attachErr := client.call(ctx, instance, "/api/v1/goods/attach", map[string]any{"goods_id": strconv.FormatInt(goodsID, 10)}, &attach); attachErr == nil && len(attach) > 0 {
+			payload.Attach = attach
+		}
 	}
 	return payload.product(), nil
 }
@@ -210,6 +215,14 @@ func (client *Client) call(ctx context.Context, instance fulfillmentapp.Instance
 	if err != nil {
 		return err
 	}
+	// scope 是当前请求共享限频配额的非秘密站点商户键。
+	scope := rateLimitScope(instance.BaseURL, instance.MerchantUserID)
+	// release 在完整响应读取结束后释放当前站点商户的串行请求权。
+	release, waitErr := client.rateLimiter.Acquire(ctx, scope)
+	if waitErr != nil { // waitErr 是请求在串行或限速队列中等待时被取消的原因。
+		return fmt.Errorf("等待卡速售请求限速: %w", waitErr)
+	}
+	defer release()
 	// timestamp 是协议要求的 13 位毫秒时间戳。
 	timestamp := strconv.FormatInt(client.Now().UnixMilli(), 10)
 	// request 是带有动态签名请求头的 JSON POST 请求。
