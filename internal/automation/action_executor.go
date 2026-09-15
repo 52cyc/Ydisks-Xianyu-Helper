@@ -103,6 +103,11 @@ type consignWithDeliveryClient interface {
 	ConsignContextWithDelivery(context.Context, string, string, string, []string) (bool, []string, string, error)
 }
 
+// freeShippingClient 是砍价订单确认发货所需的可选 MTOP 能力；普通订单继续通过既有虚拟发货接口处理。
+type freeShippingClient interface {
+	FreeShippingContext(context.Context, string, string, string, string) (bool, []string, string, error)
+}
+
 // shipmentCookiePersistence 保存响应 Cookie 的条件写回结果；errors 中的失败需要与远端动作结果一并向调用方报告。
 type shipmentCookiePersistence struct {
 	// errors 收集读取、冲突检测或写回账号凭证时的本地持久化错误。
@@ -173,6 +178,9 @@ func (e *automationActionExecutor) confirmShipmentWithProof(ctx context.Context,
 	if task.OrderID == "" {
 		return fmt.Errorf("确认发货缺少订单ID")
 	}
+	if task.IsBargain && (strings.TrimSpace(task.ItemID) == "" || strings.TrimSpace(task.BuyerID) == "") {
+		return fmt.Errorf("%w: 免拼发货缺少商品ID或买家ID", errActionNotPerformed)
+	}
 	// enabled 表示账号是否打开自动确认发货（转已发货）设置；readErr 表示读取该账号设置时的数据库错误。
 	enabled, readErr := e.store.Cookies.GetAutoConsign(ctx, task.AccountID)
 	if readErr != nil {
@@ -192,7 +200,7 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 		return err
 	}
 	// succeeded、returns、updatedCookie、callErr 分别保存 MTOP 的业务成功标记、业务返回、扁平 Cookie 更新和调用错误。
-	// client 保存当前确认发货使用的平台客户端；带凭证能力只由新实现提供，旧实现继续发送空凭证。
+	// client 保存当前确认发货使用的平台客户端；砍价订单需要免拼能力，普通订单仍可兼容旧的带凭证确认发货实现。
 	client := e.mtop()
 	// succeeded 表示平台是否明确确认订单已发货。
 	var succeeded bool
@@ -202,11 +210,20 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	var updatedCookie string
 	// callErr 保存确认发货请求或响应解析错误。
 	var callErr error
-	// deliveryClient、ok 保存可选的带发货凭证能力及其是否可用。
-	if deliveryClient, ok := client.(consignWithDeliveryClient); ok {
-		succeeded, returns, updatedCookie, callErr = deliveryClient.ConsignContextWithDelivery(session.requestContext, session.cookieStr, task.OrderID, proof.tradeText, proof.picList)
+	if task.IsBargain {
+		// freeShipping、supported 保存砍价订单免拼能力及其是否由当前客户端实现；不允许回退普通确认发货端点。
+		freeShipping, supported := client.(freeShippingClient)
+		if !supported {
+			return fmt.Errorf("%w: 当前 MTOP 客户端不支持免拼发货", errActionNotPerformed)
+		}
+		succeeded, returns, updatedCookie, callErr = freeShipping.FreeShippingContext(session.requestContext, session.cookieStr, task.OrderID, task.ItemID, task.BuyerID)
 	} else {
-		succeeded, returns, updatedCookie, callErr = client.ConsignContext(session.requestContext, session.cookieStr, task.OrderID)
+		// deliveryClient、supported 保存可选的带发货凭证能力及其是否可用。
+		if deliveryClient, supported := client.(consignWithDeliveryClient); supported {
+			succeeded, returns, updatedCookie, callErr = deliveryClient.ConsignContextWithDelivery(session.requestContext, session.cookieStr, task.OrderID, proof.tradeText, proof.picList)
+		} else {
+			succeeded, returns, updatedCookie, callErr = client.ConsignContext(session.requestContext, session.cookieStr, task.OrderID)
+		}
 	}
 	// result 归并 MTOP 远端结果，Cookie 写回与订单状态写入随后独立处理。
 	result := shipmentConsignResult{succeeded: succeeded, returns: returns, updatedCookie: updatedCookie, callErr: callErr}
@@ -219,12 +236,9 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	if sessionErr == nil && !result.succeeded {
 		sessionErr = errors.New(strings.Join(result.returns, "; "))
 	}
-	if mtop.IsCredentialRefreshableErr(sessionErr) {
-		// credentialLabel 用于确认发货错误中区分 Session 失效与 MTOP 签名 Token 失效。
-		credentialLabel := "MTOP Token"
-		if mtop.IsSessionExpiredErr(sessionErr) {
-			credentialLabel = "Session"
-		}
+	if mtop.IsSessionExpiredErr(sessionErr) {
+		// credentialLabel 标识唯一允许调用账号恢复器的 Session 失效；Token 已由 MTOP 内部处理。
+		credentialLabel := "Session"
 		if len(persistenceErrs) > 0 {
 			return errors.Join(fmt.Errorf("确认发货 %s 已失效: %w", credentialLabel, sessionErr), errors.Join(persistenceErrs...))
 		}
@@ -284,7 +298,7 @@ func (e *automationActionExecutor) adjustOrderPrice(ctx context.Context, task Ta
 	return 1, nil
 }
 
-// adjustOrderPriceAttempt 使用凭证快照调用订单改价，并以指纹条件写回响应 Cookie；Session 或 MTOP Token 失效时最多执行一次凭证恢复后重试。
+// adjustOrderPriceAttempt 使用凭证快照调用订单改价，并以指纹条件写回响应 Cookie；仅 Session 失效时最多执行一次账号恢复后重试。
 func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, task Task, priceCents int64, allowCredentialRecovery bool) error {
 	// session 固定本次 MTOP 请求的最小凭证视图，外部调用期间不持有账号凭证锁。
 	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
@@ -304,12 +318,9 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 	if sessionErr == nil && !result.succeeded {
 		sessionErr = errors.New(strings.Join(result.returns, "; "))
 	}
-	if mtop.IsCredentialRefreshableErr(sessionErr) {
-		// credentialLabel 用于订单改价错误中区分 Session 失效与 MTOP 签名 Token 失效。
-		credentialLabel := "MTOP Token"
-		if mtop.IsSessionExpiredErr(sessionErr) {
-			credentialLabel = "Session"
-		}
+	if mtop.IsSessionExpiredErr(sessionErr) {
+		// credentialLabel 标识唯一允许调用账号恢复器的 Session 失效；Token 已由 MTOP 内部处理。
+		credentialLabel := "Session"
 		if len(persistenceErrs) > 0 {
 			return errors.Join(fmt.Errorf("订单改价 %s 已失效: %w", credentialLabel, sessionErr), errors.Join(persistenceErrs...))
 		}

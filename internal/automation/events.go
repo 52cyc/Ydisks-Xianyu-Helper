@@ -55,8 +55,10 @@ type Task struct {
 	ReceiverCity    string
 	// OrderFields 保存闲鱼订单详情动态字段，供直充货源按字段名称取值。
 	OrderFields map[string]string
-	Text        string
-	UpdateKey   string
+	// IsBargain 标记订单是否为订单同步已确认的砍价活动订单；确认发货时必须改走免拼接口。
+	IsBargain bool
+	Text      string
+	UpdateKey string
 	// ForceConfirmShipment 仅供明确的人工“完整发货”使用；自动事件仍遵循账号自动确认开关。
 	ForceConfirmShipment bool
 	// RequireOrderDetail 仅供待付款货源跟价在规则匹配前补齐规格和数量；普通固定改价不依赖订单详情。

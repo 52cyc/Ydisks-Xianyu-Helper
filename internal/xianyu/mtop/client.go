@@ -29,6 +29,9 @@ const TokenAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.logi
 // ConsignAPI 是虚拟商品确认发货端点。
 const ConsignAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/"
 
+// FreeShippingAPI 是砍价订单免拼发货端点；它与普通虚拟商品确认发货使用不同的平台业务域。
+const FreeShippingAPI = "https://h5api.m.goofish.com/h5/mtop.idle.groupon.activity.seller.freeshipping/1.0/"
+
 // OrderDetailAPI 是卖家订单详情端点。
 const OrderDetailAPI = "https://h5api.m.goofish.com/h5/mtop.idle.web.trade.order.detail/1.0/"
 
@@ -82,6 +85,8 @@ type ClientImpl struct {
 	Logger     *slog.Logger
 	TokenURL   string
 	ConsignURL string
+	// FreeShippingURL 覆盖砍价订单免拼发货端点，仅供本地 HTTP 回归测试注入替身；空值使用官方端点。
+	FreeShippingURL string
 	// AdjustPriceURL 覆盖订单改价端点，仅供测试注入本地 HTTP 服务。
 	AdjustPriceURL string
 	// ItemEditDetailURL 和 ItemEditURL 允许测试把商品编辑链路指向本地服务。
@@ -627,14 +632,14 @@ func isRiskVerificationRet(ret []string) bool {
 	return false
 }
 
-// IsSessionExpiredErr 判断 err 是否表示 Session 失效；返回 true 时由上层协议续期，失败后要求扫码。
+// IsSessionExpiredErr 判断 err 是否明确表示 Session 失效；结构化分类优先于包装文案，Token 重试耗尽不能升级为账号续期。
 func IsSessionExpiredErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	// kind 表示统一 MTOP 错误模型中的会话失效类别。
-	if kind, ok := MTopErrorKindOf(err); ok && kind == MTopErrorSessionExpired {
-		return true
+	// kind、ok 保存平台错误的权威分类及其是否存在；已分类错误不再由中文包装文案改判。
+	if kind, ok := MTopErrorKindOf(err); ok {
+		return kind == MTopErrorSessionExpired
 	}
 	// sessionErr 用于本次流程后续判断的会话Err
 	var sessionErr *SessionExpiredError
@@ -643,14 +648,17 @@ func IsSessionExpiredErr(err error) bool {
 	}
 	// msg 用于本次流程后续判断的msg
 	msg := strings.ToLower(err.Error())
+	// 旧适配器可能只返回文本；明确 Token 错误码仍优先于“登录凭证已失效”等包装提示。
+	if isOfficialTokenRetryRet([]string{strings.ToUpper(msg)}) {
+		return false
+	}
 	return isSessionExpiredRet([]string{msg}) ||
 		strings.Contains(msg, "登录凭证已失效")
 }
 
-// IsCredentialRefreshableErr 判断错误是否表示当前 Cookie 凭证需要进入统一恢复流程。
-// 仅 MTOP 签名 Token 过期可以先刷新登录态 Cookie；Session 失效则按原有协议续期或重新登录处理。
+// IsCredentialRefreshableErr 保留历史分类入口；Token 由 MTOP 客户端内部刷新，只有 Session 失效允许账号级恢复。
 func IsCredentialRefreshableErr(err error) bool {
-	return IsSessionExpiredErr(err) || IsMTopTokenExpiredErr(err)
+	return IsSessionExpiredErr(err)
 }
 
 // mtopString 封装mtopString业务协调。

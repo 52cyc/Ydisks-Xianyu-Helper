@@ -136,14 +136,14 @@ func TestItemSyncNotifiesRuntimeAfterCookieCommit(t *testing.T) {
 	if finishErr != nil || callErr != nil || latest == nil || finishedSession == nil {
 		t.Fatalf("Cookie 提交异常 latest=%+v callErr=%v finishErr=%v", latest, callErr, finishErr)
 	}
-	// enrichErr 验证第二阶段不会因重复检查而丢失第一次写回通知。
+	// enrichErr 验证详情阶段后的重复检查不会丢失第一次写回通知。
 	enrichErr := repository.persistAfterEnrich(ctx, query, latest, finishedSession, cookieValue, "")
 	if enrichErr != nil || notified != 1 {
 		t.Fatalf("运行时 Cookie 通知次数异常 notified=%d err=%v", notified, enrichErr)
 	}
 }
 
-// TestItemSyncDetailsReuseOperationCookieSession 验证商品详情探测沿用列表同步的 Cookie 会话。
+// TestItemSyncDetailsReuseOperationCookieSession 验证商品详情探测沿用列表同步的 Cookie 会话并覆盖列表规格标记。
 func TestItemSyncDetailsReuseOperationCookieSession(t *testing.T) {
 	// store、cleanup 保存隔离数据库及其关闭责任。
 	store, cleanup := newAdapterTestStore(t)
@@ -152,7 +152,7 @@ func TestItemSyncDetailsReuseOperationCookieSession(t *testing.T) {
 	detailSessionObserved := false
 	// client 为商品列表和详情探测提供本地平台响应。
 	client := &itemSyncListClient{
-		allResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "detail-session", Title: "详情会话商品"}}},
+		allResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "detail-session", Title: "详情会话商品", IsMultiSpec: false}}},
 		detect: func(ctx context.Context, _ string, _ string) (bool, error) {
 			// session 保存详情请求从上下文读取的同步 Cookie 会话。
 			session := mtop.CookieSessionFromContext(ctx)
@@ -171,6 +171,11 @@ func TestItemSyncDetailsReuseOperationCookieSession(t *testing.T) {
 	result, syncErr := repository.SyncAll(context.Background(), itemapp.SyncQuery{UserID: 1, CookieID: "cid", PageSize: 20, MaxPages: 1})
 	if syncErr != nil || result.TotalCount != 1 || !detailSessionObserved {
 		t.Fatalf("详情 Cookie 会话未复用 result=%+v observed=%v err=%v", result, detailSessionObserved, syncErr)
+	}
+	// item、itemErr 验证详情返回的多规格事实已覆盖列表中的单规格默认值。
+	item, itemErr := store.Items.Get(context.Background(), "cid", "detail-session")
+	if itemErr != nil || !item.IsMultiSpec {
+		t.Fatalf("详情多规格事实未落库 item=%+v err=%v", item, itemErr)
 	}
 	// runtime、runtimeErr 验证详情阶段产生的 Cookie 已经写回账号运行时凭证。
 	runtime, runtimeErr := store.Cookies.GetCookiePlatformRuntimeData(context.Background(), "cid")
@@ -333,11 +338,11 @@ func TestItemSyncCredentialLoadFailuresArePersistenceErrors(t *testing.T) {
 	if closeErr := enrichStore.DB.Close(); closeErr != nil {
 		t.Fatal(closeErr)
 	}
-	// enrichErr 保存第二阶段凭证读取失败的应用错误。
+	// enrichErr 保存详情阶段后凭证读取失败的应用错误。
 	enrichErr := enrichRepository.persistAfterEnrich(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid"}, enrichDetail, enrichSession, enrichCookie, "")
-	// enrichTypedErr 保存第二阶段凭证读取错误的应用阶段分类。
+	// enrichTypedErr 保存详情提交的凭证读取错误分类。
 	var enrichTypedErr *itemapp.SyncError
 	if !errors.As(enrichErr, &enrichTypedErr) || enrichTypedErr.Kind != itemapp.SyncErrorPersistence {
-		t.Fatalf("第二阶段凭证读取失败分类异常: %v", enrichErr)
+		t.Fatalf("详情提交凭证读取失败分类异常: %v", enrichErr)
 	}
 }

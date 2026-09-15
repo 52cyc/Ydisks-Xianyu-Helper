@@ -89,6 +89,7 @@ func (c *Center) prepareManualDeliveryTask(ctx context.Context, order *db.Order)
 		ReceiverPhone:        order.ReceiverPhone,
 		ReceiverAddress:      order.ReceiverAddr,
 		ReceiverCity:         order.ReceiverCity,
+		IsBargain:            order.IsBargain != 0,
 		ForceConfirmShipment: true,
 		Raw:                  map[string]any{"manual": true},
 	}

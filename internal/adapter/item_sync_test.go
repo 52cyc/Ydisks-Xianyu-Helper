@@ -18,7 +18,7 @@ type itemSyncDetailClient struct {
 	detect func(context.Context, string, string) (bool, error)
 }
 
-// DetectItemMultiSpec 执行测试注入的商品多规格探测逻辑。
+// DetectItemMultiSpec 执行测试注入的商品多规格探测逻辑；参数分别承载取消信号、敏感 Cookie 和商品 ID。
 func (client *itemSyncDetailClient) DetectItemMultiSpec(ctx context.Context, cookies, itemID string) (bool, error) {
 	return client.detect(ctx, cookies, itemID)
 }
@@ -28,7 +28,7 @@ func TestItemSyncRepositoryEnrichMultiSpecBoundsConcurrency(t *testing.T) {
 	// store、cleanup 保存当前测试使用的 SQLite 存储及清理函数。
 	store, cleanup := newAdapterTestStore(t)
 	defer cleanup()
-	// stateMu 保护远端探测并发统计。
+	// stateMu 保护远端探测并发统计，网络等待期间不持有此锁。
 	var stateMu sync.Mutex
 	// active、maxActive、probeCalls 保存当前并发数、峰值并发数和探测次数。
 	active, maxActive, probeCalls := 0, 0, 0
@@ -59,7 +59,7 @@ func TestItemSyncRepositoryEnrichMultiSpecBoundsConcurrency(t *testing.T) {
 		items[index].ID = fmt.Sprintf("probe-%d", index)
 	}
 	// err 保存首次批量多规格探测的错误。
-	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", "cid", items); err != nil {
+	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", items); err != nil {
 		t.Fatalf("首次多规格探测失败：%v", err)
 	}
 	if maxActive > 4 {
@@ -78,7 +78,7 @@ func TestItemSyncRepositoryEnrichMultiSpecBoundsConcurrency(t *testing.T) {
 		secondItems[index].ID = fmt.Sprintf("probe-%d", index)
 	}
 	// err 保存第二次多规格探测的校验错误。
-	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", "cid", secondItems); err != nil {
+	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", secondItems); err != nil {
 		t.Fatalf("第二次多规格探测失败：%v", err)
 	}
 	if probeCalls != len(items)*2 {
@@ -86,37 +86,35 @@ func TestItemSyncRepositoryEnrichMultiSpecBoundsConcurrency(t *testing.T) {
 	}
 }
 
-// TestItemSyncRepositoryEnrichMultiSpecFollowsRemoteBothDirections 验证远端规格变化可双向更新本次同步结果。
+// TestItemSyncRepositoryEnrichMultiSpecFollowsRemoteBothDirections 验证详情事实可双向更新列表携带的旧规格标记。
 func TestItemSyncRepositoryEnrichMultiSpecFollowsRemoteBothDirections(t *testing.T) {
 	// store、cleanup 保存详情探测适配器使用的隔离数据库和清理责任。
 	store, cleanup := newAdapterTestStore(t)
 	defer cleanup()
-	// remoteValue 表示本次模拟的远端商品规格状态，可在两次同步之间切换。
+	// remoteValue 表示本次模拟的远端商品详情规格状态，可在两次同步之间切换。
 	remoteValue := true
 	// client 是按当前远端状态返回详情探测结果的平台替身。
-	client := &itemSyncDetailClient{detect: func(_ context.Context, _ string, _ string) (bool, error) {
-		return remoteValue, nil
-	}}
+	client := &itemSyncDetailClient{detect: func(_ context.Context, _ string, _ string) (bool, error) { return remoteValue, nil }}
 	// repository 是使用详情探测替身的商品同步适配器。
 	repository := NewItemSyncRepository(store, func() mtop.Client { return client }, nil, nil, nil)
 	// items 保存第一次同步前仍带有旧多规格标记的商品。
 	items := []mtop.ItemListItem{{ID: "changing-item", IsMultiSpec: true}}
 	remoteValue = false
 	// err 保存多规格转单规格的详情探测错误。
-	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", "cid", items); err != nil {
+	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", items); err != nil {
 		t.Fatalf("多规格转单规格探测失败：%v", err)
 	}
 	if items[0].IsMultiSpec {
-		t.Fatal("远端已变为单规格，但同步结果仍保留旧多规格标记")
+		t.Fatal("详情已变为单规格，但同步结果仍保留旧多规格标记")
 	}
 	// secondItems 保存第二次同步前带有旧单规格标记的同一商品。
 	secondItems := []mtop.ItemListItem{{ID: "changing-item", IsMultiSpec: false}}
 	remoteValue = true
 	// err 保存单规格转多规格的详情探测错误。
-	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_tk=t_1;", "cid", secondItems); err != nil {
+	if err := repository.enrichMultiSpec(context.Background(), "unb=1; _m_h5_t=t_1;", secondItems); err != nil {
 		t.Fatalf("单规格转多规格探测失败：%v", err)
 	}
 	if !secondItems[0].IsMultiSpec {
-		t.Fatal("远端已变为多规格，但同步结果仍保留旧单规格标记")
+		t.Fatal("详情已变为多规格，但同步结果仍保留旧单规格标记")
 	}
 }
