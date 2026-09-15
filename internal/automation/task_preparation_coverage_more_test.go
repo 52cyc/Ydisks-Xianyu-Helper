@@ -72,15 +72,25 @@ func TestResolvePaidTaskOrderFromSimplifiedContext(t *testing.T) {
 	center := New(store, nil, nil)
 	// task 保存只有会话、买家和商品事实的简化付款任务。
 	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "simple-chat", BuyerID: "buyer-1", ItemID: "item-1"}
-	// resolved、resolveErr 保存回填后的付款任务及错误。
-	resolved, resolveErr := center.resolvePaidTaskOrder(ctx, task)
-	if resolveErr != nil || resolved.OrderID != "simple-order" {
-		t.Fatalf("简化付款订单回填异常: task=%+v err=%v", resolved, resolveErr)
+	// resolved、resolution 和 resolveErr 保存回填后的付款任务、结果码及错误。
+	resolved, resolution, resolveErr := center.resolvePaidTaskOrder(ctx, task)
+	if resolveErr != nil || resolved.OrderID != "simple-order" || resolution != paidTaskOrderResolved {
+		t.Fatalf("简化付款订单回填异常: task=%+v resolution=%s err=%v", resolved, resolution, resolveErr)
 	}
-	// untouched、untouchedErr 验证普通评价任务不会触发付款订单回填。
-	untouched, untouchedErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerBuyerReviewed, ChatID: "simple-chat"})
-	if untouchedErr != nil || untouched.OrderID != "" {
-		t.Fatalf("非付款任务不应回填订单: task=%+v err=%v", untouched, untouchedErr)
+	// untouched、untouchedResolution 和 untouchedErr 验证普通评价任务不会触发付款订单回填。
+	untouched, untouchedResolution, untouchedErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerBuyerReviewed, ChatID: "simple-chat"})
+	if untouchedErr != nil || untouched.OrderID != "" || untouchedResolution != paidTaskOrderNotApplicable {
+		t.Fatalf("非付款任务不应回填订单: task=%+v resolution=%s err=%v", untouched, untouchedResolution, untouchedErr)
+	}
+	// missingChatResolution 验证同时缺少订单号和会话标识时会输出可区分的诊断结果。
+	_, missingChatResolution, missingChatErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderPaid})
+	if missingChatErr != nil || missingChatResolution != paidTaskOrderMissingChat {
+		t.Fatalf("缺少会话的付款事件诊断错误: resolution=%s err=%v", missingChatResolution, missingChatErr)
+	}
+	// notFoundResolution 验证会话存在但本地无待发货订单时会输出未命中结果。
+	_, notFoundResolution, notFoundErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "unknown-chat"})
+	if notFoundErr != nil || notFoundResolution != paidTaskOrderNotFound {
+		t.Fatalf("本地待发货订单未命中诊断错误: resolution=%s err=%v", notFoundResolution, notFoundErr)
 	}
 }
 

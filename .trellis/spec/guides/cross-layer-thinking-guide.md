@@ -121,6 +121,35 @@ After implementation:
 - [ ] Checked that derived state points back to the source event identifier
       (`seq`, `id`, `version`) instead of inventing a second cursor
 
+## Automation Event Fact Completeness
+
+Xianyu system cards can carry a recognizable business status while omitting
+the order ID, item ID, chat ID, or update key needed by downstream automation.
+Recognizing `order_created` or `order_paid` therefore does not prove that an
+item-bound rule can be selected.
+
+Trace this flow as one contract:
+
+```text
+WebSocket payload -> event extraction -> adapter ingress -> local order recovery -> rule scope selection
+```
+
+Required checks:
+
+- Preserve incomplete recognized events for diagnostics, but do not infer a
+  product rule from status text alone.
+- If a paid event lacks an order ID, recover only through the account-scoped
+  chat lookup; report separately when the chat ID is absent and when no local
+  pending order is found.
+- If the item ID remains empty, state explicitly that matching was restricted
+  to confirmed account-wide rules. Do not describe this as a generic missing
+  rule without the scope.
+- Log normalized field presence at the adapter boundary and the final match
+  reason at the automation boundary. Never log raw payloads, Cookie values, or
+  full update keys.
+- Cover complete, missing-chat, local-order-miss, and successful-recovery paths
+  with deterministic tests.
+
 ---
 
 ## Cross-Platform Template Consistency

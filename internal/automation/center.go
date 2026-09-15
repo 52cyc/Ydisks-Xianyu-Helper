@@ -287,13 +287,12 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if task.TriggerType == "" || task.AccountID == "" {
 		return false, nil
 	}
-	// 简化付款消息只有会话标识，先从本账号待发货订单回填订单事实，再记录事件和匹配规则。
-	if // resolveErr 保存简化消息订单事实回填错误
-	resolvedTask, resolveErr := c.resolvePaidTaskOrder(ctx, task); resolveErr != nil {
+	// resolvedTask、paidOrderResolution 和 resolveErr 分别保存本地订单回填后的任务、诊断结果码和查询错误。
+	resolvedTask, paidOrderResolution, resolveErr := c.resolvePaidTaskOrder(ctx, task)
+	if resolveErr != nil {
 		return false, resolveErr
-	} else {
-		task = resolvedTask
 	}
+	task = resolvedTask
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -356,7 +355,20 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return false, err
 	}
 	if len(rules) == 0 {
-		c.logger.Warn("未匹配商品规则或已确认的账号通用规则，未执行自动化", "trigger", task.TriggerType, "order_id", task.OrderID, "item_id", task.ItemID)
+		// matchScope 描述本次规则查询的实际范围；缺少商品 ID 时只能查账号通用规则。
+		matchScope := "item_then_account"
+		// failureReason 是结构化原因码，用于区分事件事实缺失和真实的规则缺失。
+		failureReason := "no_enabled_ready_rule"
+		if task.ItemID == "" {
+			matchScope = "account_only"
+			failureReason = "missing_item_id_no_confirmed_account_rule"
+		}
+		c.logger.Warn("未匹配商品规则或已确认的账号通用规则，未执行自动化",
+			"account", task.AccountID, "source", task.Source, "trigger", task.TriggerType,
+			"order_id", task.OrderID, "item_id", task.ItemID, "chat_id", task.ChatID,
+			"has_buyer_id", task.BuyerID != "", "has_update_key", strings.TrimSpace(task.UpdateKey) != "",
+			"rule_match_scope", matchScope, "failure_reason", failureReason,
+			"paid_order_resolution", paidOrderResolution)
 		return false, nil
 	}
 	// firstErr 用于本次流程后续判断的firstErr

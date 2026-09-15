@@ -316,8 +316,10 @@ func (a *Adapter) HandleSystemEvent(ctx context.Context, task automation.Task) e
 	if a.automation == nil {
 		return nil
 	}
-	// 入口日志只表示收到平台卡片，不代表已经匹配规则或执行动作；统一使用 DEBUG 避免半成品和重复推送污染业务 INFO 日志。
-	a.logger.Debug("收到系统自动化事件", "account", task.AccountID, "trigger", task.TriggerType, "order_id", task.OrderID)
+	// 入口日志只表示收到平台卡片；记录非敏感的关键事实可判断字段在协议解析后是否已经缺失。
+	a.logger.Debug("收到系统自动化事件", "account", task.AccountID, "source", task.Source,
+		"trigger", task.TriggerType, "order_id", task.OrderID, "item_id", task.ItemID, "chat_id", task.ChatID,
+		"has_buyer_id", task.BuyerID != "", "has_update_key", strings.TrimSpace(task.UpdateKey) != "")
 	return a.automation.HandleTask(ctx, task)
 }
 

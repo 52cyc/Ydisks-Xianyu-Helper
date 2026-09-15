@@ -400,8 +400,8 @@ func TestHandleSystemEventIngressUsesDebugLog(t *testing.T) {
 	if firstErr := adapter.HandleSystemEvent(context.Background(), automation.Task{AccountID: "cid", TriggerType: automation.TriggerOrderCreated}); firstErr != nil {
 		t.Fatal(firstErr)
 	}
-	// secondErr 是带订单 ID 的无规则付款卡片进入自动化中心后不应产生的处理错误。
-	if secondErr := adapter.HandleSystemEvent(context.Background(), automation.Task{AccountID: "cid", TriggerType: automation.TriggerOrderPaid, OrderID: "order-log"}); secondErr != nil {
+	// secondErr 是同时缺少订单号和会话标识的付款卡片进入自动化中心后不应产生的处理错误。
+	if secondErr := adapter.HandleSystemEvent(context.Background(), automation.Task{AccountID: "cid", TriggerType: automation.TriggerOrderPaid}); secondErr != nil {
 		t.Fatal(secondErr)
 	}
 	// output 是入口和中心日志的文本结果；入口事件必须以 DEBUG 记录，不得出现旧的 INFO 文案。
@@ -411,6 +411,11 @@ func TestHandleSystemEventIngressUsesDebugLog(t *testing.T) {
 	}
 	if strings.Contains(output, "level=INFO msg=系统自动化事件") {
 		t.Fatalf("入口事件不应继续记录旧 INFO 日志: %s", output)
+	}
+	if !strings.Contains(output, "failure_reason=missing_item_id_no_confirmed_account_rule") ||
+		!strings.Contains(output, "paid_order_resolution=missing_chat_id") ||
+		!strings.Contains(output, "rule_match_scope=account_only") {
+		t.Fatalf("缺字段事件应输出匹配范围和付款回填结果: %s", output)
 	}
 }
 
