@@ -53,18 +53,15 @@ func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context
 	}()
 	// purchaseRequest 是通用货源应用层的采购输入。
 	purchaseRequest := fulfillmentapp.PurchaseRequest{InstanceID: request.InstanceID, ExternalOrderNo: request.ExternalOrderNo, XianyuOrderID: request.XianyuOrderID, RemoteGoodsID: request.GoodsID, Quantity: request.Quantity, SafePrice: request.SafePrice, Attach: request.Attach}
-	// order、purchaseErr 分别是幂等采购返回的本地订单和远程结果错误。
-	order, purchaseErr := adapter.service.Purchase(ctx, request.UserID, purchaseRequest)
+	// order、submitted、purchaseErr 分别是幂等采购订单、首次采购标记和远程结果错误。
+	order, submitted, purchaseErr := adapter.service.PurchaseWithSubmission(ctx, request.UserID, purchaseRequest)
 	// 供应站已明确拒绝保护价时直接交给自动化重试和买家通知，不能用查单等待覆盖失败原因。
 	if errors.Is(purchaseErr, fulfillmentapp.ErrSafePriceExceeded) {
 		return automation.ExternalFulfillmentResult{}, purchaseErr
 	}
-	if purchaseErr == nil && fulfillmentOrderIsTerminal(order.State) {
-		if fulfillmentapp.TerminalRetryRequired(order) {
-			order, purchaseErr = adapter.service.ReplaceTerminalOrder(ctx, request.UserID, purchaseRequest)
-		} else {
-			order, purchaseErr = adapter.service.MarkTerminalRetryRequired(ctx, request.UserID, order.ExternalOrderNo)
-		}
+	if submitted && (purchaseErr != nil || fulfillmentOrderNeedsRefresh(order.State)) {
+		// 首次远程采购处于等待或结果未知时不立刻占用查单额度；恢复扫描会在约五到十秒后查询同一外部单号。
+		return externalFulfillmentResult(order), nil
 	}
 	if purchaseErr != nil || fulfillmentOrderNeedsRefresh(order.State) {
 		// refreshed、refreshErr 使用同一外部单号查询，绝不产生第二笔采购。
@@ -73,16 +70,8 @@ func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context
 			order = refreshed
 			purchaseErr = nil
 		} else if errors.Is(refreshErr, fulfillmentapp.ErrNotFound) {
-			// retryRequest 复用当前实际履约单号和原采购参数。
-			retryRequest := purchaseRequest
-			retryRequest.ExternalOrderNo = order.ExternalOrderNo
-			// retried、retryErr 分别是原外部单号明确查无结果后的安全重提订单和错误。
-			retried, retryErr := adapter.service.RetryPurchaseAfterNotFound(ctx, request.UserID, retryRequest)
-			if retryErr != nil {
-				return automation.ExternalFulfillmentResult{}, fmt.Errorf("原单不存在，使用同一单号重新下单失败: %w", retryErr)
-			}
-			order = retried
-			purchaseErr = nil
+			// 供应站短暂查不到已受理订单时保持等待；后续仍只查询原单，禁止用相同或新单号再次采购。
+			return externalFulfillmentResult(order), nil
 		} else if purchaseErr != nil {
 			return automation.ExternalFulfillmentResult{}, fmt.Errorf("下单结果未确认: %v; 原单查询失败: %w", purchaseErr, refreshErr)
 		} else {
@@ -97,7 +86,17 @@ func (adapter *automationExternalFulfillmentAdapter) Fulfill(ctx context.Context
 		}
 		order = marked
 	}
-	return automation.ExternalFulfillmentResult{State: order.State, Cards: append([]string(nil), order.CardList...), RechargeInfo: order.RechargeInfo, RechargeHints: order.RechargeHints}, nil
+	return externalFulfillmentResult(order), nil
+}
+
+// externalFulfillmentResult 把应用层订单转换为自动化结果，并把首次落库的 created 状态归一为可恢复的 waiting。
+func externalFulfillmentResult(order fulfillmentapp.Order) automation.ExternalFulfillmentResult {
+	// state 是自动化恢复策略使用的统一状态；created 表示远程结果尚待按原单查询。
+	state := strings.TrimSpace(order.State)
+	if state == "" || state == "created" {
+		state = "waiting"
+	}
+	return automation.ExternalFulfillmentResult{State: state, Cards: append([]string(nil), order.CardList...), RechargeInfo: order.RechargeInfo, RechargeHints: order.RechargeHints}
 }
 
 // fulfillmentOrderIsTerminal 判断订单是否已取消或退款，需要人工确认后创建替代单。

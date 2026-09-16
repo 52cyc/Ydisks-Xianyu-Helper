@@ -60,6 +60,15 @@ func (c *Center) handleAIPricingMode(ctx context.Context, task Task) (bool, erro
 	}
 	// adjustErr 是复用凭证恢复、Cookie 合并、暂时性平台繁忙重试和不确定结果分类后的真实改价结果。
 	adjustErr := c.actions.adjustOrderPriceWithRetry(ctx, task, targetPriceCents)
+	if errors.Is(adjustErr, errAdjustPriceNaturallyClosed) {
+		// finishErr 把已被付款状态抢先结束的 AI 报价标记为失败终态，避免重复改价但不升级为自动化错误。
+		finishErr := c.store.AIReply.FinishQuote(ctx, quote.ID, "failed", adjustErr.Error())
+		if finishErr != nil {
+			return true, fmt.Errorf("自然结束 AI 改价后保存报价状态: %w", finishErr)
+		}
+		c.logger.Info("订单已进入不可改价状态，AI 改价流程自然结束", "account", task.AccountID, "order_id", task.OrderID, "quote_id", quote.ID)
+		return true, nil
+	}
 	// status、errorMessage 是报价执行终态及不含凭证明文的错误摘要。
 	status, errorMessage := "adjusted", ""
 	if adjustErr != nil {

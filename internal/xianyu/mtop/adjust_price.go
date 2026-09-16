@@ -4,6 +4,7 @@ package mtop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +17,32 @@ import (
 
 // AdjustPriceAPI 是卖家对待付款订单改价的 MTOP 端点。
 const AdjustPriceAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.trade.user.adjust.price/1.0/"
+
+// IsAdjustPriceNaturallyClosed 判断平台是否明确表示订单状态已经不再允许改价，通常代表买家已经付款或订单流程已结束。
+func IsAdjustPriceNaturallyClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	// responseErr 是保留平台 ret 的结构化 MTOP 错误，优先避免依赖展示文本。
+	var responseErr *MTopResponseError
+	if errors.As(err, &responseErr) && isAdjustPriceNaturallyClosedRet(responseErr.Ret) {
+		return true
+	}
+	// message 兼容测试替身和旧调用链产生的普通包装错误。
+	message := err.Error()
+	return strings.Contains(message, "FAIL_BIZ_BAD_REQUEST") && strings.Contains(message, "当前订单状态不支持改价")
+}
+
+// isAdjustPriceNaturallyClosedRet 识别已验证的“订单状态不支持改价”业务返回，不把其他 BAD_REQUEST 静默降级。
+func isAdjustPriceNaturallyClosedRet(ret []string) bool {
+	// returned 是当前平台返回项，必须同时命中稳定业务码和明确原因。
+	for _, returned := range ret {
+		if strings.Contains(returned, "FAIL_BIZ_BAD_REQUEST") && strings.Contains(returned, "当前订单状态不支持改价") {
+			return true
+		}
+	}
+	return false
+}
 
 // adjustPricePayload 是订单改价接口要求的 JSON 请求体，避免订单号直接拼接进 JSON 而破坏签名原文。
 type adjustPricePayload struct {

@@ -245,6 +245,19 @@ func (c *Center) persistAndApplyPendingPrice(ctx context.Context, task Task, rul
 	}
 	// adjustErr 是包含平台暂忙重试和凭证恢复语义的一次真实订单改价结果。
 	adjustErr := c.actions.adjustOrderPriceWithRetry(ctx, task, targetOrderCents)
+	if errors.Is(adjustErr, errAdjustPriceNaturallyClosed) {
+		// finishErr 尝试把仍处于 pending 的报价收口；付款流程可能已并发替换为 adjusted 快照。
+		finishErr := c.store.Automation.FinishExternalPriceQuotes(ctx, task.OrderID, "failed", adjustErr.Error())
+		if finishErr != nil {
+			// exists、status、stateErr 用于确认付款流程是否已经合法接管报价，避免把并发终态误报为保存失败。
+			exists, status, stateErr := c.store.Automation.ExternalPriceQuoteState(ctx, task.OrderID)
+			if stateErr != nil || !exists || status != "adjusted" {
+				return errors.Join(finishErr, stateErr)
+			}
+		}
+		c.logger.Info("订单已付款或状态已结束，货源跟价流程自然结束", "account", task.AccountID, "order_id", task.OrderID)
+		return nil
+	}
 	if adjustErr != nil {
 		// finishErr 保存失败原因；报价保持 failed 后付款会安全回退固定保护价。
 		finishErr := c.store.Automation.FinishExternalPriceQuotes(ctx, task.OrderID, "failed", adjustErr.Error())

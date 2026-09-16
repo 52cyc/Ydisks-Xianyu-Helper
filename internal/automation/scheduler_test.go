@@ -573,6 +573,9 @@ func TestAutomationSchedulerUsesSecondLevelDeferredTicker(t *testing.T) {
 	if scheduler.deferredInterval != defaultDeferredTaskScanInterval {
 		t.Fatalf("deferredInterval=%s want %s", scheduler.deferredInterval, defaultDeferredTaskScanInterval)
 	}
+	if scheduler.recoveryInterval != defaultRecoveryTaskScanInterval {
+		t.Fatalf("recoveryInterval=%s want %s", scheduler.recoveryInterval, defaultRecoveryTaskScanInterval)
+	}
 	// 一次通用扫描不应领取已到期延迟动作，避免未来重构把秒级任务重新放回分钟级路径。
 	scheduler.scan(ctx)
 	// pendingAfterGeneralScan 保存通用扫描后的待执行任务数量，应仍为一条。
@@ -629,6 +632,84 @@ func TestAutomationSchedulerUsesSecondLevelDeferredTicker(t *testing.T) {
 	}
 	if len(sender.texts) != 1 || sender.texts[0] != "second-level-message" {
 		t.Fatalf("deferred sends=%v", sender.texts)
+	}
+}
+
+// TestAutomationSchedulerUsesIndependentRecoveryTicker 验证外部等待恢复不依赖分钟级综合扫描，并由独立循环及时领取到期运行。
+func TestAutomationSchedulerUsesIndependentRecoveryTicker(t *testing.T) {
+	// store、cleanup 分别提供隔离的 SQLite 存储和测试结束后的数据库释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是创建规则、运行和检查状态时使用的数据库上下文。
+	ctx := context.Background()
+	// admin 是创建恢复测试规则所需的管理员身份。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// ruleID 是恢复后发送唯一测试文本的规则主键。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: admin.ID, CookieID: "cid", Name: "independent-recovery", TriggerType: TriggerBuyerReviewed, Enabled: true,
+		Actions: []db.AutomationActionInput{{ActionType: ActionSendText, MessageTemplate: "recovered", Enabled: true}}})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// task 是可由恢复路径重新解析的完整非敏感事件快照。
+	task := Task{AccountID: "cid", TriggerType: TriggerBuyerReviewed, OrderID: "independent-recovery-order", ChatID: "chat", BuyerID: "buyer"}
+	// raw 是持久化到自动化运行中的任务 JSON。
+	raw, marshalErr := json.Marshal(task)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	// runID、started、startErr 是首次运行创建结果。
+	runID, started, startErr := store.Automation.TryStartRun(ctx, db.AutomationRun{RuleID: ruleID, CookieID: "cid", OrderID: task.OrderID,
+		TriggerType: task.TriggerType, TriggerKey: "independent-recovery", RawEventJSON: string(raw)})
+	if startErr != nil || !started {
+		t.Fatalf("start run: id=%d started=%v err=%v", runID, started, startErr)
+	}
+	// finishErr 把运行置为外部等待，并先安排到测试窗口之外，防止启动扫描抢先执行。
+	finishErr := store.Automation.FinishRun(ctx, runID, 1, "failed", 0, db.ExternalWaitErrorPrefix+"waiting")
+	if finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET next_retry_at=? WHERE id=?`, time.Now().Add(time.Hour).Unix(), runID); updateErr != nil { // updateErr 是延后测试运行的造数错误。
+		t.Fatal(updateErr)
+	}
+	// sender 记录独立恢复循环最终发送的文本。
+	sender := &testSender{}
+	// scheduler 使用一小时综合扫描和十毫秒恢复扫描，隔离两条调度路径。
+	scheduler := NewScheduler(New(store, testSenderProvider{sender: sender}, nil))
+	scheduler.interval = time.Hour
+	scheduler.recoveryInterval = 10 * time.Millisecond
+	// runCtx、cancel 控制本测试调度器及其独立恢复 goroutine 的生命周期。
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		scheduler.Wait()
+	}()
+	go scheduler.Run(runCtx)
+	// 启动扫描看到的任务尚未到期；随后把它推进到期，只有恢复计时器能够领取。
+	time.Sleep(50 * time.Millisecond)
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET next_retry_at=0 WHERE id=?`, runID); updateErr != nil { // updateErr 是推进恢复任务到期的造数错误。
+		t.Fatal(updateErr)
+	}
+	// deadline 是恢复扫描、规则执行和状态持久化的最大测试预算。
+	deadline := time.Now().Add(time.Second)
+	for {
+		// run 是当前恢复运行状态快照。
+		run, getErr := store.Automation.GetRun(ctx, runID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if run.Status == "success" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("independent recovery ticker did not finish run: %+v", run)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(sender.texts) != 1 || sender.texts[0] != "recovered" {
+		t.Fatalf("recovery sends=%v", sender.texts)
 	}
 }
 

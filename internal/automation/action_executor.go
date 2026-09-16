@@ -293,6 +293,10 @@ func (e *automationActionExecutor) adjustOrderPrice(ctx context.Context, task Ta
 	}
 	// adjustErr 表示包含暂时性平台繁忙重试后的最终改价结果。
 	if adjustErr := e.adjustOrderPriceWithRetry(ctx, task, priceCents); adjustErr != nil {
+		if errors.Is(adjustErr, errAdjustPriceNaturallyClosed) {
+			e.logger.Info("订单已进入不可改价状态，改价动作自然结束", "account", task.AccountID, "order_id", task.OrderID)
+			return 0, nil
+		}
 		return 0, adjustErr
 	}
 	return 1, nil

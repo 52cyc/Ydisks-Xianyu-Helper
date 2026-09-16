@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"xianyu-go/internal/xianyu/mtop"
 )
 
 // adjustPriceTransientRetryLimit 是平台明确提示暂时无法改价时允许的最大请求次数，避免短暂订单状态同步延迟直接导致自动化失败。
@@ -16,6 +18,9 @@ var adjustPriceOrderCreatedInitialDelay = 2 * time.Second
 
 // adjustPriceTransientRetryGap 是相邻两次暂时性改价失败之间的等待时间；测试可临时缩短它以验证重试分支。
 var adjustPriceTransientRetryGap = 3 * time.Second
+
+// errAdjustPriceNaturallyClosed 表示买家已付款或订单状态已结束，当前改价流程应无错误收口且不得再次请求。
+var errAdjustPriceNaturallyClosed = errors.New("订单状态已结束，改价流程自然结束")
 
 // adjustOrderPriceWithRetry 为规则改价和 AI 报价共用平台暂忙重试；传输结果未知和明确业务拒绝均不得自动重放。
 func (e *automationActionExecutor) adjustOrderPriceWithRetry(ctx context.Context, task Task, priceCents int64) error {
@@ -40,6 +45,9 @@ func (e *automationActionExecutor) adjustOrderPriceWithRetry(ctx context.Context
 		attemptErr := e.adjustOrderPriceAttempt(ctx, task, priceCents, true)
 		if attemptErr == nil {
 			return nil
+		}
+		if mtop.IsAdjustPriceNaturallyClosed(attemptErr) {
+			return fmt.Errorf("%w: %v", errAdjustPriceNaturallyClosed, attemptErr)
 		}
 		// uncertain 表示请求可能已被平台执行，重复提交会造成价格状态无法判定，必须交由人工核对。
 		var uncertain *uncertainActionError

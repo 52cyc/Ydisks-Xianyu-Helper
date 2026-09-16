@@ -85,6 +85,15 @@ Correct behavior: represent list stock as `-1`, allow selection, then require po
 - Frontend behavior tests cover Kayixin instance selection, category/page parameters, sequential detail checks, invalid-detail rejection, and Kasushou regression.
 - Run API generation/check, architecture checks, comment checks for every touched file, focused Go tests including race coverage, frontend type-check/tests/build, server build, and `git diff --check`.
 
+## 8. Accepted-order recovery pacing
+
+- A newly submitted supplier order that returns `waiting` or `processing` is not queried immediately. It is persisted as an external wait and becomes eligible for its first status query after five seconds.
+- Recovery discovery runs in an independently owned five-second scheduler loop. The minute-level account/review scan must not be required for supplier-order progress.
+- Retry delays after completed queries are 5 seconds, 10 seconds, 20 seconds, 30 seconds, 1 minute, 2 minutes, 3 minutes, 5 minutes, and then 10 minutes.
+- Every recovery call queries the original persisted external order number. A temporary supplier `not found` response remains waiting and must never invoke `Buy` again, even with the same idempotency key.
+- Database claim fencing remains authoritative when recovery and other scheduler work overlap. Cancellation stops the independent loop and its owner waits for the loop before shutdown completes.
+- If a pending-price retry observes `FAIL_BIZ_BAD_REQUEST` with the confirmed reason `当前订单状态不支持改价`, the order has naturally left the repricing phase. Close the pending quote without failing automation; if the paid-order flow already replaced it with an adjusted snapshot, preserve that snapshot. Log the MTOP outcome and automation closure at `INFO`, while unrelated business failures remain errors.
+
 ## Scenario: buyer-message defaults for external dynamic pricing
 
 ### 1. Scope / Trigger

@@ -728,8 +728,8 @@ func TestAutomation_NoRetryFailureIsNotRecovered(t *testing.T) {
 	}
 }
 
-// TestAutomationExternalWaitUsesLongBackoff 验证旧等待记录可跨过普通三次上限恢复，并按长退避策略持续到约两小时后转人工处理。
-func TestAutomationExternalWaitUsesLongBackoff(t *testing.T) {
+// TestAutomationExternalWaitUsesProgressiveBackoff 验证旧等待记录可跨过普通三次上限恢复，并按秒级起步的渐进退避持续轮询原单。
+func TestAutomationExternalWaitUsesProgressiveBackoff(t *testing.T) {
 	// store、cleanup 是本测试隔离使用的 SQLite 数据库及释放函数。
 	store, cleanup := newTestDB(t)
 	defer cleanup()
@@ -772,16 +772,16 @@ func TestAutomationExternalWaitUsesLongBackoff(t *testing.T) {
 	if getErr != nil || run.AttemptCount != 4 {
 		t.Fatalf("外部查单尝试版本错误: run=%+v err=%v", run, getErr)
 	}
-	// beforeFinish 用来验证第四次等待后的五分钟退避窗口。
+	// beforeFinish 用来验证第四次等待后的三十秒退避窗口。
 	beforeFinish := time.Now().UTC()
 	if finishErr := store.Automation.FinishRun(ctx, runID, run.AttemptCount, "failed", 0, ExternalWaitErrorPrefix+"waiting"); finishErr != nil { // finishErr 是第四次等待状态收口错误。
 		t.Fatal(finishErr)
 	}
 	run, getErr = store.Automation.GetRun(ctx, runID)
-	if getErr != nil || run.NextRetryAt < beforeFinish.Add(5*time.Minute).Unix() || run.NextRetryAt > beforeFinish.Add(5*time.Minute+5*time.Second).Unix() {
+	if getErr != nil || run.NextRetryAt < beforeFinish.Add(30*time.Second).Unix() || run.NextRetryAt > beforeFinish.Add(35*time.Second).Unix() {
 		t.Fatalf("外部等待退避时间错误: run=%+v err=%v", run, getErr)
 	}
-	// maxMessage 是达到约两小时上限后的最终等待原因。
+	// maxMessage 是达到渐进轮询上限后的最终等待原因。
 	maxMessage := ExternalWaitErrorPrefix + "外部货源订单当前状态为 processing"
 	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET status='running',attempt_count=?,next_retry_at=0,error_message='' WHERE id=?`, externalWaitMaxAttempts, runID); updateErr != nil { // updateErr 是最大尝试次数造数错误。
 		t.Fatal(updateErr)
@@ -796,12 +796,12 @@ func TestAutomationExternalWaitUsesLongBackoff(t *testing.T) {
 	}
 }
 
-// TestExternalWaitRetryDelay 验证供应站轮询退避序列为一、二、三、五、十分钟并在后续保持十分钟。
+// TestExternalWaitRetryDelay 验证供应站轮询从五秒开始逐渐退避，并在后续保持十分钟。
 func TestExternalWaitRetryDelay(t *testing.T) {
 	// attempts 是依次完成的供应站查单次数。
-	attempts := []int{1, 2, 3, 4, 5, 16}
+	attempts := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 16}
 	// expected 是每个查单次数对应的下一次等待时间。
-	expected := []time.Duration{time.Minute, 2 * time.Minute, 3 * time.Minute, 5 * time.Minute, 10 * time.Minute, 10 * time.Minute}
+	expected := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 3 * time.Minute, 5 * time.Minute, 10 * time.Minute, 10 * time.Minute}
 	for index, attempt := range attempts { // index、attempt 是当前退避样例下标和已完成查单次数。
 		if delay := externalWaitRetryDelay(attempt); delay != expected[index] { // delay 是生产退避函数返回的时间间隔。
 			t.Fatalf("attempt=%d delay=%s want=%s", attempt, delay, expected[index])

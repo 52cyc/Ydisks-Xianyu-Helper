@@ -26,6 +26,9 @@ const defaultExternalListingQuoteInterval = 500 * time.Millisecond
 // defaultDeferredTaskScanInterval 是持久化延迟动作的轮询周期，保证秒级动作不会被分钟级业务扫描额外延后。
 const defaultDeferredTaskScanInterval = time.Second
 
+// defaultRecoveryTaskScanInterval 是外部履约等待等恢复任务的独立扫描周期，使五秒级查单不受综合扫描耗时影响。
+const defaultRecoveryTaskScanInterval = 5 * time.Second
+
 // legacySchedulerWaitTimeout 是兼容无 Context 等待入口的最长收束预算。
 const legacySchedulerWaitTimeout = 10 * time.Second
 
@@ -58,10 +61,12 @@ const pendingShipResumeMaxAttempts = 5
 type Scheduler struct {
 	// center 是调度器唯一使用的自动化中心，负责实际执行延迟、恢复和求评价任务。
 	center *Center
-	// interval 是账号任务、恢复任务和求评价任务的分钟级扫描周期。
+	// interval 是账号任务和求评价任务的分钟级综合扫描周期。
 	interval time.Duration
 	// deferredInterval 是已持久化延迟动作的秒级扫描周期，不影响其他计划任务的扫描频率。
 	deferredInterval time.Duration
+	// recoveryInterval 是恢复任务的独立扫描周期；外部履约 waiting/processing 依靠它进行秒级原单查询。
+	recoveryInterval time.Duration
 	// runOnce 保证一个调度器实例只启动一个由调用方 Context 管理的循环。
 	runOnce sync.Once
 	// done 在调度循环退出后关闭，供关闭流程等待全部调度工作停止。
@@ -86,6 +91,7 @@ func NewScheduler(center *Center) *Scheduler {
 		center:                       center,
 		interval:                     defaultReviewRequestScanInterval,
 		deferredInterval:             defaultDeferredTaskScanInterval,
+		recoveryInterval:             defaultRecoveryTaskScanInterval,
 		externalListingQuoteInterval: defaultExternalListingQuoteInterval,
 		done:                         make(chan struct{}),
 		pendingShipCooldown:          make(map[string]time.Time),
@@ -106,7 +112,17 @@ func (s *Scheduler) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// generalTicker 驱动分钟级的账号、恢复与求评价扫描。
+		// recoveryDone 在独立恢复循环退出后关闭，保证 Run 返回前没有遗留数据库或货源请求。
+		recoveryDone := make(chan struct{})
+		// 恢复循环由当前 Run 独占创建，使用同一 Context 停止，并在当前函数退出前完成 Join。
+		go func() {
+			defer close(recoveryDone)
+			s.runRecoveryLoop(ctx)
+		}()
+		defer func() {
+			<-recoveryDone
+		}()
+		// generalTicker 驱动分钟级的账号和求评价综合扫描。
 		generalTicker := time.NewTicker(s.interval)
 		defer generalTicker.Stop()
 		// deferredTicker 只领取已到期的延迟动作，确保配置的秒数不会额外等待一分钟。
@@ -169,12 +185,6 @@ func (s *Scheduler) scan(ctx context.Context) {
 		s.center.logger.Warn("恢复历史外部货源等待任务失败", "err", recoverExternalErr)
 	} else if recoveredExternal > 0 {
 		s.center.logger.Info("已恢复历史外部货源等待任务，继续按原单号轮询", "count", recoveredExternal)
-	}
-	// recoveryErr 汇总恢复运行状态收口失败，避免数据库写错误只记录日志后丢失。
-	recoveryErr := s.runRecoveryTasks(ctx)
-	if recoveryErr != nil {
-		// 单独记录恢复任务状态收口错误，延迟任务由秒级扫描函数独立记录。
-		s.center.logger.Error("自动化恢复任务状态收口失败", "err", recoveryErr)
 	}
 	// 逐页执行，避免把所有到期订单一次性装入内存。稳定 ID 游标确保本轮有界。
 	afterOrderID := ""
@@ -416,6 +426,36 @@ func (s *Scheduler) scanDeferredTasks(ctx context.Context) {
 	deferredErr := s.runDeferredTasks(ctx)
 	if deferredErr != nil {
 		s.center.logger.Error("自动化延迟任务状态收口失败", "err", deferredErr)
+	}
+}
+
+// runRecoveryLoop 独立扫描到期恢复运行；调用方拥有 goroutine，并通过 ctx 取消及 recoveryDone 等待退出。
+func (s *Scheduler) runRecoveryLoop(ctx context.Context) {
+	// interval 是当前调度器的恢复扫描周期；零值仅用于兼容手工构造的测试实例。
+	interval := s.recoveryInterval
+	if interval <= 0 {
+		interval = defaultRecoveryTaskScanInterval
+	}
+	// recoveryTicker 每轮只发现已经达到 next_retry_at 的运行，实际领取仍由数据库原子条件保护。
+	recoveryTicker := time.NewTicker(interval)
+	defer recoveryTicker.Stop()
+	s.scanRecoveryTasks(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-recoveryTicker.C:
+			s.scanRecoveryTasks(ctx)
+		}
+	}
+}
+
+// scanRecoveryTasks 领取并重放已到期恢复运行，错误独立记录而不阻塞分钟级综合扫描。
+func (s *Scheduler) scanRecoveryTasks(ctx context.Context) {
+	// recoveryErr 汇总恢复运行状态收口失败，避免数据库写错误被静默丢失。
+	recoveryErr := s.runRecoveryTasks(ctx)
+	if recoveryErr != nil {
+		s.center.logger.Error("自动化恢复任务状态收口失败", "err", recoveryErr)
 	}
 }
 

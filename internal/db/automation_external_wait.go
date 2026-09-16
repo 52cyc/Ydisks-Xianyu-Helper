@@ -18,19 +18,27 @@ const NoRetryErrorPrefix = "[no_retry]"
 // ExternalWaitErrorPrefix 标记供应站已经受理但尚未完成的履约订单；该状态按长退避策略查原单，不占用普通三次失败上限。
 const ExternalWaitErrorPrefix = "[external_wait]"
 
-// externalWaitMaxAttempts 是外部履约等待的最大查单尝试版本；配合退避序列可覆盖约两小时，超过后进入人工处理。
+// externalWaitMaxAttempts 是外部履约等待的最大查单尝试版本；配合退避序列可覆盖约九十分钟，超过后进入人工处理。
 const externalWaitMaxAttempts = 17
 
 // externalWaitRetryDelay 根据已经完成的查单次数返回下一次查询间隔，逐步降低对供应站的请求压力。
 func externalWaitRetryDelay(attempt int) time.Duration {
 	switch attempt {
 	case 1:
-		return time.Minute
+		return 5 * time.Second
 	case 2:
-		return 2 * time.Minute
+		return 10 * time.Second
 	case 3:
-		return 3 * time.Minute
+		return 20 * time.Second
 	case 4:
+		return 30 * time.Second
+	case 5:
+		return time.Minute
+	case 6:
+		return 2 * time.Minute
+	case 7:
+		return 3 * time.Minute
+	case 8:
 		return 5 * time.Minute
 	default:
 		return 10 * time.Minute

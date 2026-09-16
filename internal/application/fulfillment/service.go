@@ -154,29 +154,40 @@ func (service *Service) DeleteMapping(ctx context.Context, userID, mappingID int
 
 // Purchase 先持久化幂等采购单，再请求远程站并保存返回状态。
 func (service *Service) Purchase(ctx context.Context, userID int64, request PurchaseRequest) (Order, error) {
+	// order、err 是兼容入口所需的订单和错误；HTTP 调用方不需要区分首次提交。
+	order, _, err := service.PurchaseWithSubmission(ctx, userID, request)
+	return order, err
+}
+
+// PurchaseWithSubmission 执行幂等采购，并向自动化调用方报告本次是否首次进入远程采购流程。
+// submitted 表示本次调用首次创建本地幂等订单并进入远程采购流程；调用方据此把首次查单延后到恢复扫描。
+// order 是当前已落库的履约状态，err 是采购受理或本地持久化失败原因。
+func (service *Service) PurchaseWithSubmission(ctx context.Context, userID int64, request PurchaseRequest) (order Order, submitted bool, err error) {
 	if request.InstanceID <= 0 || request.RemoteGoodsID <= 0 || request.Quantity <= 0 || strings.TrimSpace(request.ExternalOrderNo) == "" {
-		return Order{}, errors.New("采购请求缺少实例、商品、数量或外部订单号")
+		return Order{}, false, errors.New("采购请求缺少实例、商品、数量或外部订单号")
 	}
 	// localOrder 是远程请求前创建的幂等采购记录。
 	localOrder, created, err := service.repository.CreateOrder(ctx, userID, request)
 	if err != nil {
-		return Order{}, err
+		return Order{}, false, err
 	}
 	if !created {
-		return localOrder, nil
+		return localOrder, false, nil
 	}
 	// instance 是发起采购请求所需的货源实例秘钥视图。
 	instance, err := service.repository.GetInstance(ctx, userID, request.InstanceID, true)
 	if err != nil {
-		return localOrder, err
+		return localOrder, true, err
 	}
 	// remoteOrder 是远程站接受采购后的当前状态。
 	remoteOrder, err := service.gateway.Buy(ctx, instance, request)
 	if err != nil {
 		_ = service.repository.RecordOrderError(ctx, userID, request.ExternalOrderNo, err.Error())
-		return localOrder, fmt.Errorf("远程下单结果未确认，请使用原外部订单号查询: %w", err)
+		return localOrder, true, fmt.Errorf("远程下单结果未确认，请使用原外部订单号查询: %w", err)
 	}
-	return service.repository.ApplyRemoteOrder(ctx, userID, request.InstanceID, request.ExternalOrderNo, remoteOrder)
+	// appliedOrder 是远程受理状态持久化后的订单；applyErr 表示本地收口错误。
+	appliedOrder, applyErr := service.repository.ApplyRemoteOrder(ctx, userID, request.InstanceID, request.ExternalOrderNo, remoteOrder)
+	return appliedOrder, true, applyErr
 }
 
 // RefreshOrder 使用原外部订单号查询远程状态，绝不产生第二笔采购。
@@ -197,30 +208,6 @@ func (service *Service) RefreshOrder(ctx context.Context, userID int64, external
 		if !errors.Is(err, ErrNotFound) {
 			_ = service.repository.RecordOrderError(ctx, userID, localOrder.ExternalOrderNo, err.Error())
 		}
-		return localOrder, err
-	}
-	return service.repository.ApplyRemoteOrder(ctx, userID, localOrder.InstanceID, localOrder.ExternalOrderNo, remoteOrder)
-}
-
-// RetryPurchaseAfterNotFound 在原外部单号明确查无订单后，使用完全相同的幂等键重新提交采购。
-func (service *Service) RetryPurchaseAfterNotFound(ctx context.Context, userID int64, request PurchaseRequest) (Order, error) {
-	// localOrder 是第一次提交前已经创建的本地幂等记录。
-	localOrder, err := service.repository.GetOrder(ctx, userID, strings.TrimSpace(request.ExternalOrderNo))
-	if err != nil {
-		return Order{}, err
-	}
-	if localOrder.InstanceID != request.InstanceID || localOrder.RemoteGoodsID != request.RemoteGoodsID || localOrder.Quantity != request.Quantity {
-		return localOrder, errors.New("原外部订单号对应的采购参数不一致")
-	}
-	// instance 是重新提交时使用的同一货源实例密钥视图。
-	instance, err := service.repository.GetInstance(ctx, userID, localOrder.InstanceID, true)
-	if err != nil {
-		return localOrder, err
-	}
-	// remoteOrder 是供应站对同一外部单号的重新提交结果。
-	remoteOrder, err := service.gateway.Buy(ctx, instance, request)
-	if err != nil {
-		_ = service.repository.RecordOrderError(ctx, userID, localOrder.ExternalOrderNo, err.Error())
 		return localOrder, err
 	}
 	return service.repository.ApplyRemoteOrder(ctx, userID, localOrder.InstanceID, localOrder.ExternalOrderNo, remoteOrder)

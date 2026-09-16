@@ -441,7 +441,7 @@ func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Error("MTOP 响应失败", "api", api, "category", string(kind), "http_status", status, "ret", formatMTopRet(ret), "detail", sanitizeMTopText(detail))
+	logMTopResponseFailure(logger, api, kind, status, ret, detail)
 	return failure
 }
 

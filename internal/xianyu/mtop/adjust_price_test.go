@@ -1,10 +1,12 @@
 package mtop
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +101,27 @@ func TestAdjustOrderPriceBizFailure(t *testing.T) {
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("requests=%d want 1", requests.Load())
+	}
+}
+
+// TestAdjustOrderPriceNaturallyClosedUsesInfoLog 验证订单已经付款导致不可改价时保留业务错误分类，但只记录正常收口日志。
+func TestAdjustOrderPriceNaturallyClosedUsesInfoLog(t *testing.T) {
+	// server 是返回订单状态已不支持改价的本地 MTOP 端点。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ret":["FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价||当前订单状态不支持改价"],"data":{}}`)
+	}))
+	defer server.Close()
+	// logs 收集本次 MTOP 分类日志，供断言日志等级。
+	var logs bytes.Buffer
+	// client 使用本地端点和可观察文本日志器。
+	client := &ClientImpl{HTTPClient: server.Client(), AdjustPriceURL: server.URL + "/", Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	// ok、adjustErr 是平台业务成功标记和结构化自然结束错误。
+	ok, _, _, adjustErr := client.AdjustOrderPriceContext(context.Background(), adjustPriceCookies, "paid-order", 990)
+	if ok || !IsAdjustPriceNaturallyClosed(adjustErr) {
+		t.Fatalf("ok=%v err=%v", ok, adjustErr)
+	}
+	if !strings.Contains(logs.String(), "level=INFO") || strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "改价流程自然收口") {
+		t.Fatalf("unexpected logs: %s", logs.String())
 	}
 }
 

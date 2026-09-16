@@ -158,13 +158,13 @@ func TestPurchaseDoesNotRepeatRemoteBuyAfterUnknownResult(t *testing.T) {
 	// request 是两次调用共用的稳定采购参数。
 	request := PurchaseRequest{InstanceID: 8, ExternalOrderNo: "XY-STABLE", RemoteGoodsID: 9, Quantity: 1}
 	if // purchaseErr 是第一次远程结果未知错误。
-	_, purchaseErr := service.Purchase(context.Background(), 1, request); purchaseErr == nil {
+	_, submitted, purchaseErr := service.PurchaseWithSubmission(context.Background(), 1, request); purchaseErr == nil || !submitted {
 		t.Fatal("first unknown remote result should be reported")
 	}
 	// secondOrder 是重试时返回的原本地订单。
-	secondOrder, err := service.Purchase(context.Background(), 1, request)
-	if err != nil || secondOrder.ExternalOrderNo != request.ExternalOrderNo || gateway.buyCalls != 1 {
-		t.Fatalf("second=%+v calls=%d err=%v", secondOrder, gateway.buyCalls, err)
+	secondOrder, submitted, err := service.PurchaseWithSubmission(context.Background(), 1, request)
+	if err != nil || submitted || secondOrder.ExternalOrderNo != request.ExternalOrderNo || gateway.buyCalls != 1 {
+		t.Fatalf("second=%+v submitted=%v calls=%d err=%v", secondOrder, submitted, gateway.buyCalls, err)
 	}
 }
 

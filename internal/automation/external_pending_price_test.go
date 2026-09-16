@@ -4,9 +4,66 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"xianyu-go/internal/db"
 )
+
+// TestExternalPendingPriceNaturallyEndsWhenPaidFlowTakesOver 验证付款流程并发接管报价后，待付款改价不再报“报价已经收口”。
+func TestExternalPendingPriceNaturallyEndsWhenPaidFlowTakesOver(t *testing.T) {
+	useFastAdjustPriceInitialDelay(t)
+	// store、cleanup 提供隔离数据库和释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是报价创建、并发替换和状态检查共用的上下文。
+	ctx := context.Background()
+	// adjustStarted、adjustRelease 分别通知改价已经开始和控制平台响应返回时机。
+	adjustStarted, adjustRelease := make(chan struct{}), make(chan struct{})
+	// platform 在付款流程替换报价后返回订单状态已经不支持改价。
+	platform := &fakeMTop{adjustRet: []string{"FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价"}, adjustStarted: adjustStarted, adjustRelease: adjustRelease}
+	// center 是执行待付款动态跟价的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: platform})
+	// action 是本次报价对应的外部履约动作，非零 ID 满足报价持久化约束。
+	action := db.AutomationAction{ID: 91, ActionType: ActionSendCard, Enabled: true}
+	// actionQuote 是待付款流程准备持久化的实时成本和动态保护价快照。
+	actionQuote := pendingPriceActionQuote{action: action, config: externalActionConfig{SourceType: "external"}, unitCostCents: 280,
+		fulfillmentQuantity: 1, fixedMarkupCents: 50, minimumProfitCents: 20, unitTargetCents: 330}
+	// task 是即将被付款事件抢先推进状态的订单事实。
+	task := Task{AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "paid-takes-over", ItemID: "item"}
+	// resultErr 异步接收待付款改价的最终收口结果。
+	resultErr := make(chan error, 1)
+	// 改价调用阻塞期间模拟真实 order_paid 流程把 pending 报价替换为 adjusted 快照。
+	go func() {
+		resultErr <- center.persistAndApplyPendingPrice(ctx, task, db.AutomationRule{}, []pendingPriceActionQuote{actionQuote}, 330)
+	}()
+	select {
+	case <-adjustStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adjust price call did not start")
+	}
+	// paidQuote 是付款流程基于实付和实时成本写入的最终采购保护价快照。
+	paidQuote := db.ExternalPriceQuote{OrderID: task.OrderID, CookieID: task.AccountID, ActionID: action.ID, UnitCostCents: 280,
+		FulfillmentQuantity: 1, FixedMarkupCents: 50, TargetOrderCents: 330, DynamicSafePrice: "3.30", Status: "adjusted"}
+	if replaceErr := store.Automation.ReplaceExternalPriceQuotesAsAdjusted(ctx, []db.ExternalPriceQuote{paidQuote}); replaceErr != nil { // replaceErr 是付款流程接管报价失败的原因。
+		t.Fatal(replaceErr)
+	}
+	close(adjustRelease)
+	// naturalErr 是付款流程接管后待付款改价的最终返回，必须为空。
+	var naturalErr error
+	select {
+	case naturalErr = <-resultErr:
+		if naturalErr != nil {
+			t.Fatalf("paid takeover should naturally close repricing: %v", naturalErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("repricing did not finish after platform response")
+	}
+	// exists、status、stateErr 验证付款流程写入的 adjusted 快照未被自然结束分支覆盖。
+	exists, status, stateErr := store.Automation.ExternalPriceQuoteState(ctx, task.OrderID)
+	if stateErr != nil || !exists || status != "adjusted" {
+		t.Fatalf("exists=%v status=%q err=%v", exists, status, stateErr)
+	}
+}
 
 // TestParseExternalPriceMessageConfigUpgradesLegacyDefault 验证旧版默认引导会自动迁移为包含实时价格列表的新流程。
 func TestParseExternalPriceMessageConfigUpgradesLegacyDefault(t *testing.T) {

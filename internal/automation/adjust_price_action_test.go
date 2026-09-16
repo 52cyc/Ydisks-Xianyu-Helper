@@ -244,6 +244,32 @@ func TestAdjustOrderPriceActionRetriesTypedBusinessFailure(t *testing.T) {
 	}
 }
 
+// TestAdjustOrderPriceNaturallyEndsWhenOrderBecomesPaid 验证暂时不可改价后订单已付款时正常收口，不产生失败或恢复重试。
+func TestAdjustOrderPriceNaturallyEndsWhenOrderBecomesPaid(t *testing.T) {
+	// previousGap 保存生产重试间隔，测试结束后恢复全局配置。
+	previousGap := adjustPriceTransientRetryGap
+	adjustPriceTransientRetryGap = time.Millisecond
+	t.Cleanup(func() {
+		adjustPriceTransientRetryGap = previousGap
+	})
+	// store、cleanup 保存动作执行所需的隔离数据库及释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// fake 模拟第一次平台暂忙，第二次因买家已付款而明确不再支持改价。
+	fake := &fakeMTop{adjustResults: []fakeAdjustPriceResult{
+		{ret: []string{"FAIL_BIZ_CANNOT_MODIFY_FEE::暂无法修改价格，请稍后重试"}},
+		{ret: []string{"FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价||当前订单状态不支持改价"}},
+	}}
+	// center 是注入订单状态变化结果的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
+	// sent、adjustErr 是自然结束动作报告的外部结果数量和错误。
+	sent, adjustErr := center.executeAction(context.Background(), Task{AccountID: "cid", OrderID: "paid-during-reprice"},
+		db.AutomationAction{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"9.9"}`})
+	if adjustErr != nil || sent != 0 || fake.adjustCalls != 2 {
+		t.Fatalf("sent=%d calls=%d err=%v", sent, fake.adjustCalls, adjustErr)
+	}
+}
+
 // TestAdjustOrderPriceSystemFailureRemainsRetryable 验证 HTTP 成功信封中的 FAIL_SYS 错误不会被标记为永久业务拒绝或结果未知。
 func TestAdjustOrderPriceSystemFailureRemainsRetryable(t *testing.T) {
 	// store 和 cleanup 保存系统错误分类测试数据库及关闭责任。
@@ -341,8 +367,9 @@ func TestAdjustOrderPriceActionBizFailure(t *testing.T) {
 	}
 }
 
-// TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry 验证终态平台拒绝会收口为失败且不进入运行级恢复队列。
-func TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry(t *testing.T) {
+// TestAdjustOrderPriceClosedOrderCompletesWithoutRecovery 验证已付款等不可改价状态按成功自然收口且不进入恢复队列。
+func TestAdjustOrderPriceClosedOrderCompletesWithoutRecovery(t *testing.T) {
+	useFastAdjustPriceInitialDelay(t)
 	// store、cleanup 保存自动化运行状态测试数据库及其清理函数。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
@@ -370,15 +397,15 @@ func TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry(t *testing.T)
 	fake := &fakeMTop{adjustRet: []string{"FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价"}}
 	// center 保存注入终态业务拒绝客户端的自动化中心。
 	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
-	// runErr 保存首次运行返回的平台终态拒绝。
+	// runErr 保存首次运行的自然收口结果。
 	runErr := center.executeRule(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "terminal-order", ItemID: "item-terminal", ChatID: "chat-terminal", BuyerID: "buyer-terminal"}, *rule)
-	if runErr == nil || !strings.HasPrefix(runErr.Error(), db.NoRetryErrorPrefix) {
-		t.Fatalf("终态业务拒绝错误分类错误: %v", runErr)
+	if runErr != nil {
+		t.Fatalf("不可改价订单应自然结束: %v", runErr)
 	}
 	if fake.adjustCalls != 1 {
 		t.Fatalf("终态业务拒绝不应在本次运行内重复改价: calls=%d", fake.adjustCalls)
 	}
-	// status、errorMessage、nextRetryAt 保存运行终态、错误分类标记和下次恢复时间。
+	// status、errorMessage、nextRetryAt 保存运行终态、错误信息和下次恢复时间。
 	var status, errorMessage string
 	// nextRetryAt 保存运行记录的下次自动恢复时间；终态拒绝应保持为零。
 	var nextRetryAt int64
@@ -386,8 +413,8 @@ func TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry(t *testing.T)
 	if queryErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,next_retry_at FROM automation_runs WHERE order_id=?`, "terminal-order").Scan(&status, &errorMessage, &nextRetryAt); queryErr != nil {
 		t.Fatal(queryErr)
 	}
-	if status != "failed" || !strings.HasPrefix(errorMessage, db.NoRetryErrorPrefix) || nextRetryAt != 0 {
-		t.Fatalf("终态业务拒绝不应进入恢复队列: status=%q error=%q next_retry_at=%d", status, errorMessage, nextRetryAt)
+	if status != "success" || errorMessage != "" || nextRetryAt != 0 {
+		t.Fatalf("自然结束不应进入恢复队列: status=%q error=%q next_retry_at=%d", status, errorMessage, nextRetryAt)
 	}
 }
 
