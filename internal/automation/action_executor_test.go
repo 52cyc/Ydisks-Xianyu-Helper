@@ -96,6 +96,20 @@ type externalFulfillmentStub struct {
 	quoteErr error
 }
 
+// TestFormatNumberedDeliveryContent 验证单份交付保持原文，多份卡密按序号分行且空值不占序号。
+func TestFormatNumberedDeliveryContent(t *testing.T) {
+	// single 是单卡密原文格式化结果。
+	single := formatNumberedDeliveryContent([]string{"  ONLY-CODE  "})
+	if single != "ONLY-CODE" {
+		t.Fatalf("单份交付不应增加序号: %q", single)
+	}
+	// multiple 是包含空值和多行卡券的多份交付格式化结果。
+	multiple := formatNumberedDeliveryContent([]string{"CODE-1", " ", "卡号：NO-2\n卡密：PWD-2"})
+	if multiple != "卡密 1：CODE-1\n卡密 2：卡号：NO-2\n卡密：PWD-2" {
+		t.Fatalf("多份交付未按序号分行: %q", multiple)
+	}
+}
+
 // QuoteProduct 返回测试预置的实时商品价格，不创建采购请求。
 func (s *externalFulfillmentStub) QuoteProduct(_ context.Context, _ int64, _ int64, goodsID int64) (ExternalProductQuote, error) {
 	if product, exists := s.products[goodsID]; exists { // product 和 exists 是当前商品是否配置独立测试报价。
@@ -153,7 +167,7 @@ func TestSendExternalFulfillmentUsesStableOrderNumber(t *testing.T) {
 	if sendErr != nil || sent != 1 || len(sender.texts) != 2 || len(fulfillment.requests) != 1 {
 		t.Fatalf("外部卡密履约失败: sent=%d texts=%v requests=%+v err=%v", sent, sender.texts, fulfillment.requests, sendErr)
 	}
-	if sender.texts[0] != "亲，已收到您的订单XY-ORDER-9\n正在为您发货，请稍候～\n预计1-2分钟，发货成功会第一时间通知您，感谢耐心等待！" || sender.texts[1] != "订单 XY-ORDER-9 已完成\n交付内容：CODE-1\n\nCODE-2" {
+	if sender.texts[0] != "亲，已收到您的订单XY-ORDER-9\n正在为您发货，请稍候～\n预计1-2分钟，发货成功会第一时间通知您，感谢耐心等待！" || sender.texts[1] != "订单 XY-ORDER-9 已完成\n交付内容：卡密 1：CODE-1\n卡密 2：CODE-2" {
 		t.Fatalf("外部履约两条消息顺序或渲染错误: %q", sender.texts)
 	}
 	// request 是本次提交给供应商的采购参数。

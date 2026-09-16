@@ -108,6 +108,10 @@ func normalizeHeader(header string) string {
 		return "external_price_sync_enabled"
 	case "externalstoppurchaseoninversion":
 		return "external_stop_purchase_on_inversion"
+	case "clonesourceaccountid", "克隆源账号id":
+		return "clone_source_account_id"
+	case "clonesourceitemid", "克隆源商品id":
+		return "clone_source_item_id"
 	default:
 		return strings.TrimPrefix(strings.TrimSpace(header), "\uFEFF")
 	}

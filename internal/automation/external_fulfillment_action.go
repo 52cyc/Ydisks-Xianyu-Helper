@@ -192,8 +192,8 @@ func (e *automationActionExecutor) sendExternalFulfillmentWithProof(ctx context.
 	if len(messages) == 0 {
 		return actionExecutionResult{}, uncertainAction(errors.New("外部货源已成功但没有可发送的卡密或直充结果"))
 	}
-	// deliveryContent 保留货源返回的完整内容，多份卡券之间留空行便于买家阅读。
-	deliveryContent := strings.Join(messages, "\n\n")
+	// deliveryContent 保留货源返回的完整内容，多份卡券按序号分行避免卡密粘连。
+	deliveryContent := formatNumberedDeliveryContent(messages)
 	// successText 把真实交付内容和订单变量填入规则级第二条成功文案。
 	successText := renderExternalPriceMessage(messageConfig.SuccessNoticeText, task, "", "", itemTitle)
 	successText = strings.TrimSpace(strings.ReplaceAll(successText, "{delivery_content}", deliveryContent))
@@ -206,6 +206,26 @@ func (e *automationActionExecutor) sendExternalFulfillmentWithProof(ctx context.
 	// proof 必须使用买家实际收到的完整成功消息，确认发货和人工恢复都不能退回原始卡密文本。
 	proof := shipmentDeliveryProof{tradeText: successText}
 	return actionExecutionResult{sent: 1, proof: proof}, nil
+}
+
+// formatNumberedDeliveryContent 将多份文本卡密格式化为“卡密 1、卡密 2”的独立行，单份交付保持原文。
+func formatNumberedDeliveryContent(contents []string) string {
+	// normalized 保存去除首尾空白且排除空值后的交付内容。
+	normalized := make([]string, 0, len(contents))
+	for /* content 表示当前货源或模板变量返回的一份卡密文本。 */ _, content := range contents {
+		if trimmed := strings.TrimSpace(content); trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+	if len(normalized) <= 1 {
+		return strings.Join(normalized, "")
+	}
+	// lines 保存加上从 1 开始序号后的独立卡密行。
+	lines := make([]string, 0, len(normalized))
+	for /* index、content 分别表示卡密的零基下标和完整文本。 */ index, content := range normalized {
+		lines = append(lines, fmt.Sprintf("卡密 %d：%s", index+1, content))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sendExternalFulfillmentProcessingNotice 在采购前按规则和订单防重发送固定受理提示。

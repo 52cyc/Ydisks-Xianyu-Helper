@@ -68,6 +68,28 @@ func TestParseSheetAcceptsUTF8BOM(t *testing.T) {
 	}
 }
 
+// TestBatchPreviewCarriesCloneSource 验证账号间克隆的源商品双键会进入发布后自动化配置。
+func TestBatchPreviewCarriesCloneSource(t *testing.T) {
+	// parsed、parseErr 保存克隆 CSV 的归一化字段及解析错误。
+	parsed, parseErr := ParseSheet([]byte("账号ID,标题,价格,图片,克隆源账号ID,克隆源商品ID\ntarget,商品,9.9,https://img.example/a.jpg,source,source-item\n"), "clone.csv", 2)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	// service 是只允许目标账号通过归属校验的预检服务。
+	service, serviceErr := NewBatchPreviewService(batchPreviewOwnershipFake{cookieOwned: "target"}, batchPreviewImageFake{})
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	// rows、previewErr 保存克隆行预检结果及执行错误。
+	rows, previewErr := service.Preview(context.Background(), BatchPreviewInput{UserID: 1, Rows: parsed})
+	if previewErr != nil || len(rows) != 1 || len(rows[0].Errors) != 0 || rows[0].Automation.CloneSource == nil {
+		t.Fatalf("克隆源定位预检失败: rows=%+v err=%v", rows, previewErr)
+	}
+	if rows[0].Automation.CloneSource.CookieID != "source" || rows[0].Automation.CloneSource.ItemID != "source-item" {
+		t.Fatalf("克隆源定位丢失: %+v", rows[0].Automation.CloneSource)
+	}
+}
+
 // TestBatchPreviewAcceptsExternalCardDelivery 验证单规格卡密货源字段通过预检，直充类型被首版边界拒绝。
 func TestBatchPreviewAcceptsExternalCardDelivery(t *testing.T) {
 	// service 是使用确定账号归属和远程图片校验替身的预检服务。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	automationapp "xianyu-go/internal/application/automation"
@@ -61,12 +62,28 @@ func (repository *batchPublishedItemRepositoryFake) UpsertPublishedItem(_ contex
 type batchPublishRuleRepositoryFake struct {
 	// inputs 保存幂等规则写入请求。
 	inputs []automationapp.RuleInput
+	// sourceRules 保存克隆测试返回的源商品规则。
+	sourceRules []automationapp.Rule
+	// clonedSourceIDs 保存已请求幂等复制的源规则标识。
+	clonedSourceIDs []int64
 	// err 模拟规则写入失败。
 	err error
 }
 
 // EnsurePublishRule 记录规则请求并返回预置错误。
 func (repository *batchPublishRuleRepositoryFake) EnsurePublishRule(_ context.Context, input automationapp.RuleInput) error {
+	repository.inputs = append(repository.inputs, input)
+	return repository.err
+}
+
+// ListItemRules 返回预置的源商品规则快照。
+func (repository *batchPublishRuleRepositoryFake) ListItemRules(_ context.Context, _ int64, _, _ string) ([]automationapp.Rule, error) {
+	return append([]automationapp.Rule(nil), repository.sourceRules...), repository.err
+}
+
+// EnsureClonedPublishRule 记录克隆规则及其源规则标识。
+func (repository *batchPublishRuleRepositoryFake) EnsureClonedPublishRule(_ context.Context, sourceRuleID int64, input automationapp.RuleInput) error {
+	repository.clonedSourceIDs = append(repository.clonedSourceIDs, sourceRuleID)
 	repository.inputs = append(repository.inputs, input)
 	return repository.err
 }
@@ -136,6 +153,35 @@ func TestBatchLocalPublishServiceCreatesExternalFulfillmentRule(t *testing.T) {
 	}
 	if ruleConfig["price_guidance_enabled"] != true || ruleConfig["price_adjusted_notice_enabled"] != true {
 		t.Fatalf("批量货源规则未默认开启买家通知: %#v", ruleConfig)
+	}
+}
+
+// TestBatchLocalPublishServiceClonesAllItemRules 验证账号间克隆会复制源商品的全部规则、动作和开关。
+func TestBatchLocalPublishServiceClonesAllItemRules(t *testing.T) {
+	// enabled 表示源动作的启用状态仅用于构造快照。
+	enabled := true
+	// ruleRepository 保存两条具有不同触发类型的源商品规则。
+	ruleRepository := &batchPublishRuleRepositoryFake{sourceRules: []automationapp.Rule{
+		{ID: 11, Name: "付款后自动发货", TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 20, ConfigJSON: `{"notice":true}`, SKUMigrationStatus: "ready", Actions: []automationapp.Action{{ID: 101, ActionType: automationapp.ActionSendCard, CardID: 7, DeliveryCount: 2, Enabled: enabled, SortOrder: 1}}},
+		{ID: 12, Name: "评价后赠品", TriggerType: automationapp.TriggerBuyerReviewed, Enabled: false, Priority: 30, ConfigJSON: `{}`, Actions: []automationapp.Action{{ID: 102, ActionType: automationapp.ActionSendText, MessageTemplate: "谢谢", Enabled: enabled, SortOrder: 1}}},
+	}}
+	// service 是具有有效租约和规则克隆端口的本地收口服务。
+	service, serviceErr := NewBatchLocalPublishService(&batchCompletionRepositoryFake{}, &batchPublishedItemRepositoryFake{}, ruleRepository)
+	if serviceErr != nil {
+		t.Fatal(serviceErr)
+	}
+	// cloneErr 是克隆配置转换为目标商品规则的结果。
+	cloneErr := service.EnsureAutomationRules(context.Background(), 9, BatchRow{CookieID: "target-account", AutomationJSON: `{"clone_source":{"cookie_id":"source-account","item_id":"source-item"}}`}, &BatchPublishResult{ItemID: "target-item"})
+	if cloneErr != nil || len(ruleRepository.inputs) != 2 || len(ruleRepository.clonedSourceIDs) != 2 {
+		t.Fatalf("克隆规则数量异常: err=%v inputs=%+v source_ids=%v", cloneErr, ruleRepository.inputs, ruleRepository.clonedSourceIDs)
+	}
+	// first、second 分别是目标商品的付款和评价规则。
+	first, second := ruleRepository.inputs[0], ruleRepository.inputs[1]
+	if first.CookieID != "target-account" || first.ItemID != "target-item" || first.Actions[0].ID != 0 || first.Actions[0].CardID != 7 || !strings.Contains(first.ConfigJSON, `"clone_source_rule_id":11`) {
+		t.Fatalf("首条克隆规则不完整: %+v", first)
+	}
+	if second.Enabled || second.Priority != 30 || second.Actions[0].MessageTemplate != "谢谢" || ruleRepository.clonedSourceIDs[1] != 12 {
+		t.Fatalf("第二条克隆规则未保留开关与动作: %+v", second)
 	}
 }
 

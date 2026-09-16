@@ -25,7 +25,7 @@ func TestBatchLocalPublishCoversConstructionAndInputGuards(t *testing.T) {
 		// item 是本地商品端口。
 		item BatchPublishedItemRepository
 		// rule 是规则端口。
-		rule automationapp.PublishRuleRepository
+		rule automationapp.PublishRuleCloneRepository
 	}{
 		{name: "completion", completion: nil, item: itemRepository, rule: ruleRepository},
 		{name: "item", completion: completionRepository, item: nil, rule: ruleRepository},

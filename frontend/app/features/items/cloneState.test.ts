@@ -31,7 +31,7 @@ describe('商品跨账号克隆数据', /* cloneStateSuite 验证克隆资格和
   test('生成目标账号批量预检 CSV 并正确转义内容', /* csvTest 验证克隆快照不会被逗号和换行破坏。 */ () => {
     // csv 是发送给现有批量预检接口的商品快照。
     const csv = buildItemCloneCSV([cloneableItem], 'target-account');
-    expect(csv).toContain('"target-account","课程,资料","第一行\n第二行","1299.00","1","free","https://example.com/item.jpg"');
-    expect(csv.split('\n')[0]).toBe('"账号ID","标题","描述","价格","库存","邮费模式","图片"');
+    expect(csv).toContain('"target-account","课程,资料","第一行\n第二行","1299.00","1","free","https://example.com/item.jpg","source-account","item-1"');
+    expect(csv.split('\n')[0]).toBe('"账号ID","标题","描述","价格","库存","邮费模式","图片","克隆源账号ID","克隆源商品ID"');
   });
 });

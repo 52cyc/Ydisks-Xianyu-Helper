@@ -73,6 +73,14 @@ type BatchPreviewReviewRequest struct {
 	DelaySeconds int `json:"delay_seconds"`
 }
 
+// BatchPreviewCloneSource 保存账号间克隆的源商品定位信息，只用于发布成功后复制关联规则。
+type BatchPreviewCloneSource struct {
+	// CookieID 是源商品所属的闲鱼账号标识。
+	CookieID string `json:"cookie_id"`
+	// ItemID 是源闲鱼商品标识，克隆时只查询精确绑定该商品的规则。
+	ItemID string `json:"item_id"`
+}
+
 // BatchPreviewAutomation 是发布后自动化配置。
 type BatchPreviewAutomation struct {
 	// PaidDelivery 是付款后自动发货配置。
@@ -83,6 +91,8 @@ type BatchPreviewAutomation struct {
 	ReviewRequest BatchPreviewReviewRequest `json:"review_request"`
 	// ExternalDelivery 是付款后按远程商品 ID 自动采购并发货的配置。
 	ExternalDelivery BatchPreviewExternalDelivery `json:"external_delivery"`
+	// CloneSource 在账号间克隆时携带源商品定位，普通批量发布不写入该字段。
+	CloneSource *BatchPreviewCloneSource `json:"clone_source,omitempty"`
 }
 
 // BatchPreviewRow 是表格一行经归一化和校验后的应用模型。
@@ -235,6 +245,13 @@ func (service *BatchPreviewService) parseRow(ctx context.Context, input BatchPre
 	row.Quantity = parseIntDefault(firstString(fields, "quantity", "库存", "数量"), 1)
 	row.Category = parseCategory(fields, input.FallbackCategory)
 	row.Automation = parseAutomation(fields)
+	if row.Automation.CloneSource != nil {
+		if row.Automation.CloneSource.CookieID == "" || row.Automation.CloneSource.ItemID == "" {
+			row.Errors = append(row.Errors, "克隆源账号和源商品必须同时提供")
+		} else if row.Automation.CloneSource.CookieID == row.CookieID {
+			row.Errors = append(row.Errors, "克隆源账号不能与目标账号相同")
+		}
+	}
 	row.Images = splitImageReferences(firstString(fields, "images", "image", "图片", "商品图片"))
 	if hasCategoryFields(fields) && (row.Category.CatID == "" || row.Category.CatName == "" || row.Category.ChannelCatID == "") {
 		row.Errors = append(row.Errors, "指定行类目时必须同时填写类目ID、类目名称和频道类目ID")
@@ -651,26 +668,6 @@ func parseCategory(fields map[string]any, fallback BatchPreviewCategory) BatchPr
 // hasCategoryFields 判断原始行是否显式提供了类目字段。
 func hasCategoryFields(fields map[string]any) bool {
 	return firstString(fields, "category_id", "类目ID", "商品类目ID") != "" || firstString(fields, "category_name", "类目名称", "商品类目名称", "类目") != "" || firstString(fields, "channel_category_id", "频道类目ID") != "" || firstString(fields, "tb_category_id", "淘宝类目ID") != ""
-}
-
-// parseAutomation 解析表格中的自动化配置文本。
-func parseAutomation(fields map[string]any) BatchPreviewAutomation {
-	// paidActions 和 paidError 表示付款发货动作及解析错误。
-	paidActions, paidError := parseCardActions(firstString(fields, "paid_delivery_contents", "付款发货内容"))
-	// reviewActions 和 reviewError 表示评价赠品动作及解析错误。
-	reviewActions, reviewError := parseCardActions(firstString(fields, "review_gift_contents", "评价赠品内容"))
-	return BatchPreviewAutomation{
-		PaidDelivery:  BatchPreviewCardAutomation{Enabled: parseBool(firstString(fields, "paid_delivery_enabled", "付款发货启用")), Actions: paidActions, ParseError: paidError},
-		ReviewGift:    BatchPreviewCardAutomation{Enabled: parseBool(firstString(fields, "review_gift_enabled", "评价赠品启用")), Actions: reviewActions, ParseError: reviewError},
-		ReviewRequest: BatchPreviewReviewRequest{Enabled: parseBool(firstString(fields, "review_request_enabled", "求评价启用")), AfterShippedHours: parseIntDefault(firstString(fields, "review_request_after_hours", "求评价等待小时"), 72), Message: firstString(fields, "review_request_message", "求评价文案"), MaxAttempts: parseIntDefault(firstString(fields, "review_request_max_attempts", "求评价最多次数"), 1), DelaySeconds: parseIntDefault(firstString(fields, "review_request_delay_seconds", "求评价延迟秒"), 0)},
-		ExternalDelivery: BatchPreviewExternalDelivery{
-			Enabled: parseBool(firstString(fields, "external_delivery_enabled")), InstanceID: int64(parseIntDefault(firstString(fields, "external_instance_id"), 0)),
-			GoodsID: int64(parseIntDefault(firstString(fields, "external_goods_id"), 0)), GoodsName: firstString(fields, "external_goods_name"),
-			GoodsType: parseIntDefault(firstString(fields, "external_goods_type"), 0), DeliveryCount: parseIntDefault(firstString(fields, "external_delivery_count"), 1), SafePrice: firstString(fields, "external_safe_price"),
-			ProfitRate: firstString(fields, "external_profit_rate"), PriceSyncEnabled: parseBool(firstString(fields, "external_price_sync_enabled")),
-			StopPurchaseOnInversion: parseBool(firstString(fields, "external_stop_purchase_on_inversion")),
-		},
-	}
 }
 
 // parseCardActions 解析卡券组 ID、数量和延迟秒组成的动作文本。

@@ -34,7 +34,7 @@ const escapeCloneCSVCell = (value: string | number): string => `"${String(value)
 // buildItemCloneCSV 将已勾选商品转换为现有批量铺货预检能够直接读取的 CSV。
 export const buildItemCloneCSV = (items: Item[], targetAccountID: string): string => {
   // headers 是克隆所需的最小批量发布字段集合。
-  const headers = ['账号ID', '标题', '描述', '价格', '库存', '邮费模式', '图片'];
+  const headers = ['账号ID', '标题', '描述', '价格', '库存', '邮费模式', '图片', '克隆源账号ID', '克隆源商品ID'];
   // rows 将目标账号和源商品快照组合为待预检行。
   const rows = items.map(/* rowMapper 将一件源商品映射为目标账号的发布行。 */ item => [
     targetAccountID,
@@ -44,6 +44,8 @@ export const buildItemCloneCSV = (items: Item[], targetAccountID: string): strin
     1,
     'free',
     String(item.item_image || '').trim(),
+    String(item.cookie_id || '').trim(),
+    String(item.item_id || '').trim(),
   ]);
   return [headers, ...rows]
     .map(/* csvRowMapper 转义并连接当前 CSV 行。 */ row => row.map(/* csvCellMapper 转义当前 CSV 单元格。 */ escapeCloneCSVCell).join(','))

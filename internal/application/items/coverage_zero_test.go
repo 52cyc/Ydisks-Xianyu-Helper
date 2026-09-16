@@ -74,6 +74,7 @@ func TestBatchPreviewFieldNormalization(t *testing.T) {
 		"图片": "images", "类目ID": "category_id", "类目": "category_name", "频道类目ID": "channel_category_id", "淘宝类目ID": "tb_category_id",
 		"付款后自动发货": "paid_delivery_enabled", "付款后发送的卡密": "paid_delivery_contents", "评价后发送赠品": "review_gift_enabled", "评价后发送的卡密": "review_gift_contents",
 		"超时未评价时提醒": "review_request_enabled", "发货几小时后提醒": "review_request_after_hours", "提醒内容": "review_request_message", "最多提醒几次": "review_request_max_attempts", "求评价延迟秒": "review_request_delay_seconds",
+		"克隆源账号ID": "clone_source_account_id", "克隆源商品ID": "clone_source_item_id",
 	}
 	// alias、want 表示当前遍历中的表头别名及稳定字段名。
 	for alias, want := range aliases {

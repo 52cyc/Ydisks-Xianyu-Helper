@@ -8,6 +8,15 @@ type PublishRuleRepository interface {
 	EnsurePublishRule(ctx context.Context, input RuleInput) error
 }
 
+// PublishRuleCloneRepository 在普通发布规则幂等写入之上，提供账号间商品克隆所需的精确规则快照。
+type PublishRuleCloneRepository interface {
+	PublishRuleRepository
+	// ListItemRules 返回当前用户下精确绑定指定账号和商品的规则，不包含账号通用规则。
+	ListItemRules(ctx context.Context, userID int64, cookieID, itemID string) ([]Rule, error)
+	// EnsureClonedPublishRule 按源规则标识幂等创建目标商品规则，批次恢复时不得重复写入。
+	EnsureClonedPublishRule(ctx context.Context, sourceRuleID int64, input RuleInput) error
+}
+
 // PublishRuleService 编排发布成功后的自动化规则幂等准备，不依赖 HTTP 或数据库模型。
 type PublishRuleService struct {
 	// repository 保存调用方注入的发布自动化规则持久化端口。

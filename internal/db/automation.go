@@ -164,8 +164,10 @@ type AutomationRuleInput struct {
 
 // AutomationRuleListFilter 是自动化规则列表的筛选和分页条件。
 type AutomationRuleListFilter struct {
-	UserID      int64
-	CookieID    string
+	UserID   int64
+	CookieID string
+	// ItemID 是仅供应用仓储执行精确商品绑定查询的可选条件。
+	ItemID      string
 	TriggerType string
 	Enabled     *bool
 	Search      string
@@ -182,6 +184,10 @@ func automationRuleWhere(f AutomationRuleListFilter) (string, []any) {
 	if f.CookieID != "" {
 		where = append(where, "r.cookie_id=?")
 		args = append(args, f.CookieID)
+	}
+	if f.ItemID != "" {
+		where = append(where, "r.item_id=?")
+		args = append(args, f.ItemID)
 	}
 	if f.TriggerType != "" {
 		where = append(where, "r.trigger_type=?")

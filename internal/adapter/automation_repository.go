@@ -150,6 +150,48 @@ func (r *AutomationRepository) EnsurePublishRule(ctx context.Context, input auto
 	return err
 }
 
+// ListItemRules 返回用户范围内精确绑定指定账号和商品的规则，不将账号通用规则混入克隆结果。
+func (r *AutomationRepository) ListItemRules(ctx context.Context, userID int64, cookieID, itemID string) ([]automationapp.Rule, error) {
+	// rules、err 保存按用户、账号和商品双键查询的规则快照及错误。
+	rules, _, err := r.store.Automation.ListPageForUser(ctx, db.AutomationRuleListFilter{UserID: userID, CookieID: cookieID, ItemID: itemID})
+	if err != nil {
+		return nil, err
+	}
+	return automationRulesModel(rules), nil
+}
+
+// EnsureClonedPublishRule 使用目标商品规则中的源规则标识防重，然后创建一份不共享动作主键的规则。
+func (r *AutomationRepository) EnsureClonedPublishRule(ctx context.Context, sourceRuleID int64, input automationapp.RuleInput) error {
+	// rules、err 保存目标商品已有规则及查询错误，用于批次恢复防重。
+	rules, _, err := r.store.Automation.ListPageForUser(ctx, db.AutomationRuleListFilter{UserID: input.UserID, CookieID: input.CookieID, ItemID: input.ItemID})
+	if err != nil {
+		return err
+	}
+	for /* rule 表示目标用户下当前待检查的规则。 */ _, rule := range rules {
+		// metadata 只解析克隆防重字段，其他业务配置保持不透明。
+		var metadata struct {
+			// SourceRuleID 是生成该目标规则的源规则标识。
+			SourceRuleID int64 `json:"clone_source_rule_id"`
+		}
+		if json.Unmarshal([]byte(rule.ConfigJSON), &metadata) == nil && metadata.SourceRuleID == sourceRuleID {
+			return nil
+		}
+	}
+	if automationInputEnablesAdjustPrice(input) {
+		// aiEnabled、aiErr 用于防止目标账号的 AI 议价与克隆的固定改价规则同时启用。
+		aiEnabled, aiErr := r.store.AIReply.IsEnabled(ctx, input.CookieID)
+		if aiErr != nil {
+			return aiErr
+		}
+		if aiEnabled {
+			return automationapp.ErrPricingModeConflict
+		}
+	}
+	// createErr 保存克隆规则及独立动作的事务写入错误。
+	_, createErr := r.store.Automation.Create(ctx, automationRuleInputDB(input))
+	return mapAutomationRuleError(createErr)
+}
+
 // Update 将应用层规则输入转换为数据库模型并更新规则。
 func (r *AutomationRepository) Update(ctx context.Context, userID, ruleID int64, input automationapp.RuleInput) error {
 	// unlock 串行化自动改价规则与 AI 议价设置的最终冲突检查和写入。

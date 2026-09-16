@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	automationapp "xianyu-go/internal/application/automation"
 )
@@ -59,11 +60,11 @@ type BatchLocalPublishService struct {
 	// itemRepository 负责保存非敏感本地商品目录记录。
 	itemRepository BatchPublishedItemRepository
 	// ruleRepository 负责幂等创建发布后的自动化规则。
-	ruleRepository automationapp.PublishRuleRepository
+	ruleRepository automationapp.PublishRuleCloneRepository
 }
 
 // NewBatchLocalPublishService 构造批量发布本地收口服务并校验必需端口。
-func NewBatchLocalPublishService(completionRepository BatchCompletionRepository, itemRepository BatchPublishedItemRepository, ruleRepository automationapp.PublishRuleRepository) (*BatchLocalPublishService, error) {
+func NewBatchLocalPublishService(completionRepository BatchCompletionRepository, itemRepository BatchPublishedItemRepository, ruleRepository automationapp.PublishRuleCloneRepository) (*BatchLocalPublishService, error) {
 	if completionRepository == nil {
 		return nil, errors.New("批量发布批次收口端口不能为空")
 	}
@@ -140,6 +141,8 @@ type batchPublishAutomationConfig struct {
 	ReviewRequest batchPublishReviewRequest `json:"review_request"`
 	// ExternalDelivery 保存外部货源付款发货配置。
 	ExternalDelivery batchPublishExternalDelivery `json:"external_delivery"`
+	// CloneSource 保存账号间克隆的源商品定位，普通批量发布时为空。
+	CloneSource *BatchPreviewCloneSource `json:"clone_source,omitempty"`
 }
 
 // batchPublishExternalDelivery 保存单规格货源商品的自动采购规则参数。
@@ -206,6 +209,13 @@ func (service *BatchLocalPublishService) ensureAutomationRules(ctx context.Conte
 	}
 	// title 保存规则名称使用的平台标题或导入标题。
 	title := firstBatchResultTitle(result.Title, row.Title)
+	if config.CloneSource != nil {
+		// cloneErr 表示源商品规则重定位到新商品的错误。
+		cloneErr := service.cloneAutomationRules(ctx, userID, *config.CloneSource, row.CookieID, result.ItemID)
+		if cloneErr != nil {
+			return cloneErr
+		}
+	}
 	if config.PaidDelivery.Enabled {
 		// actions 保存付款后自动发货规则的动作顺序。
 		actions := make([]automationapp.ActionInput, 0, len(config.PaidDelivery.Actions)+1)
@@ -272,6 +282,70 @@ func (service *BatchLocalPublishService) ensureAutomationRules(ctx context.Conte
 		}
 	}
 	return nil
+}
+
+// cloneAutomationRules 复制源商品的全部商品级规则，并把规则和动作重定位到目标账号的新商品。
+func (service *BatchLocalPublishService) cloneAutomationRules(ctx context.Context, userID int64, source BatchPreviewCloneSource, targetCookieID, targetItemID string) error {
+	// rules、listErr 保存当前用户下与源商品精确关联的规则及查询错误。
+	rules, listErr := service.ruleRepository.ListItemRules(ctx, userID, source.CookieID, source.ItemID)
+	if listErr != nil {
+		return listErr
+	}
+	for /* rule 表示当前待复制的源商品规则。 */ _, rule := range rules {
+		// input、inputErr 保存已替换目标商品双键的规则输入及克隆元数据写入错误。
+		input, inputErr := clonedRuleInput(userID, targetCookieID, targetItemID, rule)
+		if inputErr != nil {
+			return inputErr
+		}
+		// ensureErr 表示当前克隆规则的幂等落库错误。
+		ensureErr := service.ruleRepository.EnsureClonedPublishRule(ctx, rule.ID, input)
+		if ensureErr != nil {
+			return ensureErr
+		}
+	}
+	return nil
+}
+
+// clonedRuleInput 把源规则及其动作复制为新规则输入，原动作标识不得进入新规则。
+func clonedRuleInput(userID int64, targetCookieID, targetItemID string, source automationapp.Rule) (automationapp.RuleInput, error) {
+	// config 保存源规则配置，额外写入源规则标识供恢复幂等判定。
+	config := map[string]any{}
+	if strings.TrimSpace(source.ConfigJSON) != "" {
+		// configErr 表示源规则配置无法解析为可克隆结构的错误。
+		configErr := json.Unmarshal([]byte(source.ConfigJSON), &config)
+		if configErr != nil {
+			return automationapp.RuleInput{}, fmt.Errorf("解析源自动化规则 %d 配置: %w", source.ID, configErr)
+		}
+	}
+	if config == nil {
+		config = map[string]any{}
+	}
+	config["clone_source_rule_id"] = source.ID
+	// configJSON、marshalErr 保存携带幂等来源的规则配置文本及序列化错误。
+	configJSON, marshalErr := json.Marshal(config)
+	if marshalErr != nil {
+		return automationapp.RuleInput{}, marshalErr
+	}
+	// actions 保存移除旧动作主键后的独立动作快照。
+	actions := make([]automationapp.ActionInput, 0, len(source.Actions))
+	for /* action 表示源规则中当前待复制的动作。 */ _, action := range source.Actions {
+		// bindings 保存发货模板变量的独立绑定快照。
+		bindings := append([]automationapp.TemplateBinding(nil), action.TemplateBindings...)
+		// customVariables 保存模板自定义变量的独立键值快照。
+		var customVariables map[string]string
+		if action.CustomVariables != nil {
+			customVariables = make(map[string]string, len(action.CustomVariables))
+			for /* key、value 表示当前模板自定义变量及其文本值。 */ key, value := range action.CustomVariables {
+				customVariables[key] = value
+			}
+		}
+		actions = append(actions, automationapp.ActionInput{ActionType: action.ActionType, CardID: action.CardID, DeliveryCount: action.DeliveryCount,
+			MessageTemplate: action.MessageTemplate, DelaySeconds: action.DelaySeconds, ConfigJSON: action.ConfigJSON, Enabled: action.Enabled,
+			SortOrder: action.SortOrder, DeliveryTemplateID: action.DeliveryTemplateID, TemplateBindings: bindings, CustomVariables: customVariables})
+	}
+	return automationapp.RuleInput{UserID: userID, CookieID: targetCookieID, ItemID: targetItemID, Name: source.Name,
+		TriggerType: source.TriggerType, Enabled: source.Enabled, Priority: source.Priority, ConfigJSON: string(configJSON),
+		SKUMigrationStatus: source.SKUMigrationStatus, Actions: actions}, nil
 }
 
 // firstBatchResultTitle 选择规则和本地商品使用的首个非空标题。

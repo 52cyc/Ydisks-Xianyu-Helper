@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	automationapp "xianyu-go/internal/application/automation"
@@ -81,6 +82,59 @@ func TestAutomationRepositoryEnsurePublishRuleIsIdempotent(t *testing.T) {
 	rules, matchErr := store.Automation.Match(ctx, input.CookieID, input.ItemID, input.TriggerType)
 	if matchErr != nil || len(rules) != 1 {
 		t.Fatalf("幂等准备应只保留一条规则，rules=%+v err=%v", rules, matchErr)
+	}
+}
+
+// TestAutomationRepositoryClonesExactItemRulesIdempotently 验证克隆只读取源商品规则，且同一源规则恢复时不重复创建。
+func TestAutomationRepositoryClonesExactItemRulesIdempotently(t *testing.T) {
+	// store 是当前适配器测试使用的 SQLite 存储。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// repository 是绑定 SQLite 存储的自动化规则适配器。
+	repository := NewAutomationRepository(store)
+	// ctx 是本测试共用的非取消上下文。
+	ctx := context.Background()
+	// owner、ownerErr 保存测试用户及读取错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	for /* accountID 表示当前待建立归属关系的源或目标账号。 */ _, accountID := range []string{"source-account", "target-account"} {
+		if saveErr := store.Cookies.Save(ctx, accountID, "cookie", owner.ID); saveErr != nil {
+			t.Fatal(saveErr)
+		}
+	}
+	// sourceRuleID、sourceErr 保存源商品规则标识及写入错误。
+	sourceRuleID, sourceErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "source-account", ItemID: "source-item", Name: "源商品规则", TriggerType: automationapp.TriggerOrderPaid, Enabled: true, Priority: 20, ConfigJSON: `{}`, Actions: []db.AutomationActionInput{{ActionType: automationapp.ActionConfirmShipment, Enabled: true, SortOrder: 1}}})
+	if sourceErr != nil {
+		t.Fatal(sourceErr)
+	}
+	// accountRuleID、accountRuleErr 保存不应被商品克隆的账号通用规则写入结果。
+	accountRuleID, accountRuleErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "source-account", ItemID: "", Name: "账号通用规则", TriggerType: automationapp.TriggerBuyerReviewed, Enabled: true, Priority: 30, ConfigJSON: `{}`, Actions: []db.AutomationActionInput{{ActionType: automationapp.ActionSendText, MessageTemplate: "谢谢", Enabled: true, SortOrder: 1}}})
+	if accountRuleErr != nil || accountRuleID <= 0 {
+		t.Fatalf("准备账号通用规则失败: id=%d err=%v", accountRuleID, accountRuleErr)
+	}
+	// rules、listErr 保存按源商品精确筛选的规则快照。
+	rules, listErr := repository.ListItemRules(ctx, owner.ID, "source-account", "source-item")
+	if listErr != nil || len(rules) != 1 || rules[0].ID != sourceRuleID {
+		t.Fatalf("源商品规则筛选异常: rules=%+v err=%v", rules, listErr)
+	}
+	// cloneInput 是携带源规则标识的目标商品规则。
+	cloneInput := automationapp.RuleInput{UserID: owner.ID, CookieID: "target-account", ItemID: "target-item", Name: rules[0].Name, TriggerType: rules[0].TriggerType, Enabled: true, Priority: rules[0].Priority, ConfigJSON: `{"clone_source_rule_id":` + strconv.FormatInt(sourceRuleID, 10) + `}`, Actions: []automationapp.ActionInput{{ActionType: automationapp.ActionConfirmShipment, Enabled: true, SortOrder: 1}}}
+	// firstErr 保存首次克隆目标规则的写入结果。
+	firstErr := repository.EnsureClonedPublishRule(ctx, sourceRuleID, cloneInput)
+	if firstErr != nil {
+		t.Fatal(firstErr)
+	}
+	// secondErr 保存重复克隆同一源规则的幂等结果。
+	secondErr := repository.EnsureClonedPublishRule(ctx, sourceRuleID, cloneInput)
+	if secondErr != nil {
+		t.Fatal(secondErr)
+	}
+	// targetRules、targetErr 保存目标商品最终的规则集合。
+	targetRules, targetErr := repository.ListItemRules(ctx, owner.ID, "target-account", "target-item")
+	if targetErr != nil || len(targetRules) != 1 {
+		t.Fatalf("克隆规则幂等性异常: rules=%+v err=%v", targetRules, targetErr)
 	}
 }
 
