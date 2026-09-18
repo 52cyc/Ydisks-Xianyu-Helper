@@ -3976,6 +3976,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/items/link-import/collect":
+    post:
+      operationId: postApiV1ItemsLinkImportCollect
+      summary: 批量解析闲鱼分享链接并采集商品详情
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemLinkImportRequest'
+      responses:
+        '200':
+          description: 批量采集完成，单条失败保存在 rows.error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemLinkImportResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/items/publish-batches/{batch_id}":
     delete:
       operationId: deleteApiV1ItemsPublishBatchesBybatch_id
@@ -8001,6 +8037,44 @@ components:
         poi_id: {type: string}
         poi_name: {type: string}
         province: {type: string}
+    ItemLinkImportRequest:
+      type: object
+      required: [cookie_id, sources]
+      properties:
+        cookie_id: {type: string, minLength: 1, maxLength: 128}
+        sources:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {type: string, minLength: 1, maxLength: 4096}
+    ItemLinkImportRow:
+      type: object
+      required: [row_no, source, item_id, item_url, title, description, price, images, error]
+      properties:
+        row_no: {type: integer, minimum: 1}
+        source: {type: string}
+        item_id: {type: string}
+        item_url: {type: string}
+        title: {type: string}
+        description: {type: string}
+        price: {type: string}
+        images:
+          type: array
+          maxItems: 9
+          items: {type: string}
+        error: {type: string}
+    ItemLinkImportResponse:
+      type: object
+      required: [success, total, collected, failed, rows]
+      properties:
+        success: {type: boolean}
+        total: {type: integer, minimum: 0}
+        collected: {type: integer, minimum: 0}
+        failed: {type: integer, minimum: 0}
+        rows:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/ItemLinkImportRow'}
     ItemPublishRequest:
       type: object
       required: [cookie_id, title, description, price, original_price, quantity, postage_mode, postage, images]

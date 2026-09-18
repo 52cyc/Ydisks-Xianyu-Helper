@@ -134,6 +134,12 @@ type ItemCatalogMutationPort interface {
 	SetMultiQuantity(context.Context, string, string, bool) error
 }
 
+// ItemLinkImportPort 定义批量分享链接解析和公开商品详情采集能力。
+type ItemLinkImportPort interface {
+	// CollectBatch 在当前用户和所选自有账号范围内逐条采集，单条失败保留在结果中。
+	CollectBatch(context.Context, itemapp.LinkImportInput) (itemapp.LinkImportResult, error)
+}
+
 // PlatformCredentialPort 定义平台凭证受控读取能力。
 type PlatformCredentialPort interface {
 	LoadPlatformDetail(context.Context, string) (*accountapp.CredentialDetail, error)
@@ -426,6 +432,8 @@ type ApplicationPorts struct {
 	itemCatalog ItemCatalogPort
 	// itemCatalogMutation 是商品目录写入用例。
 	itemCatalogMutation ItemCatalogMutationPort
+	// itemLinkImport 是批量分享链接采集用例。
+	itemLinkImport ItemLinkImportPort
 	// accountLogin 是 Cookie 与二维码登录用例 Port。
 	accountLogin AccountLoginPort
 	// qrLogin 是二维码平台流程用例 Port。
@@ -502,6 +510,7 @@ type ApplicationPortsInput struct {
 	ItemSync                    ItemSyncPort
 	ItemCatalog                 ItemCatalogPort
 	ItemCatalogMutation         ItemCatalogMutationPort
+	ItemLinkImport              ItemLinkImportPort
 	AccountLogin                AccountLoginPort
 	QRLogin                     QRLoginPort
 	SessionRecovery             SessionRecoveryPort
@@ -541,7 +550,7 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		itemSinglePublish: input.ItemSinglePublish, itemBatchPreview: input.ItemBatchPreview,
 		itemBatchManagement: input.ItemBatchManagement, itemCategoryRecommendation: input.ItemCategoryRecommendation,
 		itemBatchPreviewPersistence: input.ItemBatchPreviewPersistence, itemBatchLocalPublish: input.ItemBatchLocalPublish,
-		itemSync: input.ItemSync, itemCatalog: input.ItemCatalog, itemCatalogMutation: input.ItemCatalogMutation,
+		itemSync: input.ItemSync, itemCatalog: input.ItemCatalog, itemCatalogMutation: input.ItemCatalogMutation, itemLinkImport: input.ItemLinkImport,
 		accountLogin: input.AccountLogin, qrLogin: input.QRLogin, sessionRecovery: input.SessionRecovery,
 		platformCredentials: input.PlatformCredentials, authentication: input.Authentication, loginAudit: input.LoginAudit,
 		passwordLogin: input.PasswordLogin, accountDelete: input.AccountDelete, accountProfile: input.AccountProfile,
@@ -570,7 +579,7 @@ func (ports *ApplicationPorts) validate() error {
 		{"orders", ports.orders}, {"order_refresh_jobs", ports.orderRefreshJobs}, {"item_single_publish", ports.itemSinglePublish},
 		{"item_batch_preview", ports.itemBatchPreview}, {"item_batch_management", ports.itemBatchManagement}, {"item_category_recommendation", ports.itemCategoryRecommendation},
 		{"item_batch_preview_persistence", ports.itemBatchPreviewPersistence}, {"item_batch_local_publish", ports.itemBatchLocalPublish}, {"item_sync", ports.itemSync},
-		{"item_catalog", ports.itemCatalog}, {"item_catalog_mutation", ports.itemCatalogMutation}, {"account_login", ports.accountLogin},
+		{"item_catalog", ports.itemCatalog}, {"item_catalog_mutation", ports.itemCatalogMutation}, {"item_link_import", ports.itemLinkImport}, {"account_login", ports.accountLogin},
 		{"qr_login", ports.qrLogin}, {"session_recovery", ports.sessionRecovery}, {"platform_credentials", ports.platformCredentials},
 		{"authentication", ports.authentication}, {"login_audit", ports.loginAudit}, {"password_login", ports.passwordLogin},
 		{"account_delete", ports.accountDelete}, {"account_profile", ports.accountProfile}, {"account_long_login", ports.accountLongLogin},
@@ -625,6 +634,11 @@ func (server *Server) itemSinglePublishApplication() ItemSinglePublishPort {
 // itemCatalogMutationApplication 返回商品目录写入用例。
 func (server *Server) itemCatalogMutationApplication() ItemCatalogMutationPort {
 	return server.applicationServiceSet().itemCatalogMutation
+}
+
+// itemLinkImportApplication 返回批量分享链接采集用例。
+func (server *Server) itemLinkImportApplication() ItemLinkImportPort {
+	return server.applicationServiceSet().itemLinkImport
 }
 
 // itemSyncApplication 返回商品同步用例。

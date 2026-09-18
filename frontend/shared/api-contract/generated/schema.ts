@@ -1082,6 +1082,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/items/link-import/collect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 批量解析闲鱼分享链接并采集商品详情 */
+        post: operations["postApiV1ItemsLinkImportCollect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/items/publish-batches/{batch_id}": {
         parameters: {
             query?: never;
@@ -2665,6 +2682,28 @@ export interface components {
             poi_id?: string;
             poi_name?: string;
             province?: string;
+        };
+        ItemLinkImportRequest: {
+            cookie_id: string;
+            sources: string[];
+        };
+        ItemLinkImportRow: {
+            row_no: number;
+            source: string;
+            item_id: string;
+            item_url: string;
+            title: string;
+            description: string;
+            price: string;
+            images: string[];
+            error: string;
+        };
+        ItemLinkImportResponse: {
+            success: boolean;
+            total: number;
+            collected: number;
+            failed: number;
+            rows: components["schemas"]["ItemLinkImportRow"][];
         };
         ItemPublishRequest: {
             cookie_id: string;
@@ -9433,6 +9472,57 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1ItemsLinkImportCollect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemLinkImportRequest"];
+            };
+        };
+        responses: {
+            /** @description 批量采集完成，单条失败保存在 rows.error */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemLinkImportResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

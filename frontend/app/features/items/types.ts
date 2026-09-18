@@ -189,7 +189,7 @@ export interface ItemPublishBatchState {
   setBatchPublishIntervalSeconds: Dispatch<SetStateAction<number>>;
   // openBatchModal 打开批量铺货流程并恢复可继续任务。
   openBatchModal: () => Promise<void>;
-  // openClonePreview 将商品克隆快照直接送入现有批量预检流程。
+  // openClonePreview 将前端生成的商品快照直接送入现有批量预检流程。
   openClonePreview: (file: File, targetAccountID: string) => Promise<boolean>;
   // handleRecommendBatchCategory 请求默认类目推荐。
   handleRecommendBatchCategory: () => Promise<void>;

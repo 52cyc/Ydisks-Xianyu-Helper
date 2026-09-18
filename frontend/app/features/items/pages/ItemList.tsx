@@ -11,6 +11,7 @@ getShippingRules,
 import { batchStatusClass,batchStatusText } from '../batchState';
 import { BatchPhaseIndicator } from '../components/BatchPhaseIndicator';
 import { ItemCloneFlow } from '../components/ItemCloneFlow';
+import { ItemLinkImportFlow } from '../components/ItemLinkImportFlow';
 import { ManualLocationPicker } from '../components/ManualLocationPicker';
 import { consumeSelectedFile } from '../fileInput';
 import { useItemPublishBatch } from '../hooks';
@@ -302,6 +303,13 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
               batchBusy={Boolean(recentBatch && ['running', 'canceling'].includes(recentBatch.status))}
               accountName={accountName}
               onPreviewClone={openClonePreview}
+            />
+            <ItemLinkImportFlow
+              accounts={accounts}
+              preferredAccountID={accountFilter || selectedAccount}
+              batchBusy={Boolean(recentBatch && ['running', 'canceling'].includes(recentBatch.status))}
+              accountName={accountName}
+              onPreviewImport={openClonePreview}
             />
             <button
               onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void openBatchModal()}

@@ -345,6 +345,42 @@ export interface ItemPublishBatchPreviewResponse {
   rows: ItemPublishBatchPreviewRow[];
 }
 
+/** 由商品分享文本采集接口归一后的单行 UI 模型。 */
+export interface ItemLinkImportRow {
+  /** 去除空行后的从一开始序号。 */
+  row_no: number;
+  /** 用户粘贴的原始分享文本。 */
+  source: string;
+  /** 解析成功后的闲鱼商品标识。 */
+  item_id: string;
+  /** 移除分享跟踪参数后的标准商品地址。 */
+  item_url: string;
+  /** 采集得到的商品标题。 */
+  title: string;
+  /** 采集得到的商品描述。 */
+  description: string;
+  /** 采集得到的十进制元金额文本。 */
+  price: string;
+  /** 采集得到的最多九张图片地址。 */
+  images: string[];
+  /** 当前条目的安全失败说明，成功时为空。 */
+  error: string;
+}
+
+/** 由商品分享文本批量采集接口归一后的 UI 模型。 */
+export interface ItemLinkImportResponse {
+  /** 服务是否已完成整批处理。 */
+  success: boolean;
+  /** 参与处理的非空分享文本数量。 */
+  total: number;
+  /** 可以进入批量预检的商品数量。 */
+  collected: number;
+  /** 解析、详情读取或能力校验失败的数量。 */
+  failed: number;
+  /** 按用户输入顺序保存的逐条结果。 */
+  rows: ItemLinkImportRow[];
+}
+
 /** 商品批量发布任务启动或重试响应。 */
 /** 由当前 feature adapter 归一后的 BatchIDResponse UI 模型；不直接暴露 HTTP DTO。 */
 export interface BatchIDResponse {

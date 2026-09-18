@@ -6,6 +6,7 @@ BatchIDResponse,
 CategoryRecommendationResponse,
 Item,
 ItemDetailResponse,
+ItemLinkImportResponse,
 ItemPublishBatchPreviewResponse,
 ItemPublishBatchResponse,
 ItemPublishResponse,ItemSyncResponse,
@@ -169,6 +170,15 @@ export const recommendPublishCategory = async (cookieId: string, keyword: string
     // 旧路径继续由现有 Vite 代理转发。
 	return runContractRequest(/* signal 控制商品类目推荐请求的取消和超时。 */ signal => contractClient.POST('/api/v1/items/publish-categories/recommend', { body: { cookie_id: cookieId, keyword } as never, signal }), options) as unknown as Promise<CategoryRecommendationResponse>;
 };
+
+// collectItemLinks 使用用户选择的自有账号批量采集闲鱼分享文本，本请求不执行上架。
+export const collectItemLinks = async (cookieId: string, sources: string[], options?: RequestControlOptions): Promise<ItemLinkImportResponse> => runContractRequest(
+  /* signal 控制批量分享链接采集请求的取消和超时。 */ signal => contractClient.POST('/api/v1/items/link-import/collect', {
+    body: { cookie_id: cookieId, sources },
+    signal,
+  }),
+  options,
+) as unknown as Promise<ItemLinkImportResponse>;
 
 // previewItemPublishBatch 预览商品批量发布。
 export const previewItemPublishBatch = async (form: {

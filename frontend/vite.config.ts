@@ -89,9 +89,17 @@ export default defineConfig({
           if (modulePath.includes('/app/features/delivery-templates/hooks.')) {
             return 'delivery-template-runtime';
           }
+          // 通用集合响应适配器被多个业务页复用，固定独立分片避免被任一低频功能分片吸收。
+          if (modulePath.includes('/shared/http/contract.')) {
+            return 'contract';
+          }
           // 账号间克隆弹窗属于商品页低频交互，独立分片可保持商品列表页面在既有下载预算内。
           if (modulePath.includes('/app/features/items/components/ItemCloneFlow.') || modulePath.includes('/app/features/items/cloneState.')) {
             return 'item-clone-flow';
+          }
+          // 分享链接批量采集弹窗属于商品页低频交互，独立分片避免增加商品列表主分片。
+          if (modulePath.includes('/app/features/items/components/ItemLinkImportFlow.') || modulePath.includes('/app/features/items/linkImportState.')) {
+            return 'item-link-import-flow';
           }
           // 货源目录批量操作是履约页低频能力，独立分片避免上游新增表单挤占页面主分片预算。
           if (modulePath.includes('/app/features/fulfillment/components/CatalogBatchPanel.') || modulePath.includes('/app/features/fulfillment/catalogBatch.')) {

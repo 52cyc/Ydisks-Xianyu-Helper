@@ -126,7 +126,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     [beginBatchRequest, isCurrentBatchOperation],
   );
 
-  // openClonePreview 将前端生成的克隆快照直接送入批量预检，并复用后续发布、轮询和重试流程。
+  // openClonePreview 将前端生成的商品快照直接送入批量预检，并复用后续发布、轮询和重试流程。
   const openClonePreview = useCallback(
     // clonePreviewAction 初始化克隆批次表单并请求服务端逐行校验。
     async (file: File, targetAccountID: string): Promise<boolean> => {
@@ -149,7 +149,7 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
     setShowBatchModal(true);
     setBatchLoading(true);
     try {
-      // result 是克隆商品经现有服务端规则校验后的逐行预览。
+      // result 是前端商品快照经现有服务端规则校验后的逐行预览。
       const result = await previewItemPublishBatch({
         file,
         defaultCookieId: targetAccountID,
@@ -160,10 +160,10 @@ export const useItemPublishBatch = (options: ItemPublishBatchOptions): ItemPubli
       setBatchPreview(result);
       setBatchPhase('preview');
       return true;
-    } catch (error: any /* 克隆预检错误 */) {
+    } catch (error: any /* 商品快照预检错误 */) {
       if (!isCurrentBatchOperation(request.requestGeneration, request.controller)) return false;
-      console.error('商品克隆预检失败:', error);
-      alert(error?.message || '克隆预检失败，请检查源商品数据');
+      console.error('商品快照预检失败:', error);
+      alert(error?.message || '商品预检失败，请检查快照数据');
       setShowBatchModal(false);
       return false;
     } finally {

@@ -14,6 +14,7 @@ func (s *Server) mountVersionedItemBatchRoutes(r chi.Router) {
 		r.Post("/api/v1/items/get-all-from-account", s.syncItemsFromAccount)
 		r.Post("/api/v1/items/get-by-page", s.syncItemsPageFromAccount)
 		r.Post("/api/v1/items/publish-categories/recommend", s.recommendItemPublishCategory)
+		r.Post("/api/v1/items/link-import/collect", s.collectItemLinks)
 		r.Post("/api/v1/items/publish-batches/preview", s.previewItemPublishBatch)
 		r.Post("/api/v1/items/publish-batches", s.startItemPublishBatch)
 		r.Get("/api/v1/items/publish-batches", s.listItemPublishBatches)

@@ -3,9 +3,11 @@ package composition
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"xianyu-go/internal/adapter"
 	itemapp "xianyu-go/internal/application/items"
+	"xianyu-go/internal/netguard"
 )
 
 // itemBatchServices 是批量发布运行时、预检和本地收口服务的完整不可变组合结果。
@@ -98,6 +100,8 @@ type itemCatalogServices struct {
 	previewPersistence *itemapp.BatchPreviewPersistenceService
 	// singlePublish 提供单商品发布服务。
 	singlePublish *itemapp.Service
+	// linkImport 提供批量分享链接解析和商品详情采集服务。
+	linkImport *itemapp.LinkImportService
 }
 
 // buildItemCatalogServices 构造商品目录和发布服务，并把平台会话恢复回调限制在组合根。
@@ -118,6 +122,16 @@ func buildItemCatalogServices(dependencies Dependencies, sessionRecovery adapter
 	itemPublishPort := dependencies.ItemDependencies.NewItemPublishPort(dependencies.MTopClient, dependencies.Logger, dependencies.UpdateRunningCookie, func(ctx context.Context, cookieID string, err error) bool {
 		return sessionRecovery != nil && sessionRecovery(ctx, cookieID, err)
 	})
+	// itemLinkResolver 使用统一出站策略和二十秒总预算解析淘宝官方短链。
+	itemLinkResolver, itemLinkResolverErr := adapter.NewItemLinkResolver(netguard.ConfiguredHTTPClient(20 * time.Second))
+	if itemLinkResolverErr != nil {
+		return itemCatalogServices{}, fmt.Errorf("构造商品分享链接解析器失败: %w", itemLinkResolverErr)
+	}
+	// itemLinkImport 顺序编排链接解析和账号凭证受控的商品详情采集。
+	itemLinkImport, itemLinkImportErr := itemapp.NewLinkImportService(itemLinkResolver, itemPublishPort)
+	if itemLinkImportErr != nil {
+		return itemCatalogServices{}, fmt.Errorf("构造商品链接采集服务失败: %w", itemLinkImportErr)
+	}
 	// itemCategoryRecommendation 复用商品发布端口承载类目推荐和响应会话写回。
 	itemCategoryRecommendation, itemCategoryRecommendationErr := itemapp.NewCategoryRecommendationService(itemPublishPort)
 	if itemCategoryRecommendationErr != nil {
@@ -136,5 +150,5 @@ func buildItemCatalogServices(dependencies Dependencies, sessionRecovery adapter
 	if itemSinglePublishErr != nil {
 		return itemCatalogServices{}, fmt.Errorf("构造单商品发布服务失败: %w", itemSinglePublishErr)
 	}
-	return itemCatalogServices{catalog: itemCatalog, mutation: itemCatalogMutation, categoryRecommendation: itemCategoryRecommendation, previewPersistence: itemBatchPreviewPersistence, singlePublish: itemSinglePublish}, nil
+	return itemCatalogServices{catalog: itemCatalog, mutation: itemCatalogMutation, categoryRecommendation: itemCategoryRecommendation, previewPersistence: itemBatchPreviewPersistence, singlePublish: itemSinglePublish, linkImport: itemLinkImport}, nil
 }

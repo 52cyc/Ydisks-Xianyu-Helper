@@ -44,6 +44,94 @@ type categoryRecommender interface {
 	RecommendPublishCategory(context.Context, string, string) (mtop.PublishCategory, string, error)
 }
 
+// itemSnapshotFetcher 是外链采集使用的可选商品详情能力，避免扩大所有 MTOP 测试替身的接口。
+type itemSnapshotFetcher interface {
+	// FetchItemSnapshot 读取指定商品的非敏感发布快照，cookies 仅存在于当前请求作用域。
+	FetchItemSnapshot(context.Context, string, string) (mtop.ItemSnapshot, error)
+}
+
+// Collect 使用已归属账号读取外部商品详情，并把平台模型转换为应用层批量采集快照。
+func (p *ItemPublishPort) Collect(ctx context.Context, userID int64, cookieID, itemID string) (itemapp.LinkImportCollectedItem, error) {
+	return p.collect(ctx, userID, strings.TrimSpace(cookieID), strings.TrimSpace(itemID), true)
+}
+
+// collect 执行一次商品详情采集；平台明确 Session 失效且恢复成功时最多使用新凭证重试一次。
+func (p *ItemPublishPort) collect(ctx context.Context, userID int64, cookieID, itemID string, allowRetry bool) (itemapp.LinkImportCollectedItem, error) {
+	if p == nil || p.store == nil || p.store.Cookies == nil {
+		return itemapp.LinkImportCollectedItem{}, errors.New("商品采集存储未初始化")
+	}
+	// fetcher 和 supported 表示当前平台客户端是否实现外链商品快照读取能力。
+	fetcher, supported := p.mtopClient().(itemSnapshotFetcher)
+	if !supported {
+		return itemapp.LinkImportCollectedItem{}, errors.New("当前平台客户端不支持商品链接采集")
+	}
+	// unlock 只保护账号凭证快照读取，慢速平台详情请求前必须释放。
+	unlock := p.store.LockAccountCredentials(cookieID)
+	// latest 和 loadErr 保存账号的受控平台凭证视图及归属读取错误。
+	latest, loadErr := p.store.Cookies.GetCookiePlatformRuntimeData(ctx, cookieID)
+	if loadErr != nil || latest.UserID != userID || !hasStoredCredential(latest) {
+		unlock()
+		return itemapp.LinkImportCollectedItem{}, errors.New("采集账号不存在、无权访问或凭证不可用")
+	}
+	// requestCtx 和 cancel 限制单个商品详情采集的最长时间。
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	// mtopCtx 和 cookieSession 保存当前凭证快照及平台响应 Cookie 会话。
+	mtopCtx, cookieSession := withCookieSnapshot(requestCtx, latest)
+	// initialValue 和 initialMetadata 保存远端调用前的凭证版本，用于提交阶段防止覆盖并发登录。
+	initialValue, initialMetadata := latest.Value, latest.MetadataJSON
+	unlock()
+
+	// snapshot 和 callErr 保存平台详情归一化结果及分类错误。
+	snapshot, callErr := fetcher.FetchItemSnapshot(mtopCtx, latest.Value, itemID)
+	// runtimeCookie 和 persistErr 保存响应 Cookie 会话提交结果。
+	runtimeCookie, persistErr := p.persistCollectedItemSession(ctx, userID, cookieID, initialValue, initialMetadata, cookieSession)
+	if runtimeCookie != "" && p.updateRunningCookie != nil {
+		p.updateRunningCookie(ctx, cookieID, runtimeCookie)
+	}
+	if persistErr != nil {
+		if callErr != nil {
+			callErr = errors.Join(callErr, fmt.Errorf("保存采集响应 Cookie: %w", persistErr))
+		} else {
+			return itemapp.LinkImportCollectedItem{}, fmt.Errorf("保存采集响应 Cookie: %w", persistErr)
+		}
+	}
+	if callErr != nil {
+		if allowRetry && mtop.IsSessionExpiredErr(callErr) && p.recoverExpired(ctx, cookieID, callErr) {
+			return p.collect(ctx, userID, cookieID, itemID, false)
+		}
+		return itemapp.LinkImportCollectedItem{}, callErr
+	}
+	return itemapp.LinkImportCollectedItem{
+		Title: snapshot.Title, Description: snapshot.Description, Price: snapshot.PriceText,
+		Images: append([]string(nil), snapshot.ImageURLs...), IsMultiSpec: snapshot.IsMultiSpec,
+	}, nil
+}
+
+// persistCollectedItemSession 在详情读取后复核凭证版本并保存响应 Cookie Jar 变化。
+func (p *ItemPublishPort) persistCollectedItemSession(ctx context.Context, userID int64, cookieID, initialValue, initialMetadata string, session *mtop.CookieSession) (string, error) {
+	// unlock 保护远端调用完成后的凭证复核和会话写回。
+	unlock := p.store.LockAccountCredentials(cookieID)
+	defer unlock()
+	// latest 和 loadErr 保存远端调用完成后重新读取的平台凭证视图。
+	latest, loadErr := p.store.Cookies.GetCookiePlatformRuntimeData(ctx, cookieID)
+	if loadErr != nil || latest.UserID != userID || latest.Value != initialValue || latest.MetadataJSON != initialMetadata {
+		return "", errors.New("采集期间账号凭证已变化，请重试")
+	}
+	// value、valueChanged、handled 和 persistErr 保存 Cookie 会话转换与持久化结果。
+	value, valueChanged, handled, persistErr := p.persistSession(ctx, latest, session)
+	if persistErr != nil {
+		if p.logger != nil {
+			p.logger.Error("保存商品采集响应 Cookie Jar 失败", "cookie_id", cookieID, "err", persistErr)
+		}
+		return "", persistErr
+	}
+	if handled && valueChanged {
+		return value, nil
+	}
+	return "", nil
+}
+
 // RecommendCategory 读取账号平台凭证、调用类目推荐并提交响应会话变化。
 func (p *ItemPublishPort) RecommendCategory(ctx context.Context, userID int64, cookieID, keyword string) (itemapp.BatchPreviewCategory, error) {
 	if p == nil || p.store == nil || p.store.Cookies == nil {
@@ -344,4 +432,5 @@ func (p *ItemPublishPort) recoverExpired(ctx context.Context, cookieID string, e
 
 // 确保发布端口和仓储实现覆盖应用层定义的最小接口。
 var _ itemapp.PublishPort = (*ItemPublishPort)(nil)
+var _ itemapp.LinkImportCollectorPort = (*ItemPublishPort)(nil)
 var _ itemapp.ItemRepository = (*ItemPublishRepository)(nil)
