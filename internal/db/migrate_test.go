@@ -37,6 +37,7 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"orders", "version"},
 		{"orders", "deleted_at"},
 		{"cookies", "auto_consign"},
+		{"cookies", "auto_bargain"},
 		{"cards", "image_url"},
 		{"cards", "delay_seconds"},
 		{"keywords", "item_id"},
@@ -199,9 +200,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if enabledAutoConsign != 1 || disabledAutoConsign != 0 {
 		t.Fatalf("迁移回填 auto_consign 错误: enabled=%d disabled=%d", enabledAutoConsign, disabledAutoConsign)
 	}
-	// finalVersion、versionErr 验证升级包含本地既有迁移及上游账号任务重试、自动确认发货迁移，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级包含 fork 既有迁移及顺延后的自动免拼与砍价阶段迁移。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 54 {
+	if versionErr != nil || finalVersion != 56 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
@@ -217,7 +218,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 }
 
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到包含 fork 迁移 00038-00047、本地 00048-00052 与上游账号任务重试及自动确认发货 00053-00054 的最终版本。
+// 聊天迁移可以原样升级到包含 fork 迁移 00038-00054 与顺延后上游砍价迁移 00055-00056 的最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -261,7 +262,7 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续至合并后 00054 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至合并后 00056 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
@@ -287,13 +288,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到账号自动确认发货语义的 00054，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到顺延后砍价阶段语义的 00056，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 54 {
-		t.Fatalf("final migration version=%d, want 54", finalVersion)
+	if finalVersion != 56 {
+		t.Fatalf("final migration version=%d, want 56", finalVersion)
 	}
 	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
 		t.Fatal("account_task_runs should include the retry attempt counter")

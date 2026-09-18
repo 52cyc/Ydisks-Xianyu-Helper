@@ -93,6 +93,10 @@ export default defineConfig({
           if (modulePath.includes('/app/features/items/components/ItemCloneFlow.') || modulePath.includes('/app/features/items/cloneState.')) {
             return 'item-clone-flow';
           }
+          // 货源目录批量操作是履约页低频能力，独立分片避免上游新增表单挤占页面主分片预算。
+          if (modulePath.includes('/app/features/fulfillment/components/CatalogBatchPanel.') || modulePath.includes('/app/features/fulfillment/catalogBatch.')) {
+            return 'fulfillment-catalog-batch';
+          }
           // 规则安全确认和异常处置控件共用独立静态分片。
           if (
             modulePath.includes('/app/features/rules/components/AllItemsConfirmation.') ||

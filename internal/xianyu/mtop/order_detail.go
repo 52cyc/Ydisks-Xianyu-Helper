@@ -150,8 +150,9 @@ func collectOrderDetailData(node any, result *OrderDetailResult, depth int) {
 	// value 保存当前响应节点的具体 JSON 类型，便于兼容对象、数组和二次编码文本。
 	switch value := node.(type) {
 	case map[string]any:
-		// title、fieldValue 兼容递归结构中的订单展示字段，例如充值账号和收货地址。
+		// title 保存递归结构中的订单展示字段名，例如充值账号和收货地址。
 		title := strings.TrimSpace(mtopString(value["title"]))
+		// fieldValue 保存当前展示字段的文本值，用于直充参数和收货信息补全。
 		fieldValue := strings.TrimSpace(mtopString(value["value"]))
 		if title != "" && fieldValue != "" {
 			result.OrderFields[title] = fieldValue

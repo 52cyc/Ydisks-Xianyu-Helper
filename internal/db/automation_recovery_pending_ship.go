@@ -9,6 +9,28 @@ import (
 	"database/sql"
 )
 
+// CancelObsoletePaidRecoveryRun 取消已不再处于待发货状态的付款运行恢复，并清除可重放发货凭证。
+// 更新同时校验扫描快照和订单当前事实；并发续租、游标推进或订单重新进入待发货都会让本次取消失效。
+func (a *AutomationRules) CancelObsoletePaidRecoveryRun(ctx context.Context, run AutomationRun, reason string) (bool, error) {
+	// result、err 保存基于运行快照和最新订单状态的条件取消结果。
+	result, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
+   SET status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0,error_message=?,delivery_proof='',updated_at=CURRENT_TIMESTAMP
+ WHERE id=? AND attempt_count=? AND status=? AND action_cursor=? AND action_started=? AND lease_expires_at=?
+   AND trigger_type='order_paid'
+   AND NOT EXISTS (SELECT 1 FROM orders o
+                    WHERE o.order_id=automation_runs.order_id
+                      AND o.cookie_id=automation_runs.cookie_id
+                      AND o.deleted_at IS NULL
+                      AND o.order_status='pending_ship'
+                      AND o.system_shipped=0)`, reason, run.ID, run.AttemptCount, run.Status, run.ActionCursor, boolToInt(run.ActionStarted), run.LeaseExpiresAt)
+	if err != nil {
+		return false, err
+	}
+	// affected、rowsErr 表示当前扫描是否仍拥有取消权及驱动读取行数时的错误。
+	affected, rowsErr := result.RowsAffected()
+	return affected == 1, rowsErr
+}
+
 // PendingShipOrdersWithoutPaidRunAfter 用不可变的订单 ID 作为稳定游标分页扫描「已付款待发货、但尚无任何
 // order_paid 运行」的订单，供调度器在付款系统消息丢失时补触发自动发货。
 //
@@ -16,6 +38,8 @@ import (
 //   - 只取 order_status='pending_ship'，即平台侧已确认付款、只差我方发货；
 //   - 只取**完全没有任何** order_paid 运行的订单；已有运行的订单交给失败的运行恢复扫描处理，
 //     避免与恢复链重复触发、也避免形成第二个执行入口；
+//   - 砍价订单只有在“待刀成”阶段已成功免拼后才允许进入候选集合；调度器不得调用免拼接口，
+//     也不得根据订单的砍价标记推断平台阶段；
 //   - 要求账号下存在启用的 order_paid 规则且商品匹配，否则没有可执行的动作；
 //   - 必须有 chat_id，否则无法向买家发起会话发送。
 func (a *AutomationRules) PendingShipOrdersWithoutPaidRunAfter(ctx context.Context, afterOrderID string, limit int) ([]Order, error) {
@@ -42,6 +66,8 @@ SELECT order_id,item_id,buyer_id,spec_name,spec_value,quantity,amount,order_stat
 WHERE o.order_status='pending_ship'
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
+	   AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
+	                                  WHERE bfs.order_id=o.order_id AND bfs.cookie_id=o.cookie_id AND bfs.status IN ('ready','succeeded')))
    AND NOT EXISTS (SELECT 1 FROM automation_runs r
                     WHERE r.order_id=o.order_id AND r.trigger_type='order_paid')
    AND EXISTS (SELECT 1 FROM automation_rules r2
@@ -153,6 +179,8 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
 WHERE o.order_status='pending_ship'
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
+   AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
+                                  WHERE bfs.order_id=o.order_id AND bfs.cookie_id=o.cookie_id AND bfs.status IN ('ready','succeeded')))
    AND r.cookie_id=o.cookie_id
    AND r.status IN ('needs_review','failed')
    AND r.attempt_count<?

@@ -332,6 +332,13 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		c.logger.Info("账号已停用，记录事件事实但不执行自动化", "account", task.AccountID, "trigger", task.TriggerType)
 		return false, nil
 	}
+	if task.TriggerType == TriggerBargainPending {
+		return c.handleBargainPending(ctx, task)
+	}
+	if task.TriggerType == TriggerOrderCompleted {
+		// 买家确认收货事件只更新本地订单完成事实，自动评价由账号任务扫描该事实后独立执行。
+		return true, nil
+	}
 	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
 		// autoConfirm、autoConfirmErr 分别保存付款自动化要求的账号开关和读取错误。
 		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)
@@ -400,6 +407,80 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		}
 	}
 	return false, firstErr
+}
+
+// handleBargainPending 处理砍价“待刀成”WS 阶段：仅按独立账号开关调用免拼，绝不匹配发卡或确认发货规则。
+func (c *Center) handleBargainPending(ctx context.Context, task Task) (bool, error) {
+	if task.Source != "ws" {
+		c.logger.Warn("拒绝非 WebSocket 的免拼阶段任务", "source", task.Source, "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	// autoBargain、settingsErr 保存独立自动免拼开关和读取错误。
+	autoBargain, settingsErr := c.store.Cookies.GetAutoBargain(ctx, task.AccountID)
+	if settingsErr != nil {
+		return false, fmt.Errorf("读取自动免拼设置: %w", settingsErr)
+	}
+	if !autoBargain {
+		c.logger.Info("账号未启用自动免拼，跳过待刀成阶段", "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	if task.OrderID == "" {
+		return false, fmt.Errorf("免拼阶段缺少订单ID")
+	}
+	// claimed、claimErr 保存本次 WS 是否取得免拼阶段唯一执行权。
+	claimed, claimErr := c.store.Automation.ClaimBargainFreeShipping(ctx, task.OrderID, task.AccountID)
+	if claimErr != nil {
+		return false, fmt.Errorf("领取免拼阶段执行权: %w", claimErr)
+	}
+	if !claimed {
+		c.logger.Info("免拼阶段已有其他任务处理，跳过重复事件", "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	c.logger.Info("开始执行自动免拼", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType)
+	// actionErr 保存独立免拼接口的执行结果。
+	actionErr := c.actions.freeShipBargain(ctx, task)
+	// status 保存可重试的明确失败、需要人工核对的未知结果或成功终态。
+	status := "succeeded"
+	if actionErr != nil {
+		// uncertain 用于识别可能已被平台执行、因而不能自动再次提交的免拼结果。
+		var uncertain *uncertainActionError
+		if errors.As(actionErr, &uncertain) {
+			status = "needs_review"
+		} else {
+			status = "failed"
+		}
+		c.logger.Warn("自动免拼失败，已保存阶段状态", "account", task.AccountID, "order_id", task.OrderID, "status", status, "err", actionErr)
+	} else {
+		c.logger.Info("自动免拼成功，等待成功小刀消息后发卡", "account", task.AccountID, "order_id", task.OrderID)
+	}
+	// finishErr 保存免拼阶段终态写入错误，避免远端成功后丢失兜底资格。
+	if finishErr := c.store.Automation.FinishBargainFreeShipping(ctx, task.OrderID, task.AccountID, status); finishErr != nil {
+		// reviewReason 说明阶段收口失败后为何不能再次自动免拼。
+		reviewReason := "免拼请求已经执行，但本地阶段状态保存失败，禁止自动重试，请核对平台订单状态：" + finishErr.Error()
+		if actionErr != nil {
+			reviewReason = "免拼请求结果和本地阶段状态均无法确认，禁止自动重试，请核对平台订单状态：" + errors.Join(actionErr, finishErr).Error()
+		}
+		// notifyCtx 保证原始请求取消后，人工处理通知仍有独立的短时入队预算。
+		notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+		c.notifications.notifyManualIntervention(notifyCtx, task, "二人小刀免拼", reviewReason, bargainManualInterventionKey(task))
+		notifyCancel()
+		if actionErr != nil {
+			return false, errors.Join(actionErr, fmt.Errorf("收口免拼阶段: %w", finishErr))
+		}
+		return false, uncertainAction(fmt.Errorf("闲鱼已免拼，但本地阶段保存失败: %w", finishErr))
+	}
+	if status == "needs_review" {
+		// notifyCtx 保证免拼结果不确定时的人工处理通知不受平台调用上下文取消影响。
+		notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+		c.notifications.notifyManualIntervention(notifyCtx, task, "二人小刀免拼", actionErr.Error(), bargainManualInterventionKey(task))
+		notifyCancel()
+	}
+	return false, actionErr
+}
+
+// bargainManualInterventionKey 返回同一账号、订单、免拼阶段共享的通知幂等键，重复 WS 不会制造重复告警。
+func bargainManualInterventionKey(task Task) string {
+	return fmt.Sprintf("manual-intervention:bargain-free-shipping:%s:%s", task.AccountID, task.OrderID)
 }
 
 // taskAutomationRunID 封装任务自动化运行ID业务协调。
@@ -678,111 +759,4 @@ func (c *Center) actionDelaySeconds(ctx context.Context, action db.AutomationAct
 		return action.DelaySeconds, nil
 	}
 	return card.DelaySeconds, nil
-}
-
-// prepareTask 封装prepare任务业务协调。
-func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
-	// task、err 分别表示补全买家信息后的任务快照与准备阶段错误。
-	task, err := c.prepareBuyerNickname(ctx, task)
-	if err != nil {
-		return task, err
-	}
-	if task.OrderID == "" {
-		return task, nil
-	}
-	// upsertErr 保存自动化准备阶段订单事实写入结果；失败时禁止继续执行外部动作。
-	if err := c.store.Orders.Upsert(ctx, task.OrderID, db.OrderUpsertOpts{
-		CookieID: task.AccountID,
-		ItemID:   task.ItemID,
-		BuyerID:  task.BuyerID,
-		ChatID:   task.ChatID,
-	}); err != nil {
-		return task, fmt.Errorf("保存自动化准备阶段订单事实: %w", err)
-	}
-	// needsDetail 表示付款发货或显式待付款货源跟价需要读取真实规格、数量和订单金额。
-	needsDetail := task.TriggerType == TriggerOrderPaid || task.RequireOrderDetail
-	if // existing、err 用于本次流程后续判断的existing、err
-	existing, err := c.store.Orders.Get(ctx, task.OrderID); err == nil && existing != nil {
-		task = mergeOrderIntoTask(task, existing)
-		if needsDetail && (existing.Quantity == "" || existing.Amount == "") {
-			needsDetail = true
-		}
-		// 规则是否多规格由 action.config_json 决定；这里无法提前知道命中的 action，
-		// 因此交易类事件统一补齐规格，确保后续规格映射有事实依据。
-		if needsDetail && (existing.SpecName == "" || existing.SpecValue == "") {
-			needsDetail = true
-		}
-	}
-	// fetcher 是构造期固定的订单详情查询器；执行过程中不允许替换依赖。
-	fetcher := c.dependencies.fetcher
-	if !needsDetail || fetcher == nil {
-		return task, nil
-	}
-	// cookieStr 用于本次流程后续判断的登录凭证Str
-	cookieStr := task.CookieStr
-	if strings.TrimSpace(cookieStr) == "" {
-		// err 用于本次流程后续判断的err
-		var err error
-		cookieStr, err = c.cookieValue(ctx, task.AccountID)
-		if err != nil {
-			return task, err
-		}
-	}
-	// detail、err 用于本次流程后续判断的detail、err
-	detail, err := fetcher.FetchOrderDetail(ctx, task.AccountID, task.OrderID, task.ItemID, task.BuyerID, cookieStr)
-	if err != nil {
-		return task, err
-	}
-	if detail == nil {
-		return task, nil
-	}
-	if detail.Quantity != "" {
-		task.Quantity = detail.Quantity
-	}
-	if detail.SpecName != "" {
-		task.SpecName = detail.SpecName
-	}
-	if detail.SpecValue != "" {
-		task.SpecValue = detail.SpecValue
-	}
-	if detail.Amount != "" {
-		task.Amount = detail.Amount
-	}
-	if detail.OrderStatus != "" {
-		task.OrderStatus = detail.OrderStatus
-	}
-	if detail.ReceiverName != "" {
-		task.ReceiverName = detail.ReceiverName
-	}
-	if detail.ReceiverPhone != "" {
-		task.ReceiverPhone = detail.ReceiverPhone
-	}
-	if detail.ReceiverAddress != "" {
-		task.ReceiverAddress = detail.ReceiverAddress
-	}
-	if detail.ReceiverCity != "" {
-		task.ReceiverCity = detail.ReceiverCity
-	}
-	if len(detail.OrderFields) > 0 {
-		task.OrderFields = detail.OrderFields
-	}
-	// upsertErr 保存补齐订单详情后的事实写入结果，失败时不允许进入动作执行阶段。
-	if err := c.store.Orders.Upsert(ctx, task.OrderID, db.OrderUpsertOpts{
-		CookieID:      task.AccountID,
-		ItemID:        task.ItemID,
-		BuyerID:       task.BuyerID,
-		ChatID:        task.ChatID,
-		SpecName:      task.SpecName,
-		SpecValue:     task.SpecValue,
-		Quantity:      task.Quantity,
-		Amount:        task.Amount,
-		OrderStatus:   task.OrderStatus,
-		ReceiverName:  task.ReceiverName,
-		ReceiverPhone: task.ReceiverPhone,
-		ReceiverAddr:  task.ReceiverAddress,
-		ReceiverCity:  task.ReceiverCity,
-	}); err != nil {
-		return task, fmt.Errorf("保存订单详情事实: %w", err)
-	}
-	return task, nil
 }

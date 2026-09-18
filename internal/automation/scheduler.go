@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +38,10 @@ const pendingShipCatchupEnv = "XIANYU_PENDING_SHIP_CATCHUP"
 // defaultPendingShipCooldown 是同一订单两次兜底触发之间的最小间隔。
 // 付款事件在准备阶段失败时可能不会留下任何运行记录，若不设冷却会每分钟重试并放大上游压力。
 const defaultPendingShipCooldown = 10 * time.Minute
+
+// defaultPendingShipSettleWindow 是新进入待发货状态的订单在通用兜底触发前必须经历的观察窗口。
+// 该窗口让实时付款系统卡片优先到达并建立运行记录，避免调度器把尚在结算中的订单误判为事件丢失。
+const defaultPendingShipSettleWindow = 2 * time.Minute
 
 // pendingShipTaskTimeout 是单次兜底任务的执行预算，避免上游接口挂起拖住整个分钟级扫描。
 const pendingShipTaskTimeout = 90 * time.Second
@@ -490,6 +493,14 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 			resultErr = errors.Join(resultErr, quarantineErr)
 			continue
 		}
+		if task.AccountID != run.CookieID || task.TriggerType != run.TriggerType || run.OrderID != "" && task.OrderID != run.OrderID {
+			// reason 说明持久化快照与运行不可变身份不一致，禁止使用快照中的账号或订单执行外部动作。
+			reason := "历史运行快照与运行身份不一致，已停止自动恢复"
+			// quarantineErr 保存身份不一致运行的人工核对状态写入错误。
+			quarantineErr := s.quarantineRunForReview(ctx, run, reason)
+			resultErr = errors.Join(resultErr, quarantineErr)
+			continue
+		}
 		// allowed、err 用于本次流程后续判断的allowed、err
 		allowed, err := s.center.accountAutomationAllowed(ctx, task.AccountID)
 		if err != nil || !allowed {
@@ -498,6 +509,14 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 				s.center.logger.Warn("延期自动化恢复任务失败", "run_id", run.ID, "err", postponeErr)
 				resultErr = errors.Join(resultErr, fmt.Errorf("延期自动化恢复任务失败: %w", postponeErr))
 			}
+			continue
+		}
+		// paidReady、paidGateErr 保存付款运行是否仍符合订单状态兜底边界及门禁处理错误。
+		paidReady, paidGateErr := s.paidRecoveryReady(ctx, task, run)
+		if paidGateErr != nil {
+			resultErr = errors.Join(resultErr, paidGateErr)
+		}
+		if !paidReady {
 			continue
 		}
 		// rule、err 用于本次流程后续判断的rule、err
@@ -609,10 +628,13 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 		var task Task
 		if // err 用于本次流程后续判断的err
 		err := json.Unmarshal([]byte(pending.TaskJSON), &task); err != nil {
+			// failureReason 是写入重试状态和人工处理通知共用的解析失败原因。
+			failureReason := "解析任务失败: " + err.Error()
 			// finishErr 表示解析失败后写入延迟任务重试或死信状态时的错误。
-			finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, false, "解析任务失败: "+err.Error())
+			finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, false, failureReason)
 			if finishErr != nil {
 				s.center.logger.Error("保存解析失败的暂停事件状态失败", "task_id", pending.ID, "err", finishErr)
+				s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；保存任务状态失败："+finishErr.Error())
 				resultErr = errors.Join(
 					resultErr,
 					errAutomationNeedsReview,
@@ -620,6 +642,9 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 				)
 			} else {
 				s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", pending.CookieID, "err", err)
+				if pending.ClaimVersion >= 5 {
+					s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；已达到自动重试上限")
+				}
 			}
 			continue
 		}
@@ -638,6 +663,7 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 		finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, runErr == nil, errorString(runErr))
 		if finishErr != nil {
 			s.center.logger.Warn("保存暂停事件重放结果失败", "task_id", pending.ID, "err", finishErr)
+			s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件重放后无法保存任务状态："+finishErr.Error())
 			resultErr = errors.Join(resultErr, errAutomationNeedsReview, runErr, fmt.Errorf("保存暂停事件重放结果失败: %w", finishErr))
 			continue
 		}
@@ -645,112 +671,29 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 			s.center.logger.Info("暂停期间自动化事件重放成功", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
 		} else {
 			s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType, "err", runErr)
+			if pending.ClaimVersion >= 5 {
+				s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件连续重放失败并已达到自动重试上限："+runErr.Error())
+			}
 		}
 	}
 	return resultErr
 }
 
-// errorString 封装错误String业务协调。
-func errorString(err error) string {
-	if err == nil {
-		return ""
+// notifyDeferredTaskNeedsReview 为进入死信或无法安全收口的延期自动化任务发送一次人工处理通知。
+func (s *Scheduler) notifyDeferredTaskNeedsReview(ctx context.Context, pending db.DeferredAutomationTask, task Task, reason string) {
+	if s == nil || s.center == nil {
+		return
 	}
-	return err.Error()
-}
-
-// reviewRequestRuleDue 封装review请求规则Due业务协调。
-func reviewRequestRuleDue(order db.Order, rule db.AutomationRule) bool {
-	// cfg 用于本次流程后续判断的cfg
-	cfg := parseReviewRuleConfig(rule.ConfigJSON)
-	if cfg.MaxAttempts > 0 && order.ReviewRequestCount >= cfg.MaxAttempts {
-		return false
+	if task.AccountID == "" {
+		task.AccountID = pending.CookieID
 	}
-	// baseRaw 用于本次流程后续判断的base原始
-	baseRaw := firstNonEmpty(order.ShippedAt, order.UpdatedAt, order.CreatedAt)
-	// waitHours 用于本次流程后续判断的waitHours
-	waitHours := cfg.AfterShippedHours
-	if order.ReviewRequestCount > 0 && strings.TrimSpace(order.LastReviewRequestAt) != "" {
-		baseRaw = order.LastReviewRequestAt
-		waitHours = cfg.RepeatIntervalHours
+	if task.TriggerType == "" {
+		task.TriggerType = pending.TriggerType
 	}
-	// base 用于本次流程后续判断的base
-	base := parseDBTime(baseRaw)
-	if base.IsZero() {
-		return false
-	}
-	return time.Since(base) >= time.Duration(waitHours)*time.Hour
-}
-
-// reviewRuleConfig 用于本次流程后续判断的review规则配置
-type reviewRuleConfig struct {
-	AfterShippedHours   int
-	RepeatIntervalHours int
-	MaxAttempts         int
-}
-
-// parseReviewRuleConfig 封装parseReview规则配置业务协调。
-func parseReviewRuleConfig(raw string) reviewRuleConfig {
-	// cfg 用于本次流程后续判断的cfg
-	cfg := reviewRuleConfig{AfterShippedHours: 72, RepeatIntervalHours: 24, MaxAttempts: 1}
-	if strings.TrimSpace(raw) == "" {
-		return cfg
-	}
-	// m 用于本次流程后续判断的m
-	var m map[string]any
-	if json.Unmarshal([]byte(raw), &m) != nil {
-		return cfg
-	}
-	if // v 用于本次流程后续判断的v
-	v := intFromAny(m["after_shipped_hours"]); v > 0 {
-		cfg.AfterShippedHours = v
-	}
-	if // v 用于本次流程后续判断的v
-	v := intFromAny(m["first_delay_hours"]); v > 0 {
-		cfg.AfterShippedHours = v
-	}
-	if // v 用于本次流程后续判断的v
-	v := intFromAny(m["repeat_interval_hours"]); v > 0 {
-		cfg.RepeatIntervalHours = v
-	}
-	if // v 用于本次流程后续判断的v
-	v := intFromAny(m["max_attempts"]); v > 0 {
-		cfg.MaxAttempts = v
-	}
-	return cfg
-}
-
-// intFromAny 封装intFromAny业务协调。
-func intFromAny(v any) int {
-	switch // x 用于本次流程后续判断的x
-	x := v.(type) {
-	case float64:
-		return int(x)
-	case int:
-		return x
-	case string:
-		// n 用于本次流程后续判断的n
-		n, _ := strconv.Atoi(strings.TrimSpace(x))
-		return n
-	default:
-		return 0
-	}
-}
-
-// parseDBTime 封装parseDB时间业务协调。
-func parseDBTime(s string) time.Time {
-	// layout 表示当前遍历过程中的layout
-	for _, layout := range []string{
-		time.RFC3339Nano,
-		"2006-01-02 15:04:05.999999999Z07:00", // Postgres TEXT(CURRENT_TIMESTAMP)
-		"2006-01-02 15:04:05.999999999Z07",
-		"2006-01-02 15:04:05Z07:00",
-		"2006-01-02 15:04:05Z07",
-		"2006-01-02 15:04:05", // SQLite/MySQL 历史值；按既有 UTC 约定解释
-	} {
-		if // t、err 用于本次流程后续判断的t、err
-		t, err := time.ParseInLocation(layout, strings.TrimSpace(s), time.UTC); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
+	// notificationKey 是同一延期任务共享的稳定人工处理通知键，重复扫描不会制造重复告警。
+	notificationKey := fmt.Sprintf("manual-intervention:deferred-task:%d", pending.ID)
+	// notifyCtx 保证任务状态写失败或原始重放预算取消后，告警仍有独立的短时入队预算。
+	notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+	s.center.notifications.notifyManualIntervention(notifyCtx, task, "暂停自动化事件重放", reason, notificationKey)
+	notifyCancel()
 }
