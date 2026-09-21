@@ -2,7 +2,9 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +89,7 @@ func TestParseExternalPriceMessageConfigUpgradesLegacyDefault(t *testing.T) {
 	if failureErr != nil || failureConfig.FailureNoticeText != defaultExternalFulfillmentFailureNotice || failureConfig.SafePriceFailureNoticeText != defaultExternalSafePriceFailureNotice {
 		t.Fatalf("旧版采购失败话术未升级: config=%+v err=%v", failureConfig, failureErr)
 	}
-	if _, invalidErr := parseExternalPriceMessageConfig(`{"fulfillment_success_notice_text":"缺少卡密占位符"}`); invalidErr == nil {
+	if _ /* invalidErr 是成功文案缺少交付占位符时应返回的校验错误。 */, invalidErr := parseExternalPriceMessageConfig(`{"fulfillment_success_notice_text":"缺少卡密占位符"}`); invalidErr == nil {
 		t.Fatal("缺少 delivery_content 的成功文案必须拒绝执行")
 	}
 }
@@ -504,5 +506,67 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 	}
 	if len(sender.texts) != 4 || sender.texts[3] != "订单 order-price-unavailable 正在人工核实，请勿重复下单" {
 		t.Fatalf("最新报价不可用时应回退人工核实提示: %v", sender.texts)
+	}
+}
+
+// TestExternalFulfillmentWaitingOnlyNotifiesAfterExhaustion 验证供应站 waiting 仍有下次原单查询时不发失败终态通知，只在长轮询真正耗尽后通知一次。
+func TestExternalFulfillmentWaitingOnlyNotifiesAfterExhaustion(t *testing.T) {
+	// store、cleanup 保存隔离数据库和测试结束后的释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是规则创建、首次执行和耗尽恢复共用的上下文。
+	ctx := context.Background()
+	// owner、ownerErr 是测试账号所属用户及查询错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// ruleID、createErr 是外部履约付款规则主键及创建错误。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", ItemID: "item-waiting-notify",
+		Name: "外部等待通知边界", TriggerType: TriggerOrderPaid, Enabled: true,
+		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true,
+			ConfigJSON: `{"source_type":"external","instance_id":8,"goods_id":40863,"safe_price":"9.90"}`}}})
+	if createErr != nil || ruleID <= 0 {
+		t.Fatalf("创建外部等待规则失败: rule_id=%d err=%v", ruleID, createErr)
+	}
+	// fulfillment 每次都返回 waiting，用于观察可恢复中间态和最终耗尽的通知差异。
+	fulfillment := &externalFulfillmentStub{product: ExternalProductQuote{Price: "1.00", CanBuy: true}, result: ExternalFulfillmentResult{State: "waiting"}}
+	// sender 记录对买家发送的受理提示，同一订单恢复时不应重复。
+	sender := &testSender{}
+	// notifier 记录管理员终态通知，waiting 未耗尽时必须保持为空。
+	notifier := &recordingNotifier{}
+	// center 注入本地订单详情、waiting 货源替身和可观察通知器。
+	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{
+		OrderDetailFetcher:  testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.90", OrderStatus: "pending_ship"}},
+		ExternalFulfillment: fulfillment, Notifier: notifier,
+	})
+	// task 是首次进入外部履约的可信 WebSocket 付款事件。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-waiting-notify",
+		ItemID: "item-waiting-notify", BuyerID: "buyer", ChatID: "chat", Quantity: "1", Amount: "9.90"}
+	if /* firstErr 是首次 waiting 结果，应保留给调度器识别。 */ firstErr := center.HandleTask(ctx, task); !errors.Is(firstErr, errExternalFulfillmentPending) {
+		t.Fatalf("首次 waiting 未保留长轮询分类: %v", firstErr)
+	}
+	if len(notifier.messages()) != 0 {
+		t.Fatalf("waiting 仍有后续查询时不应发失败终态通知: %v", notifier.messages())
+	}
+	// run 是首次 waiting 落库后的可恢复运行。
+	var run db.AutomationRun
+	// runErr 读取订单对应的唯一测试运行。
+	runErr := store.DB.QueryRowContext(ctx, `SELECT id,attempt_count,next_retry_at FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&run.ID, &run.AttemptCount, &run.NextRetryAt)
+	if runErr != nil || run.NextRetryAt == 0 {
+		t.Fatalf("waiting 未安排下次查询: run=%+v err=%v", run, runErr)
+	}
+	// updateErr 把运行推进到长轮询最后一次可领取代次，避免测试真实等待退避。
+	_, updateErr := store.DB.ExecContext(ctx, `UPDATE automation_runs SET attempt_count=16,next_retry_at=0 WHERE id=?`, run.ID)
+	if updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	if /* recoveryErr 是最后一次原单查询的调度收口结果，waiting 分类会被调度器消费而不上报。 */ recoveryErr := NewScheduler(center).runRecoveryTasks(ctx); recoveryErr != nil {
+		t.Fatalf("耗尽恢复应由调度器正常收口: %v", recoveryErr)
+	}
+	// messages 是长轮询耗尽后的管理员终态通知列表。
+	messages := notifier.messages()
+	if len(messages) != 1 || !strings.Contains(messages[0], "失败") {
+		t.Fatalf("waiting 只应在长轮询耗尽后通知一次: %v", messages)
 	}
 }

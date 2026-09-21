@@ -44,9 +44,11 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		reason := "订单归属账号与付款运行不一致，已停止自动恢复"
 		return false, s.quarantineRunForReview(ctx, run, reason)
 	}
-	// currentStatus 是恢复门禁读到的本地状态；原始 1 及其规范化值 processing 都不足以证明订单已离开待发货。
-	currentStatus := strings.TrimSpace(order.OrderStatus)
-	if currentStatus == "1" || currentStatus == "processing" {
+	// rawStatus 保留本地订单的原始状态。
+	rawStatus := strings.TrimSpace(order.OrderStatus)
+	// currentStatus 统一映射数字码和文本值，避免把原始 2 误判为非待发货。
+	currentStatus := db.NormalizeOrderStatus(rawStatus)
+	if currentStatus == "processing" {
 		// refresher 是构造期固定的平台订单状态刷新器，缺失时必须失败关闭。
 		refresher := s.center.dependencies.orderStatusRefresher
 		if refresher == nil {
@@ -65,17 +67,21 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 			reason := "平台状态刷新后订单归属账号与付款运行不一致，已停止自动恢复"
 			return false, s.quarantineRunForReview(ctx, run, reason)
 		}
-		// refreshedStatus 是平台刷新落库后的状态，仍为两种处理中表示时只能继续等待。
-		refreshedStatus := strings.TrimSpace(refreshedOrder.OrderStatus)
-		if refreshedStatus == "1" || refreshedStatus == "processing" {
+		// refreshedStatus 是平台刷新落库后的规范状态，仍为处理中时只能继续等待。
+		refreshedStatus := db.NormalizeOrderStatus(strings.TrimSpace(refreshedOrder.OrderStatus))
+		if refreshedStatus == "processing" {
 			return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "平台刷新后订单仍在处理中，等待下次核对", nil)
 		}
 		order = refreshedOrder
+		currentStatus = refreshedStatus
 		s.center.logger.Info("历史付款恢复已刷新平台订单状态", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "order_status", order.OrderStatus)
 	}
-	if order.OrderStatus != "pending_ship" || order.SystemShipped {
+	if currentStatus != "pending_ship" && currentStatus != "shipped" && currentStatus != "completed" && currentStatus != "cancelled" && currentStatus != "canceled" && currentStatus != "refunding" {
+		return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "订单状态无法确认是否仍待发货，等待下次核对", nil)
+	}
+	if currentStatus != "pending_ship" || order.SystemShipped {
 		// reason 记录自动取消原因；订单已取消、完成或发货时无需用户再次处理。
-		reason := fmt.Sprintf("订单当前状态为 %s，不再需要自动发货恢复", firstNonEmpty(order.OrderStatus, "未知"))
+		reason := fmt.Sprintf("订单当前状态为 %s，不再需要自动发货恢复", firstNonEmpty(currentStatus, "未知"))
 		// canceled、cancelErr 保存过期运行是否仍与扫描快照一致并已安全取消。
 		canceled, cancelErr := s.center.store.Automation.CancelObsoletePaidRecoveryRun(ctx, run, reason)
 		if cancelErr != nil {

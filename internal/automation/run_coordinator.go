@@ -104,16 +104,27 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				resultErr = errors.Join(resultErr, errAutomationNeedsReview, fmt.Errorf("保存自动化执行结果失败: %w", finishErr))
 			}
 		}
-		if r.hasNotifier() {
+		// finalRun 是终态落库后的最新运行；外部等待需要用它区分「已安排下次查询」与「重试真正耗尽」。
+		var finalRun *db.AutomationRun
+		// externalPending 表示供应站已受理但尚未产出结果，这是可恢复中间态而非立即失败。
+		externalPending := status == "failed" && errors.Is(resultErr, errExternalFulfillmentPending)
+		if finishErr == nil && status == "failed" && (externalPending || externalFailureDetected) {
+			// latestRun、latestRunErr 分别是终态落库后的运行快照及读取错误。
+			latestRun, latestRunErr := r.store.Automation.GetRun(finishCtx, run.ID)
+			if latestRunErr != nil {
+				r.logger.Error("读取外部履约最终运行状态失败", "run_id", run.ID, "err", latestRunErr)
+				resultErr = errors.Join(resultErr, fmt.Errorf("读取外部履约最终运行状态: %w", latestRunErr))
+			} else {
+				finalRun = latestRun
+			}
+		}
+		// notifyTerminal 表示当前结果已经是用户可见终态；仍有下次查询时禁止提前发送失败通知。
+		notifyTerminal := !externalPending || finalRun != nil && finalRun.NextRetryAt == 0
+		if r.hasNotifier() && notifyTerminal {
 			r.notifyResult(finishCtx, task, run.ID, status, sent, errMsg)
 		}
 		if finishErr == nil && status == "failed" && externalFailureDetected && r.notifyExternalFailure != nil {
-			// finalRun 和 finalRunErr 是终态落库后的最新重试时间；零表示没有下一次自动恢复机会。
-			finalRun, finalRunErr := r.store.Automation.GetRun(finishCtx, run.ID)
-			if finalRunErr != nil {
-				r.logger.Error("读取外部采购最终失败状态失败", "run_id", run.ID, "err", finalRunErr)
-				resultErr = errors.Join(resultErr, fmt.Errorf("读取外部采购最终失败状态: %w", finalRunErr))
-			} else if finalRun.NextRetryAt == 0 {
+			if finalRun != nil && finalRun.NextRetryAt == 0 {
 				if noticeErr := r.notifyExternalFailure(finishCtx, task, rule, safePriceFailureDetected); noticeErr != nil { // noticeErr 是买家提示发送或防重状态保存失败原因。
 					r.logger.Error("发送外部采购最终失败提示失败", "run_id", run.ID, "order_id", task.OrderID, "err", noticeErr)
 					resultErr = errors.Join(resultErr, fmt.Errorf("发送外部采购最终失败提示: %w", noticeErr))

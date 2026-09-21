@@ -233,6 +233,27 @@ func TestPaidRecoveryRechecksCurrentOrderAndMasterSwitch(t *testing.T) {
 
 // TestPaidRecoveryRefreshesRawProcessingStatus 验证历史付款恢复遇到原始状态 1 时先刷新平台，而不是直接取消运行。
 func TestPaidRecoveryRefreshesRawProcessingStatus(t *testing.T) {
+	t.Run("原始待发货状态直接放行", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存原始状态 2 的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "2", "ws")
+		defer cleanup()
+		// run、runErr 是待校验的原始待发货运行快照。
+		run, runErr := store.Automation.GetRun(context.Background(), runID)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		// task 是从运行快照恢复的可信付款事件。
+		var task Task
+		if /* decodeErr 保存原始状态 2 场景的快照解码错误。 */ decodeErr := json.Unmarshal([]byte(run.RawEventJSON), &task); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		// ready、readyErr 表示数字状态 2 是否按 pending_ship 放行且不依赖平台刷新器。
+		ready, readyErr := scheduler.paidRecoveryReady(context.Background(), task, *run)
+		if readyErr != nil || !ready || len(sender.texts) != 0 {
+			t.Fatalf("原始状态 2 未按待发货放行: ready=%v messages=%v err=%v", ready, sender.texts, readyErr)
+		}
+	})
+
 	t.Run("刷新为待发货后放行", func(t *testing.T) {
 		// runID、sender、scheduler、store、cleanup 保存原始状态为 1 的付款恢复夹具。
 		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "1", "ws")
@@ -317,6 +338,20 @@ func TestPaidRecoveryRefreshesRawProcessingStatus(t *testing.T) {
 		run, readErr := store.Automation.GetRun(context.Background(), runID)
 		if readErr != nil || run.Status != "running" || refresher.calls != 1 || len(sender.texts) != 0 {
 			t.Fatalf("状态 1 被错误取消或执行: run=%+v calls=%d messages=%v err=%v", run, refresher.calls, sender.texts, readErr)
+		}
+	})
+
+	t.Run("未知状态延期而不取消", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存无法归类状态的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "platform_future_state", "ws")
+		defer cleanup()
+		if /* scanErr 保存未知状态恢复扫描的安全延期结果。 */ scanErr := scheduler.runRecoveryTasks(context.Background()); scanErr != nil {
+			t.Fatalf("未知状态应安全延期: %v", scanErr)
+		}
+		// run、readErr 用于确认未知状态仍保留可恢复运行。
+		run, readErr := store.Automation.GetRun(context.Background(), runID)
+		if readErr != nil || run.Status != "running" || run.LeaseExpiresAt <= time.Now().Unix() || len(sender.texts) != 0 {
+			t.Fatalf("未知状态被错误取消或执行: run=%+v messages=%v err=%v", run, sender.texts, readErr)
 		}
 	})
 }
