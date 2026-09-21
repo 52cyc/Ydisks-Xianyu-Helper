@@ -21,6 +21,8 @@ type CenterDependencies struct {
 	AccountTaskClient AccountTaskClient
 	// OrderDetailFetcher 提供自动发货前的订单详情查询能力。
 	OrderDetailFetcher OrderDetailFetcher
+	// OrderStatusRefresher 在恢复历史付款运行前强制刷新平台订单状态。
+	OrderStatusRefresher OrderStatusRefresher
 	// Notifier 接收发货结果通知；为空时不发送通知。
 	Notifier Notifier
 	// CookieSource 提供自动发货读取 Cookie 的可替换边界；为空时读取仓储。

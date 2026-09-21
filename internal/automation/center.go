@@ -85,6 +85,12 @@ type OrderDetailFetcher interface {
 	FetchOrderDetail(ctx context.Context, cookieID, orderID, itemID, buyerID, cookieStr string) (*OrderDetail, error)
 }
 
+// OrderStatusRefresher 强制从平台刷新指定账号的订单状态并写回本地订单。
+type OrderStatusRefresher interface {
+	// RefreshOrderStatus 只刷新已确认归属 accountID 的订单，不执行发货或供应商动作。
+	RefreshOrderStatus(ctx context.Context, accountID, orderID string) error
+}
+
 // CredentialRecoverer 仅在平台明确返回 Session 失效时执行一次账号恢复；Token 过期由 MTOP 客户端内部刷新。
 type CredentialRecoverer interface {
 	RecoverExpiredCredential(ctx context.Context, cookieID string) bool
@@ -129,6 +135,8 @@ type centerDependencies struct {
 	accountTaskClient AccountTaskClient
 	// fetcher 是订单详情查询器。
 	fetcher OrderDetailFetcher
+	// orderStatusRefresher 是历史付款恢复前使用的平台状态刷新器。
+	orderStatusRefresher OrderStatusRefresher
 	// recoverer 是凭证恢复器。
 	recoverer CredentialRecoverer
 	// notifier 是发货结果通知器。
@@ -174,13 +182,14 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		store:   store,
 		senders: senders,
 		dependencies: centerDependencies{
-			mtop:                client,
-			accountTaskClient:   accountTaskClient,
-			fetcher:             dependencies.OrderDetailFetcher,
-			notifier:            dependencies.Notifier,
-			cookieSrc:           dependencies.CookieSource,
-			apiFetcher:          dependencies.APICardFetcher,
-			externalFulfillment: dependencies.ExternalFulfillment,
+			mtop:                 client,
+			accountTaskClient:    accountTaskClient,
+			fetcher:              dependencies.OrderDetailFetcher,
+			orderStatusRefresher: dependencies.OrderStatusRefresher,
+			notifier:             dependencies.Notifier,
+			cookieSrc:            dependencies.CookieSource,
+			apiFetcher:           dependencies.APICardFetcher,
+			externalFulfillment:  dependencies.ExternalFulfillment,
 		},
 		logger: logger.With("subsys", "automation"),
 	}

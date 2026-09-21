@@ -8,6 +8,7 @@ import (
 	"time"
 
 	accountapp "xianyu-go/internal/application/account"
+	orderapp "xianyu-go/internal/application/orders"
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/browser"
 	"xianyu-go/internal/chat"
@@ -331,11 +332,47 @@ func (a *Adapter) FetchOrderDetail(ctx context.Context, cookieID, orderID, itemI
 	detail, ok := a.localOrderDetail(ctx, orderID); ok {
 		return detail, nil
 	}
+	return a.fetchRemoteOrderDetail(ctx, cookieID, orderID, false)
+}
+
+// RefreshOrderStatus 强制读取平台订单状态并在账号归属未变时写回本地，不复用本地详情或短时成功缓存。
+func (a *Adapter) RefreshOrderStatus(ctx context.Context, accountID, orderID string) error {
+	// currentOrder 是平台请求前的本地订单快照，用于禁止跨账号刷新。
+	currentOrder, currentErr := a.store.Orders.Get(ctx, orderID)
+	if currentErr != nil {
+		return fmt.Errorf("读取待刷新订单: %w", currentErr)
+	}
+	if currentOrder.CookieID != accountID {
+		return errors.New("订单归属账号与刷新请求不一致")
+	}
+	// detail、fetchErr 是强制绕过本地与已完成缓存后返回的平台订单事实。
+	detail, fetchErr := a.fetchRemoteOrderDetail(ctx, accountID, orderID, true)
+	if fetchErr != nil {
+		return fetchErr
+	}
+	// refreshedStatus 是平台数字码转换后的本地标准状态。
+	refreshedStatus := orderapp.NormalizeOrderStatus(strings.TrimSpace(detail.OrderStatus))
+	if !orderapp.ValidEditableOrderStatus(refreshedStatus) {
+		return fmt.Errorf("平台订单状态无法确认: %s", refreshedStatus)
+	}
+	// latestOrder、latestErr 用于在写回前复核慢请求期间订单归属未发生变化。
+	latestOrder, latestErr := a.store.Orders.Get(ctx, orderID)
+	if latestErr != nil {
+		return fmt.Errorf("重读待刷新订单: %w", latestErr)
+	}
+	if latestOrder.CookieID != accountID {
+		return errors.New("平台请求期间订单归属账号已变更")
+	}
+	return a.store.Orders.Upsert(ctx, orderID, db.OrderUpsertOpts{CookieID: accountID, OrderStatus: refreshedStatus})
+}
+
+// fetchRemoteOrderDetail 统一处理平台订单详情请求及一次明确 Session 失效恢复；fresh 表示不复用已完成的短时成功结果。
+func (a *Adapter) fetchRemoteOrderDetail(ctx context.Context, cookieID, orderID string, fresh bool) (*automation.OrderDetail, error) {
 	if a.orderMTop == nil {
 		return nil, fmt.Errorf("订单详情 MTOP 客户端未配置")
 	}
-	// detail、err 用于本次流程后续判断的detail、err
-	detail, err := a.fetchOrderDetailAttempt(ctx, cookieID, orderID)
+	// detail、err 保存首次平台请求结果，只在明确 Session 失效时进入恢复。
+	detail, err := a.fetchOrderDetailAttempt(ctx, cookieID, orderID, fresh)
 	if err == nil || !mtop.IsSessionExpiredErr(err) {
 		return detail, err
 	}
@@ -344,13 +381,13 @@ func (a *Adapter) FetchOrderDetail(ctx context.Context, cookieID, orderID, itemI
 		return nil, fmt.Errorf("订单详情凭证失效且即时续期失败: %w", err)
 	}
 	a.logger.Info("Cookie 即时续期成功，重新请求订单详情", "account", cookieID, "order_id", orderID)
-	return a.fetchOrderDetailAttempt(ctx, cookieID, orderID)
+	return a.fetchOrderDetailAttempt(ctx, cookieID, orderID, fresh)
 }
 
-// fetchOrderDetailAttempt 封装fetch订单Detail尝试次数业务协调。
-func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID string) (*automation.OrderDetail, error) {
-	// 等待其他同订单调用期间本地事实可能已经补齐，再检查一次避免无意义平台请求。
-	if detail, ok := a.localOrderDetail(ctx, orderID); ok {
+// fetchOrderDetailAttempt 执行一次凭证快照受控的订单详情请求；fresh 禁止本地和已完成缓存短路。
+func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID string, fresh bool) (*automation.OrderDetail, error) {
+	// 普通详情请求等待期间本地事实可能已经补齐，强制刷新必须继续访问平台。
+	if detail, ok := a.localOrderDetail(ctx, orderID); !fresh && ok {
 		return detail, nil
 	}
 	// credentialUnlock 用于本次流程后续判断的credentialUnlock
@@ -385,7 +422,14 @@ func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID
 	credentialUnlock()
 	credentialLocked = false
 	// detail、fetchErr 保存共享限流和同订单去重后的平台详情结果及错误。
-	detail, fetchErr := a.orderDetails.Fetch(requestCtx, cookieID, orderID, cookieStr, a.orderMTop)
+	var detail *mtop.OrderDetailResult
+	// fetchErr 保存平台请求或协调等待返回的错误。
+	var fetchErr error
+	if fresh {
+		detail, fetchErr = a.orderDetails.FetchFresh(requestCtx, cookieID, orderID, cookieStr, a.orderMTop)
+	} else {
+		detail, fetchErr = a.orderDetails.Fetch(requestCtx, cookieID, orderID, cookieStr, a.orderMTop)
+	}
 	// authoritativeCookies、authoritativeSnapshot、sessionChanged 用于本次流程后续判断的authoritativeCookies、authoritativeSnapshot、sessionChanged
 	authoritativeCookies, authoritativeSnapshot, sessionChanged := cookieSession.State()
 	// credentialUnlock 保存重新进入凭证提交临界区的释放函数。

@@ -184,10 +184,11 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger,
 	externalFulfillment := newAutomationExternalFulfillmentAdapter(miscDependencies.NewFulfillmentService(nil))
 	// autoCenter 依赖已构造但尚未启动的 manager 与 adapter，避免运行期形成部分可用状态。
 	autoCenter := automation.NewWithDependencies(store, automationSenders, logger, automation.CenterDependencies{
-		OrderDetailFetcher:  runtimeAdapter,
-		Notifier:            notifier,
-		APICardFetcher:      newAPIDeliveryClient(store, logger),
-		ExternalFulfillment: externalFulfillment,
+		OrderDetailFetcher:   runtimeAdapter,
+		OrderStatusRefresher: runtimeAdapter,
+		Notifier:             notifier,
+		APICardFetcher:       newAPIDeliveryClient(store, logger),
+		ExternalFulfillment:  externalFulfillment,
 	})
 	runtimeAdapter.chat = chatService
 	runtimeAdapter.automation = autoCenter

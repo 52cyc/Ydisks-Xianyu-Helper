@@ -3,12 +3,34 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"xianyu-go/internal/db"
 )
+
+// paidRecoveryStatusRefresher 是付款恢复状态门禁的本地刷新替身。
+type paidRecoveryStatusRefresher struct {
+	// store 保存刷新成功时需要写回的隔离数据库。
+	store *db.Store
+	// status 是模拟平台返回并写回本地的标准或原始状态。
+	status string
+	// err 是模拟平台刷新失败时返回的确定性错误。
+	err error
+	// calls 记录恢复门禁发起的强制刷新次数。
+	calls int
+}
+
+// RefreshOrderStatus 记录一次强制刷新，并按测试设定返回错误或写回状态。
+func (r *paidRecoveryStatusRefresher) RefreshOrderStatus(ctx context.Context, accountID, orderID string) error {
+	r.calls++
+	if r.err != nil {
+		return r.err
+	}
+	return r.store.Orders.Patch(ctx, orderID, db.OrderPatch{OrderStatus: &r.status})
+}
 
 // seedRecoverableSchedulerRun 创建一条未进入外部动作、可由恢复调度器领取的运行记录。
 func seedRecoverableSchedulerRun(t *testing.T, store *db.Store, ctx context.Context, suffix string, raw any) int64 {
@@ -205,6 +227,96 @@ func TestPaidRecoveryRechecksCurrentOrderAndMasterSwitch(t *testing.T) {
 		run, readErr := store.Automation.GetRun(context.Background(), runID)
 		if readErr != nil || run.Status != "needs_review" || len(sender.texts) != 0 {
 			t.Fatalf("人工来源付款运行未被隔离: run=%+v messages=%v err=%v", run, sender.texts, readErr)
+		}
+	})
+}
+
+// TestPaidRecoveryRefreshesRawProcessingStatus 验证历史付款恢复遇到原始状态 1 时先刷新平台，而不是直接取消运行。
+func TestPaidRecoveryRefreshesRawProcessingStatus(t *testing.T) {
+	t.Run("刷新为待发货后放行", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存原始状态为 1 的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "1", "ws")
+		defer cleanup()
+		// refresher 把平台最新事实模拟为待发货并记录调用。
+		refresher := &paidRecoveryStatusRefresher{store: store, status: "pending_ship"}
+		scheduler.center = NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{OrderStatusRefresher: refresher})
+		// run、runErr 是待复核的历史运行快照。
+		run, runErr := store.Automation.GetRun(context.Background(), runID)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		// task 是运行创建时冻结的可信 WebSocket 付款事件。
+		var task Task
+		if /* decodeErr 保存冻结付款事件解码错误。 */ decodeErr := json.Unmarshal([]byte(run.RawEventJSON), &task); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		// ready、readyErr 表示平台刷新后是否允许继续原有幂等履约。
+		ready, readyErr := scheduler.paidRecoveryReady(context.Background(), task, *run)
+		if readyErr != nil || !ready || refresher.calls != 1 {
+			t.Fatalf("待发货刷新未放行: ready=%v calls=%d err=%v", ready, refresher.calls, readyErr)
+		}
+		// order、orderErr 是恢复门禁重读后的本地权威状态。
+		order, orderErr := store.Orders.Get(context.Background(), run.OrderID)
+		if orderErr != nil || order.OrderStatus != "pending_ship" {
+			t.Fatalf("平台状态未写回: order=%+v err=%v", order, orderErr)
+		}
+	})
+
+	t.Run("规范化处理中也先刷新", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存已规范化为 processing 的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "processing", "ws")
+		defer cleanup()
+		// refresher 模拟限流后平台返回待发货事实。
+		refresher := &paidRecoveryStatusRefresher{store: store, status: "pending_ship"}
+		scheduler.center = NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{OrderStatusRefresher: refresher})
+		// run、runErr 是恢复门禁尚未处理的历史运行。
+		run, runErr := store.Automation.GetRun(context.Background(), runID)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		// task 是从运行快照恢复的 WebSocket 付款事件。
+		var task Task
+		if /* decodeErr 保存规范化状态场景的冻结事件解码错误。 */ decodeErr := json.Unmarshal([]byte(run.RawEventJSON), &task); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		// ready、readyErr 表示 processing 是否经平台刷新为待发货后被正常放行。
+		ready, readyErr := scheduler.paidRecoveryReady(context.Background(), task, *run)
+		if readyErr != nil || !ready || refresher.calls != 1 {
+			t.Fatalf("processing 未先刷新后放行: ready=%v calls=%d err=%v", ready, refresher.calls, readyErr)
+		}
+	})
+
+	t.Run("刷新失败时延期且不取消", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存需要模拟平台失败的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "1", "ws")
+		defer cleanup()
+		// refresher 返回临时平台错误，验证门禁失败关闭。
+		refresher := &paidRecoveryStatusRefresher{store: store, err: errors.New("平台临时不可用")}
+		scheduler.center = NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{OrderStatusRefresher: refresher})
+		if /* scanErr 保存平台刷新失败场景的恢复扫描错误。 */ scanErr := scheduler.runRecoveryTasks(context.Background()); scanErr != nil {
+			t.Fatalf("刷新失败应安全延期: %v", scanErr)
+		}
+		// run、readErr 用于确认运行仍可恢复且未进入供应商动作。
+		run, readErr := store.Automation.GetRun(context.Background(), runID)
+		if readErr != nil || run.Status != "running" || run.LeaseExpiresAt <= time.Now().Unix() || refresher.calls != 1 || len(sender.texts) != 0 {
+			t.Fatalf("刷新失败后运行未安全延期: run=%+v calls=%d messages=%v err=%v", run, refresher.calls, sender.texts, readErr)
+		}
+	})
+
+	t.Run("刷新后仍为原始状态时延期", func(t *testing.T) {
+		// runID、sender、scheduler、store、cleanup 保存平台仍返回 1 的付款恢复夹具。
+		runID, sender, scheduler, store, cleanup := newPaidRecoveryFixture(t, "1", "ws")
+		defer cleanup()
+		// refresher 写回仍不能证明待发货的原始状态。
+		refresher := &paidRecoveryStatusRefresher{store: store, status: "processing"}
+		scheduler.center = NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{OrderStatusRefresher: refresher})
+		if /* scanErr 保存平台仍返回 1 时的恢复扫描错误。 */ scanErr := scheduler.runRecoveryTasks(context.Background()); scanErr != nil {
+			t.Fatalf("状态仍为 1 时应安全延期: %v", scanErr)
+		}
+		// run、readErr 用于确认不明确状态没有被当作终态取消。
+		run, readErr := store.Automation.GetRun(context.Background(), runID)
+		if readErr != nil || run.Status != "running" || refresher.calls != 1 || len(sender.texts) != 0 {
+			t.Fatalf("状态 1 被错误取消或执行: run=%+v calls=%d messages=%v err=%v", run, refresher.calls, sender.texts, readErr)
 		}
 	})
 }

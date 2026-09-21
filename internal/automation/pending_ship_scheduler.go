@@ -44,6 +44,35 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		reason := "订单归属账号与付款运行不一致，已停止自动恢复"
 		return false, s.quarantineRunForReview(ctx, run, reason)
 	}
+	// currentStatus 是恢复门禁读到的本地状态；原始 1 及其规范化值 processing 都不足以证明订单已离开待发货。
+	currentStatus := strings.TrimSpace(order.OrderStatus)
+	if currentStatus == "1" || currentStatus == "processing" {
+		// refresher 是构造期固定的平台订单状态刷新器，缺失时必须失败关闭。
+		refresher := s.center.dependencies.orderStatusRefresher
+		if refresher == nil {
+			return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "订单状态处于处理中但平台刷新能力未配置", errors.New("订单状态刷新器未初始化"))
+		}
+		if /* refreshErr 保存强制读取平台状态及写回本地订单的错误。 */ refreshErr := refresher.RefreshOrderStatus(ctx, run.CookieID, run.OrderID); refreshErr != nil {
+			return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "订单状态处于处理中，平台刷新失败", refreshErr)
+		}
+		// refreshedOrder、reloadErr 是刷新服务完成写回后重读的权威本地事实。
+		refreshedOrder, reloadErr := s.center.store.Orders.Get(ctx, run.OrderID)
+		if reloadErr != nil {
+			return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "平台状态已刷新但本地订单重读失败", reloadErr)
+		}
+		if refreshedOrder.CookieID != run.CookieID {
+			// reason 说明刷新期间归属变化后不能继续使用原运行。
+			reason := "平台状态刷新后订单归属账号与付款运行不一致，已停止自动恢复"
+			return false, s.quarantineRunForReview(ctx, run, reason)
+		}
+		// refreshedStatus 是平台刷新落库后的状态，仍为两种处理中表示时只能继续等待。
+		refreshedStatus := strings.TrimSpace(refreshedOrder.OrderStatus)
+		if refreshedStatus == "1" || refreshedStatus == "processing" {
+			return false, s.postponePaidRecoveryStatusRefresh(ctx, run, "平台刷新后订单仍在处理中，等待下次核对", nil)
+		}
+		order = refreshedOrder
+		s.center.logger.Info("历史付款恢复已刷新平台订单状态", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "order_status", order.OrderStatus)
+	}
 	if order.OrderStatus != "pending_ship" || order.SystemShipped {
 		// reason 记录自动取消原因；订单已取消、完成或发货时无需用户再次处理。
 		reason := fmt.Sprintf("订单当前状态为 %s，不再需要自动发货恢复", firstNonEmpty(order.OrderStatus, "未知"))
@@ -78,6 +107,24 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		return false, nil
 	}
 	return true, nil
+}
+
+// postponePaidRecoveryStatusRefresh 将无法确认平台状态的付款恢复运行延期，既不取消运行也不执行供应商动作。
+func (s *Scheduler) postponePaidRecoveryStatusRefresh(ctx context.Context, run db.AutomationRun, reason string, cause error) error {
+	// postponeErr 是本次延期写回的持久化结果。
+	postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(defaultReviewRequestScanInterval).Unix())
+	if postponeErr != nil {
+		if cause != nil {
+			return errors.Join(fmt.Errorf("%s: %w", reason, cause), fmt.Errorf("延期付款恢复运行失败: %w", postponeErr))
+		}
+		return fmt.Errorf("%s，且延期付款恢复运行失败: %w", reason, postponeErr)
+	}
+	if cause != nil {
+		s.center.logger.Warn(reason, "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "err", cause)
+	} else {
+		s.center.logger.Info(reason, "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID)
+	}
+	return nil
 }
 
 // scanPendingShipDeliveries 兜底扫描没有付款运行的待发货订单并补触发自动发货。

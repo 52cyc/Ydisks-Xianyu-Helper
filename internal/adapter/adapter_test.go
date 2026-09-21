@@ -440,6 +440,51 @@ func TestFetchOrderDetail_LocalHitShortCircuits(t *testing.T) {
 	}
 }
 
+// TestRefreshOrderStatusForcesPlatformRead 验证恢复门禁的状态刷新不会被已完整的本地订单短路。
+func TestRefreshOrderStatusForcesPlatformRead(t *testing.T) {
+	// store、cleanup 是包含默认账号的隔离数据库及释放函数。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 限定本测试的数据写入、平台替身请求和结果查询。
+	ctx := context.Background()
+	if /* seedErr 保存原始状态为 1 的本地订单种子写入错误。 */ seedErr := store.Orders.Upsert(ctx, "status-refresh-order", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item", BuyerID: "buyer", SpecName: "套餐", SpecValue: "标准", Quantity: "1", Amount: "7.75", OrderStatus: "1"}); seedErr != nil {
+		t.Fatal(seedErr)
+	}
+	// platform 返回平台最新的待发货数字状态码并记录真实调用次数。
+	platform := &fakeOrderDetailClient{detail: &mtop.OrderDetailResult{OrderStatus: "2", Quantity: "1", Amount: "7.75"}}
+	// adapter 使用本地平台替身，禁止测试访问真实闲鱼。
+	adapter := New(store, nil, nil)
+	adapter.SetOrderDetailClient(platform)
+	if /* refreshErr 保存强制平台状态刷新及本地写回错误。 */ refreshErr := adapter.RefreshOrderStatus(ctx, "cid", "status-refresh-order"); refreshErr != nil {
+		t.Fatalf("强制刷新订单状态失败: %v", refreshErr)
+	}
+	// refreshed、readErr 保存平台状态写回后的本地订单和读取错误。
+	refreshed, readErr := store.Orders.Get(ctx, "status-refresh-order")
+	if readErr != nil || refreshed.OrderStatus != "pending_ship" || platform.calls != 1 {
+		t.Fatalf("状态刷新结果异常: order=%+v calls=%d err=%v", refreshed, platform.calls, readErr)
+	}
+}
+
+// TestRefreshOrderStatusRejectsAccountMismatch 验证强制刷新在账号不匹配时不会访问平台。
+func TestRefreshOrderStatusRejectsAccountMismatch(t *testing.T) {
+	// store、cleanup 是本测试的隔离数据库及释放函数。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 用于创建本地订单并执行被拒绝的刷新。
+	ctx := context.Background()
+	if /* seedErr 保存跨账号刷新场景的本地订单种子写入错误。 */ seedErr := store.Orders.Upsert(ctx, "status-owner-order", db.OrderUpsertOpts{CookieID: "cid", OrderStatus: "1"}); seedErr != nil {
+		t.Fatal(seedErr)
+	}
+	// platform 记录账号门禁是否错误地放行了外部请求。
+	platform := &fakeOrderDetailClient{detail: &mtop.OrderDetailResult{OrderStatus: "2"}}
+	// adapter 持有平台替身，但归属校验应在调用前失败。
+	adapter := New(store, nil, nil)
+	adapter.SetOrderDetailClient(platform)
+	if /* refreshErr 保存账号归属门禁应返回的拒绝错误。 */ refreshErr := adapter.RefreshOrderStatus(ctx, "other-account", "status-owner-order"); refreshErr == nil || platform.calls != 0 {
+		t.Fatalf("跨账号刷新未被拒绝: calls=%d err=%v", platform.calls, refreshErr)
+	}
+}
+
 // TestFetchOrderDetail_MTopNilReturnsError 本地缺字段且 MTOP 客户端未配置时返回明确错误。
 func TestFetchOrderDetail_MTopNilReturnsError(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup

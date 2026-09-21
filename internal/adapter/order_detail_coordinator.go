@@ -121,6 +121,16 @@ func newOrderDetailCoordinatorWithLogger(logger *slog.Logger, minGap, maxJitter 
 // Fetch 在账号级限流后调用订单详情客户端；同一账号、同一订单的并发调用等待首个调用完成并复用其结果。
 // ctx 仅控制当前等待者和首个调用的平台请求；cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
 func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	return c.fetch(ctx, accountID, orderID, cookies, fetcher, true)
+}
+
+// FetchFresh 强制跳过已完成的短时成功缓存，但仍复用同订单在途请求并遵守账号限流。
+func (c *OrderDetailCoordinator) FetchFresh(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	return c.fetch(ctx, accountID, orderID, cookies, fetcher, false)
+}
+
+// fetch 根据 reuseSuccess 决定是否复用已完成的短时成功结果；在途去重和账号限流始终生效。
+func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop, reuseSuccess bool) (*mtop.OrderDetailResult, error) {
 	if c == nil {
 		return nil, errors.New("订单详情协调器未初始化")
 	}
@@ -135,14 +145,17 @@ func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, 
 	// key 唯一标识一个账号对一笔订单的在途请求，分隔符不能出现在已规范化的业务标识中。
 	key := normalizedAccount + "\x00" + normalizedOrder
 	c.mu.Lock()
-	// cached、cachedOK 保存尚未过期的成功结果；错误不进入缓存，确保凭证恢复可立即重新发起受限请求。
+	// cached、cachedOK 保存尚未过期的成功结果；强制刷新会删除旧缓存后继续请求平台。
 	if cached, cachedOK := c.successes[key]; cachedOK {
-		if time.Now().Before(cached.expiresAt) {
+		if !reuseSuccess {
+			delete(c.successes, key)
+		} else if time.Now().Before(cached.expiresAt) {
 			c.mu.Unlock()
 			c.logger.Debug("复用短时有效的订单详情结果", "account", normalizedAccount, "order_id", normalizedOrder)
 			return cloneOrderDetailResult(cached.result), nil
+		} else {
+			delete(c.successes, key)
 		}
-		delete(c.successes, key)
 	}
 	if // existing 表示已由其他协程发起的平台调用；后到调用方不得额外访问平台。
 	existing := c.requests[key]; existing != nil {

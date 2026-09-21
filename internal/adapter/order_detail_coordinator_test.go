@@ -122,6 +122,30 @@ func TestOrderDetailCoordinatorReusesRecentSuccess(t *testing.T) {
 	}
 }
 
+// TestOrderDetailCoordinatorFetchFreshBypassesSuccessCache 验证强制刷新不复用已完成的短时成功结果。
+func TestOrderDetailCoordinatorFetchFreshBypassesSuccessCache(t *testing.T) {
+	// minimumGap 是强制刷新仍必须遵守的账号级最小请求间隔。
+	minimumGap := 35 * time.Millisecond
+	// coordinator 使用无抖动的短限流间隔，同时验证缓存绕过与限流保留。
+	coordinator := newOrderDetailCoordinator(minimumGap, 0, nil)
+	// fetcher 统计普通读取和强制刷新真正进入平台边界的次数。
+	fetcher := &coordinatedOrderDetailFake{startedAt: make(chan time.Time, 2)}
+	if /* firstResult、firstErr 是首次可缓存读取的结果和错误。 */ firstResult, firstErr := coordinator.Fetch(context.Background(), "account-a", "order-fresh", "cookie", fetcher); firstErr != nil || firstResult == nil {
+		t.Fatalf("首次订单详情请求失败: result=%+v err=%v", firstResult, firstErr)
+	}
+	if /* freshResult、freshErr 是绕过已完成缓存的强制刷新结果和错误。 */ freshResult, freshErr := coordinator.FetchFresh(context.Background(), "account-a", "order-fresh", "cookie", fetcher); freshErr != nil || freshResult == nil {
+		t.Fatalf("强制刷新订单详情失败: result=%+v err=%v", freshResult, freshErr)
+	}
+	if fetcher.calls.Load() != 2 {
+		t.Fatalf("强制刷新平台请求次数=%d，期望 2", fetcher.calls.Load())
+	}
+	// firstStarted、freshStarted 分别是普通读取和强制刷新真正进入平台边界的时间。
+	firstStarted, freshStarted := <-fetcher.startedAt, <-fetcher.startedAt
+	if /* elapsed 是强制刷新仍遵守的账号限流间隔。 */ elapsed := freshStarted.Sub(firstStarted); elapsed < minimumGap-5*time.Millisecond {
+		t.Fatalf("强制刷新间隔=%s，小于限流下界=%s", elapsed, minimumGap)
+	}
+}
+
 // TestOrderDetailCoordinatorSpacesSameAccountRequests 验证同账号不同订单至少按配置间隔访问平台。
 func TestOrderDetailCoordinatorSpacesSameAccountRequests(t *testing.T) {
 	// minimumGap 是本测试要求的同账号最小请求间隔。
