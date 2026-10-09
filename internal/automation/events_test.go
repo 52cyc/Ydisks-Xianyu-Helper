@@ -69,6 +69,33 @@ func TestExtractTaskFromWS_OrderCompleted(t *testing.T) {
 	}
 }
 
+// TestExtractTaskFromWS_OrderCompletedUsesOrderIDFromBusinessCodeKey 回归验证确认收货卡片使用
+// 「订单:阶段码:业务键:序号」更新键时必须记录真实订单，而不能把短数字阶段码写成伪订单。
+// 平台的确认收货带评价卡片只在该更新键中携带订单号，历史缺陷会让这些确认收货事件全部落到
+// 同一个伪订单上（线上实测 69 个报文、55 个真实订单），真实订单拿不到完成时间，自动评价
+// 因此永远没有候选。
+func TestExtractTaskFromWS_OrderCompletedUsesOrderIDFromBusinessCodeKey(t *testing.T) {
+	// raw 保存仅在 updateKey 中携带订单号、contentType=25 的卖家侧确认收货系统卡片。
+	raw := mustMap(t, `{
+	  "1":{"2":"62904549781@goofish","7":1,"10":{
+	    "reminderContent":"快给ta一个评价吧～",
+	    "reminderTitle":"买家已确认收货",
+	    "senderUserId":"buyer-4",
+	    "bizTag":"{\"sourceId\":\"C2C:p3ve6cUxmnge\",\"taskName\":\"确认收货带评价_卖家\",\"taskId\":\"p3ve6cUxmnge\"}",
+	    "extJson":"{\"msgArg1\":\"MsgCard\",\"updateKey\":\"3310145690545023995:20:BUYER_CONFIRM_RATE_SELLER:74\",\"messageId\":\"28c26984b0fa482a9650b377ffe21522\",\"contentType\":\"25\"}"
+	  }}
+	}`)
+	// task 保存从确认收货系统卡片解析出的本地订单事实任务。
+	task := ExtractTaskFromWS("acc1", "cookie", raw)
+	if task == nil || task.TriggerType != TriggerOrderCompleted || task.OrderStatus != "completed" {
+		t.Fatalf("确认收货任务解析错误: %+v", task)
+	}
+	// task.OrderID 必须是更新键第一段的真实订单号，而不是第二段的业务阶段码。
+	if task.OrderID != "3310145690545023995" {
+		t.Fatalf("阶段码更新键必须保留真实订单号，实际=%q", task.OrderID)
+	}
+}
+
 // TestExtractTaskFromWS_ServiceReviewInvitationIgnored 封装TestExtract任务FromWSServiceReviewInvitationIgnored业务协调。
 func TestExtractTaskFromWS_ServiceReviewInvitationIgnored(t *testing.T) {
 	// raw 用于本次流程后续判断的原始
