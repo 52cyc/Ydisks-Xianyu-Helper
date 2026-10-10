@@ -14,10 +14,12 @@ import (
 	accountmanager "xianyu-go/internal/account"
 	accountapp "xianyu-go/internal/application/account"
 	automationapp "xianyu-go/internal/application/automation"
+	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/browser"
 	"xianyu-go/internal/chat"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/engine"
 	"xianyu-go/internal/notify"
 	"xianyu-go/internal/renewal"
 	"xianyu-go/internal/xianyu/cookierefresh"
@@ -149,6 +151,8 @@ type RuntimeBundle struct {
 	Automation *automation.Center
 	// Chat 是处理聊天持久化与实时事件的领域服务。
 	Chat *chat.Service
+	// ChatApplication 是消息页面使用的聊天应用服务，自动回复也通过它发送。
+	ChatApplication *chatapp.Service
 	// OrderDetails 是自动发货和管理端订单刷新共用的限流与去重协调器。
 	OrderDetails *OrderDetailCoordinator
 }
@@ -169,8 +173,15 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger,
 	runtimeAdapter.initialOrderSync = initialOrderSync
 	// chatService 是账号实时消息落库和广播服务，必须先于账号引擎启动完成注入。
 	chatService := chat.New(store)
+	// replyDelivery 保存消息页面完整发送端口；它在账号启动前由下方聊天应用服务完成赋值。
+	var replyDelivery engine.ReplyDelivery
 	// manager 是自动化中心的在线发送器来源，同时在启动期把 Adapter 固定为账号事件处理器。
-	manager := accountmanager.NewManager(store, runtimeAdapter, logger)
+	manager := accountmanager.NewManagerWithReplyDelivery(store, runtimeAdapter, logger, func() engine.ReplyDelivery {
+		return replyDelivery
+	})
+	// chatApplication 是人工消息页面和自动回复共用的聊天应用服务。
+	chatApplication := NewChatSendingApplication(chatService, store, manager, func() mtop.Client { return mtop.NewClient() })
+	replyDelivery = NewChatReplyDelivery(chatApplication)
 	// notifier 是自动化与账号告警共用的通知出口，构造完成后不可替换。
 	notifier := notify.New("", store, logger)
 	// automationSenders 为自动化图片卡密注入“临时下载、平台上传、WebSocket 发送”链路，不在本地保存图片。
@@ -194,12 +205,13 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger,
 	runtimeAdapter.automation = autoCenter
 	runtimeAdapter.notifier = notifier
 	return &RuntimeBundle{
-		Adapter:      runtimeAdapter,
-		Manager:      manager,
-		Notifier:     notifier,
-		Automation:   autoCenter,
-		Chat:         chatService,
-		OrderDetails: orderDetails,
+		Adapter:         runtimeAdapter,
+		Manager:         manager,
+		Notifier:        notifier,
+		Automation:      autoCenter,
+		Chat:            chatService,
+		ChatApplication: chatApplication,
+		OrderDetails:    orderDetails,
 	}, nil
 }
 

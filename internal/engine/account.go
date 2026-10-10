@@ -324,6 +324,8 @@ type Config struct {
 	Renewer cookieRenewer
 	// WSDialer 可选：用于测试隔离原生 WebSocket 握手。
 	WSDialer WSDialer
+	// ReplyDelivery 可选：生产自动回复使用的聊天应用完整发送端口；为空时不装配自动回复发送副作用。
+	ReplyDelivery ReplyDelivery
 }
 
 // New 构造单账号运行时（未启动）。
@@ -378,17 +380,18 @@ func New(cfg Config) *Account {
 	// echoTracker 保存当前账号自动化出站消息的回显等待项；其生命周期与账号 facade 一致。
 	echoTracker := newOutgoingEchoTracker()
 	if cfg.Store != nil {
-		a.reply = NewReplyService(cfg.CookieID, cfg.Store, a, nil, NewAIReplier(cfg.CookieID, cfg.Store, logger), logger)
+		// aiReplier 保存当前账号的 AI 回复生成能力。
+		aiReplier := NewAIReplier(cfg.CookieID, cfg.Store, logger)
+		if cfg.ReplyDelivery != nil {
+			a.reply = NewReplyService(cfg.CookieID, cfg.Store, cfg.ReplyDelivery, nil, aiReplier, logger)
+		}
 	}
-	// publisher 是平台客户端提供的商品发布人查询能力；缺失时回复门禁保持关闭。
-	publisher, _ := mtopClient.(replyItemPublisher)
 	a.messageDispatcher = newMessageDispatcher(messageDispatcherConfig{
 		CookieID:        cfg.CookieID,
 		CurrentCookie:   a.currentCookieStr,
 		CurrentHandler:  func() Handler { return a.handler },
 		ObserveOutgoing: echoTracker.observeMessage,
 		Reply:           a.reply,
-		ItemPublisher:   publisher,
 		Logger:          logger,
 		BeginTask:       a.lifecycle.beginTask,
 		RecordMessage:   a.recordMessageReceived,

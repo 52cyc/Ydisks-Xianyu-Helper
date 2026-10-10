@@ -35,16 +35,30 @@ const (
 	ActionAdjustPrice = "adjust_price"
 )
 
+// OrderRole 表示 WebSocket 交易卡片声明的接收方角色；空值代表旧协议没有提供角色事实。
+type OrderRole string
+
+const (
+	// OrderRoleUnknown 表示当前事件没有足够协议字段证明买卖方向。
+	OrderRoleUnknown OrderRole = ""
+	// OrderRoleSeller 表示当前账号是交易卡片对应商品的卖家。
+	OrderRoleSeller OrderRole = "seller"
+	// OrderRoleBuyer 表示当前账号是交易卡片对应订单的买家。
+	OrderRoleBuyer OrderRole = "buyer"
+)
+
 // Task 是自动化中心的统一输入。它可以来自 WS 系统事件、计划任务或手动触发。
 type Task struct {
 	Source      string // ws/scheduler/manual
 	AccountID   string
 	CookieStr   string
 	TriggerType string
-	ChatID      string
-	OrderID     string
-	ItemID      string
-	BuyerID     string
+	// OrderRole 是 WebSocket 交易卡片携带的接收方角色；未知时必须由本地订单和商品事实补证，不能直接发货。
+	OrderRole OrderRole
+	ChatID    string
+	OrderID   string
+	ItemID    string
+	BuyerID   string
 	// BuyerNickname 是购买用户昵称，来自本地聊天会话的非敏感摘要。
 	BuyerNickname string
 	SpecName      string
@@ -67,6 +81,8 @@ type Task struct {
 	ForceConfirmShipment bool
 	// RequireOrderDetail 仅供待付款货源跟价在规则匹配前补齐规格和数量；普通固定改价不依赖订单详情。
 	RequireOrderDetail bool
+	// AllowAllItems 表示当前冻结规则是否明确授权账号级付款发货动作忽略订单规格；该事实随运行快照保存，避免恢复时重新猜测规则范围。
+	AllowAllItems bool
 	// ActionPlan 是运行创建时冻结的动作计划。延迟恢复和失败重试必须使用该快照，
 	// 不能把数字游标应用到管理员后来修改过的规则上。
 	ActionPlan []db.AutomationAction
@@ -99,6 +115,10 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 	}
 	// f 汇总已有协议路径解析出的交易事实和接收方角色，供所有 WS 交易种类共用入口防御。
 	f := fieldsFromRaw(raw)
+	if f.orderRoleConflict {
+		// 角色字段互相矛盾时无法证明当前账号方向，拒绝进入任何自动化分支。
+		return nil
+	}
 	// 接收账号明确为买家时，必须在创建任务和记录订单事实之前拒绝，避免无匹配规则时仍写入错误卖家归属。
 	if f.orderRole == "buyer" {
 		return nil
@@ -110,11 +130,12 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 	if f.text == "" && f.redReminder == "" && f.reminderNotice == "" && f.taskName == "" && f.cardTitle == "" && f.buttonText == "" && f.updateKey == "" {
 		return nil
 	}
-	// task 保存待交给中心的卖家事件；缺少角色不构成拒绝条件，也不能根据文案或发送者推断买卖身份。
+	// task 保存待交给中心的系统事件；缺少角色只保留为待核验任务，不能根据文案或发送者推断买卖身份。
 	task := &Task{
 		Source:    "ws",
 		AccountID: accountID,
 		CookieStr: cookieStr,
+		OrderRole: OrderRole(f.orderRole),
 		ChatID:    f.chatID,
 		OrderID:   f.orderID,
 		ItemID:    f.itemID,
@@ -160,10 +181,12 @@ type rawFields struct {
 	// cardTitle 保存交易卡片内层标题，避免外层通用标题覆盖付款业务文案。
 	cardTitle string
 	// buttonText 保存交易卡片内层操作按钮文案，兼容只有“去发货”提示的系统卡片。
-	buttonText  string
-	orderRole   string
-	updateKey   string
-	contentType string
+	buttonText string
+	orderRole  string
+	// orderRoleConflict 表示同一报文内出现互相矛盾的买卖角色；冲突时必须失败关闭。
+	orderRoleConflict bool
+	updateKey         string
+	contentType       string
 	// messageDirection 保存平台消息方向；2 表示普通接收聊天，1 通常表示系统事件。
 	messageDirection string
 	// systemBiz 表示 bizTag 明确携带系统任务标识，兼容没有稳定方向字段的系统卡片。
@@ -193,7 +216,7 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 			mergeNoticeFields(&f, m10)
 			f.updateKey, f.contentType = extFields(strAny(m10["extJson"]))
 			f.taskName = firstNonEmpty(f.taskName, bizTaskName(strAny(m10["bizTag"])))
-			f.orderRole = firstNonEmpty(f.orderRole, orderRoleFromTaskName(f.taskName))
+			setOrderRole(&f, orderRoleFromTaskName(f.taskName))
 			f.systemBiz = hasSystemBizTag(strAny(m10["bizTag"]))
 		}
 		if f.text == "" {
@@ -214,7 +237,7 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 			}
 			if // role 用于本次流程后续判断的role
 			role := extractOrderRoleFromContent(contentJSON); role != "" {
-				f.orderRole = role
+				setOrderRole(&f, role)
 			}
 			if // id 用于本次流程后续判断的标识
 			id := extractOrderIDFromContent(contentJSON); id != "" {
@@ -308,9 +331,7 @@ func mergeNoticeFields(fields *rawFields, notice map[string]any) {
 	if fields.taskName == "" {
 		fields.taskName = bizTaskName(strAny(notice["bizTag"]))
 	}
-	if fields.orderRole == "" {
-		fields.orderRole = orderRoleFromTaskName(fields.taskName)
-	}
+	setOrderRole(fields, orderRoleFromTaskName(fields.taskName))
 	if hasSystemBizTag(strAny(notice["bizTag"])) {
 		fields.systemBiz = true
 	}
@@ -424,23 +445,17 @@ func supplementEventFactByKey(fields *rawFields, key string, value any) {
 			fields.buyerID = text
 		}
 	case "role", "orderrole":
-		if fields.orderRole == "" {
-			fields.orderRole = normalizedOrderRole(text)
-		}
+		setOrderRole(fields, normalizedOrderRole(text))
 	case "taskname":
 		if fields.taskName == "" {
 			fields.taskName = text
 		}
-		if fields.orderRole == "" {
-			fields.orderRole = orderRoleFromTaskName(text)
-		}
+		setOrderRole(fields, orderRoleFromTaskName(text))
 	case "biztag":
 		if fields.taskName == "" {
 			fields.taskName = bizTaskName(text)
 		}
-		if fields.orderRole == "" {
-			fields.orderRole = orderRoleFromTaskName(bizTaskName(text))
-		}
+		setOrderRole(fields, orderRoleFromTaskName(bizTaskName(text)))
 		if hasSystemBizTag(text) {
 			fields.systemBiz = true
 		}
@@ -487,9 +502,19 @@ func supplementEventFactsFromURL(fields *rawFields, rawURL string) {
 	if fields.orderID == "" {
 		fields.orderID = matchOrderID(rawURL)
 	}
-	if fields.orderRole == "" {
-		fields.orderRole = orderRoleFromURL(rawURL)
+	setOrderRole(fields, orderRoleFromURL(rawURL))
+}
+
+// setOrderRole 合并报文中的买卖角色；同一事件出现冲突角色时保留冲突标记，调用方必须拒绝执行。
+func setOrderRole(fields *rawFields, role string) {
+	if fields == nil || role == "" {
+		return
 	}
+	if fields.orderRole != "" && fields.orderRole != role {
+		fields.orderRoleConflict = true
+		return
+	}
+	fields.orderRole = role
 }
 
 // isOrderPaidEvent 封装is订单PaidEvent业务协调。
@@ -674,108 +699,4 @@ var orderIDPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`bizOrderId[=:](\d{10,})`),
 	// 独立 id 参数必须位于查询参数边界，不能把 sid= 中的后缀误判为订单号。
 	regexp.MustCompile(`(?:^|[?&])id=(\d{10,})(?:[&#]|$)`),
-}
-
-// extractOrderRoleFromContent 封装extract订单RoleFrom内容业务协调。
-func extractOrderRoleFromContent(contentJSON string) string {
-	// c 用于本次流程后续判断的c
-	var c map[string]any
-	if json.Unmarshal([]byte(contentJSON), &c) != nil {
-		return ""
-	}
-	// path 表示当前遍历过程中的路径
-	for _, path := range [][]string{
-		{"dxCard", "item", "main", "exContent", "button", "targetUrl"},
-		{"dxCard", "item", "main", "targetUrl"},
-		{"dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "button", "targetUrl"},
-	} {
-		if // role 用于本次流程后续判断的role
-		role := orderRoleFromURL(nestedString(c, path...)); role != "" {
-			return role
-		}
-	}
-	return ""
-}
-
-// orderRoleFromURL 封装订单RoleFromURL业务协调。
-func orderRoleFromURL(rawURL string) string {
-	if strings.TrimSpace(rawURL) == "" {
-		return ""
-	}
-	if strings.HasPrefix(rawURL, "fleamarket://") {
-		rawURL = "https://local.invalid/" + strings.TrimPrefix(rawURL, "fleamarket://")
-	}
-	// u、err 用于本次流程后续判断的u、err
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return normalizedOrderRole(u.Query().Get("role"))
-}
-
-// normalizedOrderRole 只接受平台协议中可识别的买卖双方角色，未知值不得影响事件归属判断。
-func normalizedOrderRole(value string) string {
-	// role 是去除大小写和空白差异后的平台角色字段。
-	role := strings.ToLower(strings.TrimSpace(value))
-	switch role {
-	case "seller", "buyer":
-		return role
-	default:
-		return ""
-	}
-}
-
-// bizTaskName 封装biz任务名称业务协调。
-func bizTaskName(raw string) string {
-	// tag 用于本次流程后续判断的tag
-	var tag map[string]any
-	if json.Unmarshal([]byte(raw), &tag) != nil {
-		return ""
-	}
-	return strAny(tag["taskName"])
-}
-
-// orderRoleFromTaskName 封装订单RoleFrom任务名称业务协调。
-func orderRoleFromTaskName(taskName string) string {
-	switch {
-	case strings.Contains(taskName, "买家"):
-		return "buyer"
-	case strings.Contains(taskName, "卖家"):
-		return "seller"
-	default:
-		return ""
-	}
-}
-
-// matchOrderID 封装match订单ID业务协调。
-func matchOrderID(s string) string {
-	// re 表示当前遍历过程中的re
-	for _, re := range orderIDPatterns {
-		if // m 用于本次流程后续判断的m
-		m := re.FindStringSubmatch(s); len(m) == 2 {
-			return m[1]
-		}
-	}
-	return ""
-}
-
-// extractOrderIDFromContent 封装extract订单IDFrom内容业务协调。
-func extractOrderIDFromContent(contentJSON string) string {
-	// c 用于本次流程后续判断的c
-	var c map[string]any
-	if json.Unmarshal([]byte(contentJSON), &c) != nil {
-		return ""
-	}
-	// path 表示当前遍历过程中的路径
-	for _, path := range [][]string{
-		{"dxCard", "item", "main", "exContent", "button", "targetUrl"},
-		{"dxCard", "item", "main", "targetUrl"},
-		{"dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "button", "targetUrl"},
-	} {
-		if // id 用于本次流程后续判断的标识
-		id := matchOrderID(nestedString(c, path...)); id != "" {
-			return id
-		}
-	}
-	return ""
 }

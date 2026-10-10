@@ -155,6 +155,8 @@ type Dependencies struct {
 	ItemDependencies *adapter.ItemDependencies
 	// ChatDependencies 创建聊天发送应用服务。
 	ChatDependencies *adapter.ChatDependencies
+	// ChatApplication 是组合根预先装配的消息页面聊天应用服务；生产自动回复与人工消息共用它。
+	ChatApplication *chatapp.Service
 	// AutomationDependencies 创建自动化唤醒和发布后规则用例。
 	AutomationDependencies *adapter.AutomationDependencies
 	// TransportApplications 保存已由组合根装配的其余应用服务。
@@ -523,7 +525,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		accountSummaries:       accountSummaries,
 		accountTasks:           dependencies.TransportApplications.AccountTasks,
 		credentialWake:         credentialWake,
-		chat:                   dependencies.ChatDependencies.NewChatSendingApplication(dependencies.Chat, dependencies.Manager, dependencies.MTopClient),
+		chat:                   buildChatApplication(dependencies),
 		uncertainNotifications: dependencies.TransportApplications.UncertainNotifications,
 		notificationChannels:   dependencies.TransportApplications.NotificationChannels,
 		analytics:              dependencies.TransportApplications.Analytics,
@@ -546,6 +548,14 @@ func New(dependencies Dependencies) (*Services, error) {
 	}
 	services.authentication = authentication
 	return services, nil
+}
+
+// buildChatApplication 复用运行时组合根预先创建的聊天应用；旧测试构造路径仍按原依赖现场创建。
+func buildChatApplication(dependencies Dependencies) *chatapp.Service {
+	if dependencies.ChatApplication != nil {
+		return dependencies.ChatApplication
+	}
+	return dependencies.ChatDependencies.NewChatSendingApplication(dependencies.Chat, dependencies.Manager, dependencies.MTopClient)
 }
 
 // buildOrderServices 构造订单用例集合及其刷新 worker 门面，并把后台诊断限制在组合根。

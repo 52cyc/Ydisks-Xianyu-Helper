@@ -620,7 +620,7 @@ func TestOrderPaidPreparationFailureIsPersistedAndRecovered(t *testing.T) {
 		OrderDetailFetcher: testFetcher{err: errors.New("temporary order API failure")},
 	})
 	// task 用于本次流程后续判断的任务
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, task); err != nil {
 		t.Fatalf("preparation failure should be durably deferred: %v", err)
@@ -1140,7 +1140,7 @@ func TestCenterOrderPaidFetchesOrderDetailMatchesSpecAndQuantity(t *testing.T) {
 
 	// task 是模拟 WebSocket 重复投递时保持不变的订单支付事件。
 	task := Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-1", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m1"},
 	}
 	err = center.HandleTask(ctx, task)
@@ -1281,7 +1281,7 @@ func TestCenterOrderPaidSendsAllCardActionsForSameSpec(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-bundle", OrderID: "order-bundle", ItemID: "item-bundle", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m-bundle"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -1333,7 +1333,7 @@ func TestCenterOrderPaidDoesNotConfirmWhenNoCardSpecMatches(t *testing.T) {
 	})
 
 	err = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-no-match", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m2"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "未匹配") {
@@ -1349,6 +1349,49 @@ func TestCenterOrderPaidDoesNotConfirmWhenNoCardSpecMatches(t *testing.T) {
 	}
 	if order.SystemShipped {
 		t.Fatal("规格不匹配时不应确认发货")
+	}
+}
+
+// TestCenterAccountWideOrderPaidRuleSendsForSpecifiedOrderSpec 验证账号级全商品规则不会因订单带规格而丢失发卡动作。
+func TestCenterAccountWideOrderPaidRuleSendsForSpecifiedOrderSpec(t *testing.T) {
+	// store、cleanup 提供自动化中心使用的隔离数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 控制规则创建、付款事件处理和订单读取的生命周期。
+	ctx := context.Background()
+	// admin 保存测试规则和卡密库存的所属用户。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardErr 保存账号级规则测试卡密库存的写入错误。
+	if _, cardErr := store.DB.ExecContext(ctx, `INSERT INTO cards (id,name,type,text_content,enabled,user_id) VALUES (51,'账号级库存','text','ACCOUNT-WIDE-CARD',1,?)`, admin.ID); cardErr != nil {
+		t.Fatal(cardErr)
+	}
+	// ruleErr 保存明确确认适用于全部商品的账号级付款规则写入错误。
+	if _, ruleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "cid", Name: "账号级付款发货", TriggerType: TriggerOrderPaid,
+		Enabled: true, Priority: 100, ConfigJSON: `{"allow_all_items":true}`,
+		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, CardID: 51, DeliveryCount: 1, ConfigJSON: `{}`, Enabled: true, SortOrder: 1}},
+	}); ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// sender 记录账号级规则实际投递的卡密文本。
+	sender := &testSender{}
+	// center 使用本地发送器处理付款事件，不连接真实平台详情或确认发货接口。
+	center := New(store, testSenderProvider{sender: sender}, nil)
+	// handleErr 保存带规格订单触发账号级规则后的执行结果。
+	handleErr := center.HandleTask(ctx, Task{
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "order-account-wide",
+		ItemID: "item-any", BuyerID: "buyer-1", ChatID: "chat-account-wide", BuyerNickname: "买家",
+		SpecName: "套餐", SpecValue: "90天", Quantity: "1", Amount: "9.9",
+		Raw: map[string]any{"message_id": "account-wide-paid"},
+	})
+	if handleErr != nil {
+		t.Fatalf("账号级规则处理带规格订单失败: %v", handleErr)
+	}
+	if len(sender.texts) != 1 || sender.texts[0] != "ACCOUNT-WIDE-CARD" {
+		t.Fatalf("账号级规则未发送通配卡密: %v", sender.texts)
 	}
 }
 
@@ -1397,7 +1440,7 @@ func TestCenterOrderPaidSendsCardBeforeConfirmShipment(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-seq", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m3"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -2291,7 +2334,7 @@ func TestCenterNotifiesOnDeliverySuccess(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "chat-n", OrderID: "order-n", ItemID: "item-n", BuyerID: "buyer-n", Raw: map[string]any{"mid": "m"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -2349,7 +2392,7 @@ func TestCenterNotifiesOnDeliveryFailure(t *testing.T) {
 
 	// HandleTask 对单条规则失败只记录日志不返回错误，但通知应已发出。
 	_ = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "chat-f", OrderID: "order-f", ItemID: "item-f", BuyerID: "buyer-f", Raw: map[string]any{"mid": "m"},
 	})
 
@@ -2377,7 +2420,7 @@ func TestCenterNoNotifyWhenNoMatchingRule(t *testing.T) {
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{Notifier: notifier})
 
 	_ = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "c", OrderID: "o", ItemID: "none", BuyerID: "b", Raw: map[string]any{"mid": "m"},
 	})
 

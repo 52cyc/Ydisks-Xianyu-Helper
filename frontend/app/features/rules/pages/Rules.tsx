@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import Toast from "../components/Toast";
+import ItemMultiSelect from "../components/ItemMultiSelect";
 import AllItemsConfirmation from "../components/AllItemsConfirmation";
 import { AutomationIssuePanel } from "../components/AutomationIssuePanel";
 import ExternalPriceMessageEditor from "../components/ExternalPriceMessageEditor";
@@ -33,7 +35,7 @@ import {
 import { useRulesData } from "../hooks";
 import { filterAutomationIssues } from "../issueState";
 import { useRuleActions } from "../ruleActions";
-import type { AutomationTriggerType, RulesProps, RulesTab } from "../types";
+import type { AutomationTriggerType, ReplyRule, RulesProps, RulesTab } from "../types";
 import {
   accentClasses,
   accountLabel,
@@ -190,6 +192,7 @@ const Rules: React.FC<RulesProps> = ({
     handleAddReplyRule,
     handleSaveReplyRule,
     handleDeleteReply,
+    toast,
     openDefaultReplyModal,
     handleSaveDefaultReply,
     handleDeleteDefaultReply,
@@ -395,6 +398,32 @@ const Rules: React.FC<RulesProps> = ({
     },
     [editingAutomationRule?.cookie_id, items, selectedAccountId],
   );
+
+  // replyModalItems 是回复规则弹窗可关联的本地商品候选。
+  const replyModalItems = useMemo(
+    /* 当前回调按当前账号过滤本地商品。 */ () => items.filter(/* 当前回调处理集合中的单个元素。 */ item => !selectedAccountId || item.cookie_id === selectedAccountId),
+    [items, selectedAccountId],
+  );
+
+  // itemTitleIndex 保存当前账号商品标识到商品标题的映射，用于列表展示已关联商品。
+  const itemTitleIndex = useMemo(/* 当前回调建立当前账号的商品标题索引。 */ () => {
+    // index 是本次构建的商品标识到标题的映射。
+    const index = new Map<string, string>();
+    // item 表示当前待登记的商品。
+    for (const /* item 是当前待登记商品标题的本地商品。 */ item of replyModalItems) {
+      // itemID 是去除首尾空白后的商品标识。
+      const itemID = item.item_id?.trim();
+      if (itemID && !index.has(itemID)) index.set(itemID, item.item_title || itemID);
+    }
+    return index;
+  }, [replyModalItems]);
+
+  // replyRuleItemLabels 返回规则关联商品的可读标签集合，账号级规则返回空集合。
+  const replyRuleItemLabels = (rule: ReplyRule): string[] => {
+    // itemIDs 是规则关联的商品标识集合，优先使用多选集合并回退兼容单值。
+    const itemIDs = rule.item_ids?.length ? rule.item_ids : (rule.item_id ? [rule.item_id] : []);
+    return itemIDs.map(/* 当前回调把商品标识还原为可读标题。 */ (itemID: string) => itemTitleIndex.get(itemID) || itemID);
+  };
 
   // primaryActionLabel 主操作按钮文案。
   const primaryActionLabel =
@@ -875,59 +904,46 @@ const Rules: React.FC<RulesProps> = ({
             这里只处理买家用户消息；系统通知不会进入关键词或 AI 回复。
           </div>
           <div className="space-y-3">
-            {replyRules.map(
-              /* 当前回调处理集合中的单个元素。 */ (rule) => (
-                <div
-                  key={rule.id}
-                  className="flex flex-col md:flex-row md:items-center justify-between p-5 rounded-2xl border border-gray-100 bg-surface-subtle hover:bg-white hover:shadow-lg transition-all gap-4"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="px-3 py-1 bg-black text-white rounded-lg text-xs font-bold">
-                        包含匹配
-                      </span>
-                      <h3 className="font-bold text-gray-900">
-                        “{rule.keyword}”
-                      </h3>
-                    </div>
-                    <div className="bg-white p-3 rounded-xl border border-gray-100 text-sm text-gray-600 leading-relaxed">
-                      {rule.type === "image" && rule.image_url
-                        ? rule.image_url
-                        : rule.reply_content}
-                    </div>
+            {replyRules.map(/* 当前回调处理集合中的单个元素。 */ rule => {
+              // itemLabels 是当前规则关联商品的可读标签集合。
+              const itemLabels = replyRuleItemLabels(rule);
+              return (
+              <div key={rule.id} className="flex flex-col md:flex-row md:items-center justify-between p-5 rounded-2xl border border-gray-100 bg-surface-subtle hover:bg-white hover:shadow-lg transition-all gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-3 mb-2">
+                    <span className="px-3 py-1 bg-black text-white rounded-lg text-xs font-bold">包含匹配</span>
+                    <h3 className="font-bold text-gray-900">“{rule.keyword}”</h3>
+                    {itemLabels.length === 0 ? (
+                      <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">账号级</span>
+                    ) : (
+                      itemLabels.map(/* 当前回调渲染单个关联商品标签。 */ label => (
+                        <span key={`${rule.id}-${label}`} className="max-w-[16rem] truncate px-3 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-bold" title={label}>{label}</span>
+                      ))
+                    )}
                   </div>
-                  <div className="flex items-center gap-3 border-t md:border-t-0 md:border-l border-gray-200 pt-4 md:pt-0 md:pl-6">
-                    <button
-                      onClick={
-                        /* 当前回调处理用户交互或异步状态变化。 */ () => {
-                          setEditingReplyRule({ ...rule });
-                          setShowReplyModal(true);
-                        }
-                      }
-                      className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl transition-colors"
-                      title="编辑"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={
-                        /* 当前回调处理用户交互或异步状态变化。 */ () =>
-                          handleDeleteReply(rule.id)
-                      }
-                      className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
+                  <div className="bg-white p-3 rounded-xl border border-gray-100 text-sm text-gray-600 leading-relaxed">
+                    {rule.type === 'image' && rule.image_url ? rule.image_url : rule.reply_content}
                   </div>
                 </div>
-              ),
-            )}
-            {replyRules.length === 0 && (
-              <div className="text-center py-20 text-gray-400">
-                暂无关键词回复规则
+                <div className="flex items-center gap-3 border-t md:border-t-0 md:border-l border-gray-200 pt-4 md:pt-0 md:pl-6">
+                  <button
+                    onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => {
+                      setEditingReplyRule({ ...rule });
+                      setShowReplyModal(true);
+                    }}
+                    className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl transition-colors"
+                    title="编辑"
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                  <button onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleDeleteReply(rule.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors" title="删除">
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
-            )}
+              );
+            })}
+            {replyRules.length === 0 && <div className="text-center py-20 text-gray-400">暂无关键词回复规则</div>}
           </div>
         </section>
       )}
@@ -1248,7 +1264,7 @@ const Rules: React.FC<RulesProps> = ({
                     !editingAutomationRule.item_id ? (
                       <AllItemsConfirmation
                         confirmed={reviewConfig.allow_all_items === true}
-                        onChange={(confirmed) =>
+                        onChange={/* confirmed 保存用户对账号全商品发货范围的显式授权。 */ (confirmed) =>
                           setEditingAutomationRule({
                             ...editingAutomationRule,
                             config_json: withAllItemsConfirmation(
@@ -1420,7 +1436,7 @@ const Rules: React.FC<RulesProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() =>
+                                    onClick={/* 将当前发货内容切换为模板并清除旧库存绑定。 */ () =>
                                       updateVariant(index, {
                                         source_type: "local",
                                         delivery_mode: "template",
@@ -2092,175 +2108,108 @@ const Rules: React.FC<RulesProps> = ({
           document.body,
         )}
 
-      {showReplyModal &&
-        editingReplyRule &&
-        createPortal(
-          <div className="modal-overlay">
-            <div className="modal-container">
-              <div className="modal-header">
-                <div className="flex items-center justify-between w-full">
-                  <h3 className="text-2xl font-extrabold text-gray-900">
-                    {editingReplyRule.id ? "编辑回复规则" : "新增回复规则"}
-                  </h3>
-                  <button
-                    onClick={
-                      /* 当前回调处理用户交互或异步状态变化。 */ () =>
-                        setShowReplyModal(false)
-                    }
-                    className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-                  >
-                    <X className="w-5 h-5 text-gray-600" />
-                  </button>
-                </div>
+      {showReplyModal && editingReplyRule && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container">
+            <div className="modal-header">
+              <div className="flex items-center justify-between w-full">
+                <h3 className="text-2xl font-extrabold text-gray-900">
+                  {editingReplyRule.id ? '编辑回复规则' : '新增回复规则'}
+                </h3>
+                <button
+                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowReplyModal(false)}
+                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-600" />
+                </button>
               </div>
+            </div>
 
-              <div className="modal-body space-y-5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">
-                      关联商品
-                    </label>
-                    <select
-                      value={editingReplyRule.item_id || ""}
-                      onChange={
-                        /* 当前回调处理用户交互或异步状态变化。 */ (event) =>
-                          setEditingReplyRule({
-                            ...editingReplyRule,
-                            item_id: event.target.value,
-                          })
-                      }
-                      className="w-full ios-input px-4 py-3 rounded-xl"
-                    >
-                      <option value="">账号级回复</option>
-                      {items
-                        .filter(
-                          /* 当前回调处理集合中的单个元素。 */ (item) =>
-                            !selectedAccountId ||
-                            item.cookie_id === selectedAccountId,
-                        )
-                        .map(
-                          /* 当前回调处理集合中的单个元素。 */ (item) => (
-                            <option
-                              key={`${item.cookie_id}-${item.item_id}`}
-                              value={item.item_id}
-                            >
-                              {item.item_title || item.item_id}
-                            </option>
-                          ),
-                        )}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">
-                      回复类型
-                    </label>
-                    <select
-                      value={editingReplyRule.type || "text"}
-                      onChange={
-                        /* 当前回调处理用户交互或异步状态变化。 */ (event) => {
-                          // type 类型。
-                          const type = event.target.value as "text" | "image";
-                          setEditingReplyRule({
-                            ...editingReplyRule,
-                            type,
-                            reply_content:
-                              type === "text"
-                                ? editingReplyRule.reply_content
-                                : "",
-                            image_url:
-                              type === "image"
-                                ? editingReplyRule.image_url
-                                : "",
-                          });
-                        }
-                      }
-                      className="w-full ios-input px-4 py-3 rounded-xl"
-                    >
-                      <option value="text">文字</option>
-                      <option value="image">图片</option>
-                    </select>
-                  </div>
+            <div className="modal-body space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">关联商品</label>
+                  <ItemMultiSelect
+                    options={replyModalItems}
+                    value={editingReplyRule.item_ids?.length ? editingReplyRule.item_ids : (editingReplyRule.item_id ? [editingReplyRule.item_id] : [])}
+                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ itemIDs => setEditingReplyRule({ ...editingReplyRule, item_ids: itemIDs, item_id: itemIDs[0] || '' })}
+                  />
+                  <p className="mt-2 text-xs text-gray-400">可多选；不选表示账号级回复。候选来自本地已同步商品，支持搜索。</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">
-                    关键词
-                  </label>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">回复类型</label>
+                  <select
+                    value={editingReplyRule.type || 'text'}
+                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => {
+                      // type 类型。
+                      const type = event.target.value as 'text' | 'image';
+                      setEditingReplyRule({
+                        ...editingReplyRule,
+                        type,
+                        reply_content: type === 'text' ? editingReplyRule.reply_content : '',
+                        image_url: type === 'image' ? editingReplyRule.image_url : '',
+                      });
+                    }}
+                    className="w-full ios-input px-4 py-3 rounded-xl"
+                  >
+                    <option value="text">文字</option>
+                    <option value="image">图片</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">关键词</label>
+                <input
+                  type="text"
+                  value={editingReplyRule.keyword || ''}
+                  onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, keyword: event.target.value })}
+                  placeholder="买家发送的关键词"
+                  className="w-full ios-input px-4 py-3 rounded-xl"
+                />
+              </div>
+
+              {editingReplyRule.type === 'image' ? (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">图片 URL</label>
                   <input
-                    type="text"
-                    value={editingReplyRule.keyword || ""}
-                    onChange={
-                      /* 当前回调处理用户交互或异步状态变化。 */ (event) =>
-                        setEditingReplyRule({
-                          ...editingReplyRule,
-                          keyword: event.target.value,
-                        })
-                    }
-                    placeholder="买家发送的关键词"
+                    value={editingReplyRule.image_url || ''}
+                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, image_url: event.target.value })}
+                    placeholder="https://..."
                     className="w-full ios-input px-4 py-3 rounded-xl"
                   />
                 </div>
-
-                {editingReplyRule.type === "image" ? (
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">
-                      图片 URL
-                    </label>
-                    <input
-                      value={editingReplyRule.image_url || ""}
-                      onChange={
-                        /* 当前回调处理用户交互或异步状态变化。 */ (event) =>
-                          setEditingReplyRule({
-                            ...editingReplyRule,
-                            image_url: event.target.value,
-                          })
-                      }
-                      placeholder="https://..."
-                      className="w-full ios-input px-4 py-3 rounded-xl"
-                    />
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">
-                      回复内容
-                    </label>
-                    <textarea
-                      value={editingReplyRule.reply_content || ""}
-                      onChange={
-                        /* 当前回调处理用户交互或异步状态变化。 */ (event) =>
-                          setEditingReplyRule({
-                            ...editingReplyRule,
-                            reply_content: event.target.value,
-                          })
-                      }
-                      placeholder="自动回复的内容"
-                      className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none"
-                    />
-                  </div>
-                )}
-
-                <div className="flex gap-3 pt-4">
-                  <button
-                    onClick={
-                      /* 当前回调处理用户交互或异步状态变化。 */ () =>
-                        setShowReplyModal(false)
-                    }
-                    className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={handleSaveReplyRule}
-                    className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
-                  >
-                    <Send className="w-4 h-4" />
-                    保存规则
-                  </button>
+              ) : (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">回复内容</label>
+                  <textarea
+                    value={editingReplyRule.reply_content || ''}
+                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, reply_content: event.target.value })}
+                    placeholder="自动回复的内容"
+                    className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none"
+                  />
                 </div>
+              )}
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowReplyModal(false)}
+                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSaveReplyRule}
+                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                >
+                  <Send className="w-4 h-4" />
+                  保存规则
+                </button>
               </div>
             </div>
-          </div>,
-          document.body,
-        )}
+          </div>
+        </div>,
+        document.body
+      )}
 
       {showDefaultModal &&
         createPortal(
@@ -2421,6 +2370,7 @@ const Rules: React.FC<RulesProps> = ({
           </div>,
           document.body,
         )}
+      <Toast toast={toast} />
     </div>
   );
 };

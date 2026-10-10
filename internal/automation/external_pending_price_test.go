@@ -333,8 +333,8 @@ func TestDirectPaymentChecksMinimumProfitBeforePurchase(t *testing.T) {
 		MTop: platform, OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "13.83", OrderStatus: "pending_ship"}},
 		ExternalFulfillment: fulfillment,
 	})
-	// task 是没有成功改价快照的买家直接付款事件。
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-direct-profit",
+	// task 是平台明确标记卖家角色且没有成功改价快照的付款事件，利润预检必须在身份门禁通过后执行。
+	task := Task{Source: "ws", OrderRole: OrderRoleSeller, AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-direct-profit",
 		ItemID: "item-direct-profit", BuyerID: "buyer", ChatID: "chat"}
 	// handleErr 是预期的本地利润拦截结果。
 	if handleErr := center.HandleTask(ctx, task); handleErr == nil {
@@ -451,8 +451,8 @@ func TestExternalFulfillmentFailureNoticeAfterRetriesExhausted(t *testing.T) {
 		MTop: platform, OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.90", OrderStatus: "pending_ship"}},
 		ExternalFulfillment: fulfillment, Notifier: notifier,
 	})
-	// task 是买家直接付款、没有订单级动态保护价的真实付款事件。
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-safe-price",
+	// task 是平台明确标记卖家角色且没有订单级动态保护价的付款事件，用于验证采购失败重试边界。
+	task := Task{Source: "ws", OrderRole: OrderRoleSeller, AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-safe-price",
 		ItemID: "item-failure", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
 	if firstErr := center.HandleTask(ctx, task); firstErr == nil { // firstErr 是首次保护价采购拒绝，应进入安全重试。
 		t.Fatal("首次保护价采购失败不应被当作成功")
@@ -540,8 +540,8 @@ func TestExternalFulfillmentWaitingOnlyNotifiesAfterExhaustion(t *testing.T) {
 		OrderDetailFetcher:  testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.90", OrderStatus: "pending_ship"}},
 		ExternalFulfillment: fulfillment, Notifier: notifier,
 	})
-	// task 是首次进入外部履约的可信 WebSocket 付款事件。
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-waiting-notify",
+	// task 是平台明确标记卖家角色的首次付款事件，用于验证身份门禁通过后的外部履约通知边界。
+	task := Task{Source: "ws", OrderRole: OrderRoleSeller, AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "order-waiting-notify",
 		ItemID: "item-waiting-notify", BuyerID: "buyer", ChatID: "chat", Quantity: "1", Amount: "9.90"}
 	if /* firstErr 是首次 waiting 结果，应保留给调度器识别。 */ firstErr := center.HandleTask(ctx, task); !errors.Is(firstErr, errExternalFulfillmentPending) {
 		t.Fatalf("首次 waiting 未保留长轮询分类: %v", firstErr)

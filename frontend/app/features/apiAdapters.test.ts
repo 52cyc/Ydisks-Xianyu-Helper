@@ -908,6 +908,20 @@ test('getReplyRules 没有账号时直接返回空列表', /* 当前回调验证
   await expect(getReplyRules()).resolves.toEqual([]);
 });
 
+test('getReplyRules 归一化多选关联商品并回退兼容单值', /* 当前回调验证关联商品集合的归一化边界。 */ async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse([
+    { id: 1, keyword: '多选', reply: '多选回复', type: 'text', item_id: 'item-1', item_ids: ['item-1', ' item-2 ', 'item-1'] },
+    { id: 2, keyword: '旧单值', reply: '旧回复', type: 'text', item_id: 'item-9' },
+  ])); /* fetchMock 表示fetchMock。 */
+  stubContractFetch(fetchMock);
+
+  const rules = await getReplyRules('acc1'); /* rules 表示规则集合。 */
+  expect(rules[0].item_ids).toEqual(['item-1', 'item-2']);
+  expect(rules[0].item_id).toBe('item-1');
+  // 缺少多值集合的历史响应回退到单值字段。
+  expect(rules[1].item_ids).toEqual(['item-9']);
+} /* 测试回调验证：关联商品集合优先多值并回退单值。 */);
+
 test('getCards 解析 JSON 和损坏 JSON 的卡密接口配置', /* 当前回调验证卡密配置归一化边界。 */ async () => {
   // fetchMock 是卡密列表接口的网络替身。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse([
@@ -951,9 +965,36 @@ test('updateReplyRule preserves keyword image metadata when saving text edits', 
     credentials: 'include',
   }));
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '稍后安排', item_id: 'item-1', type: 'text', image_url: '',
+    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1'], type: 'text', image_url: '',
   });
 } /* 测试回调验证：updateReplyRule preserves keyword image metadata when saving text edits。 */);
+
+test('updateReplyRule sends every selected item id for multi-select rules', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true })); /* fetchMock 表示fetchMock。 */
+  stubContractFetch(fetchMock);
+
+  await updateReplyRule({ id: '42', keyword: '发货', reply_content: '稍后安排', item_ids: ['item-1', 'item-2', 'item-1'] }, 'acc1');
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+  });
+} /* 测试回调验证：多选规则保存为一条规则并提交全部关联商品。 */);
+
+test('createReplyRule keeps multi-select items in one rule request', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 7 })); /* fetchMock 表示fetchMock。 */
+  stubContractFetch(fetchMock);
+
+  await updateReplyRule({ keyword: '发货', reply_content: '稍后安排', item_ids: ['item-1', 'item-2'] }, 'acc1');
+
+  expect(fetchMock).toHaveBeenCalledWith('/api/v1/reply-rules/acc1/items', expect.objectContaining({
+    method: 'POST',
+    credentials: 'include',
+  }));
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+  });
+} /* 测试回调验证：新建多选规则只提交一次请求。 */);
 
 test('updateReplyRule clears stale content when switching reply type', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true })); /* fetchMock 表示fetchMock。 */
@@ -961,7 +1002,7 @@ test('updateReplyRule clears stale content when switching reply type', async () 
 
   await updateReplyRule({ id: '42', keyword: '发货', type: 'image', image_url: 'https://img.example/new.png' }, 'acc1');
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '', item_id: '', type: 'image', image_url: 'https://img.example/new.png',
+    keyword: '发货', reply: '', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/new.png',
   });
 } /* 测试回调验证：updateReplyRule clears stale content when switching reply type。 */);
 
@@ -1249,7 +1290,8 @@ test('模板绑定读取后不修改直接保存时完成 variable_key 到 key �
   expect(payload.actions[0].template_bindings[0]).not.toHaveProperty('variable_key');
 });
 
-test('updateShippingRule serializes simplified external pricing fields', async () => {
+test('updateShippingRule serializes simplified external pricing fields', /* 验证货源跟价配置在传输转换后仍完整保留。 */ async () => {
+  // fetchMock 捕获提交的规则请求并返回本地成功响应。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 31 }));
   stubContractFetch(fetchMock);
 
@@ -1274,6 +1316,7 @@ test('updateShippingRule serializes simplified external pricing fields', async (
     }],
   });
 
+  // body 是规则适配器实际提交的传输请求体，用于核对货源配置字段。
   const body = JSON.parse(fetchMock.mock.calls[0][1].body);
   expect(JSON.parse(body.actions[0].config_json)).toMatchObject({
     source_type: 'external',

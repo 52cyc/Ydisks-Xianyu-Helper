@@ -302,6 +302,37 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return false, resolveErr
 	}
 	task = resolvedTask
+	// unknownRoleTask 标记本次 WebSocket 交易事件是否未携带明确角色；仅该类事件需要记录本地卖家事实核验的放行日志。
+	unknownRoleTask := task.OrderRole == OrderRoleUnknown && isWebSocketSellerOrderTask(task)
+	// verifiedTask、sellerVerified、rejectReason 保存未知角色事件的本地卖家核验结果；失败时在事实写入前停止，避免把买家订单落到卖家账号。
+	verifiedTask, sellerVerified, rejectReason, roleErr := c.authorizeWebSocketSellerTask(ctx, task)
+	if roleErr != nil {
+		return false, roleErr
+	}
+	if !sellerVerified {
+		if roleVerificationRetryable(rejectReason) {
+			if isDeferredReplay(task) {
+				// 未知角色延期任务再次没有本地证据时交给统一退避；达到上限后由调度器发送人工处理通知。
+				return false, errSellerRoleEvidencePending
+			}
+			// deferErr 保存首条未知角色事件写入延期队列的错误；写入失败不能伪装成已安全处理。
+			if deferErr := c.deferUnknownRoleTask(ctx, task, rejectReason); deferErr != nil {
+				return false, deferErr
+			}
+			if c.logger != nil {
+				c.logger.Info("未知角色发货事件已保存，等待本地卖家事实", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType, "reason", rejectReason)
+			}
+			return true, nil
+		}
+		if c.logger != nil {
+			c.logger.Info("未知角色发货事件未通过本地卖家核验，未执行外部动作", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType, "reason", rejectReason)
+		}
+		return false, nil
+	}
+	if unknownRoleTask && c.logger != nil {
+		c.logger.Info("未知角色交易事件已通过本地卖家核验，继续执行自动化", "account", verifiedTask.AccountID, "order_id", verifiedTask.OrderID, "item_id", verifiedTask.ItemID, "trigger", verifiedTask.TriggerType, "source", verifiedTask.Source)
+	}
+	task = verifiedTask
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -724,21 +755,6 @@ func (c *Center) executeRule(ctx context.Context, task Task, rule db.AutomationR
 // executeRunActions 将动作执行委托给运行协调器，保持手动发货等调用方的兼容入口。
 func (c *Center) executeRunActions(ctx context.Context, task Task, ruleID int64, run *db.AutomationRun, actions []db.AutomationAction, skipDelays bool) (int, bool, error) {
 	return c.runs.executeRunActions(ctx, task, ruleID, run, actions, skipDelays)
-}
-
-// notifyResult 根据规则执行结果发送通知。成功且实际发出了内容才通知，
-// 避免无匹配动作的空跑刷屏；每次通知都以运行 ID 和终态持久化去重。
-// notifyResult 封装notify结果业务协调。
-func (c *Center) notifyResult(ctx context.Context, task Task, runID int64, status string, sent int, errMsg string) {
-	c.notifications.notifyResult(ctx, task, runID, status, sent, errMsg)
-}
-
-// notifyRunNeedsReview 封装notify运行NeedsReview业务协调。
-func (c *Center) notifyRunNeedsReview(ctx context.Context, run db.AutomationRun, reason string) {
-	if c == nil {
-		return
-	}
-	c.notifications.notifyRunNeedsReview(ctx, run, reason)
 }
 
 // actionDelaySeconds 统一卡密默认延时和动作覆盖语义。旧动作没有

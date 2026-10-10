@@ -27,20 +27,31 @@ const (
 	paidTaskOrderResolved paidTaskOrderResolution = "resolved_from_local_pending_order"
 )
 
-// resolvePaidTaskOrder 为只有会话标识的简化付款消息回填本账号最近待发货订单。
+// resolvePaidTaskOrder 为交易系统消息补齐本账号已有订单事实，并保留简化付款事件的诊断结果。
 // ctx 控制数据库查询取消，task 是原始事件；返回补齐后任务、可用于定位缺字段的结果码和查询错误。
 func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, paidTaskOrderResolution, error) {
-	if task.TriggerType != TriggerOrderPaid {
+	if task.TriggerType != TriggerOrderPaid && task.TriggerType != TriggerOrderCreated && task.TriggerType != TriggerBargainPending {
 		return task, paidTaskOrderNotApplicable, nil
-	}
-	if task.OrderID != "" {
-		return task, paidTaskOrderAlreadyKnown, nil
-	}
-	if task.ChatID == "" {
-		return task, paidTaskOrderMissingChat, nil
 	}
 	if c == nil || c.store == nil || c.store.Orders == nil {
 		return task, paidTaskOrderRepositoryUnavailable, nil
+	}
+	if task.TriggerType == TriggerOrderCreated && task.OrderID == "" {
+		return task, paidTaskOrderNotApplicable, nil
+	}
+	if task.OrderID != "" {
+		// order、err 保存本地订单事实及查询结果；缺失时由卖家身份门禁决定是否延期。
+		order, err := c.store.Orders.Get(ctx, task.OrderID)
+		if errors.Is(err, db.ErrNotFound) {
+			return task, paidTaskOrderAlreadyKnown, nil
+		}
+		if err != nil {
+			return task, paidTaskOrderAlreadyKnown, fmt.Errorf("按订单回填自动化事实: %w", err)
+		}
+		return mergeOrderIntoTask(task, order), paidTaskOrderAlreadyKnown, nil
+	}
+	if task.ChatID == "" {
+		return task, paidTaskOrderMissingChat, nil
 	}
 	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
 	order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)

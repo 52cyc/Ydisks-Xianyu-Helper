@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type SetStateAction,
@@ -56,6 +57,10 @@ import {
   withAllItemsConfirmation,
   withDefaultExternalPriceMessages,
 } from "./utils";
+import type { ToastValue } from "./components/Toast";
+
+// RULE_TOAST_DURATION_MS 是关键词操作轻提示的展示时长，单位毫秒。
+const RULE_TOAST_DURATION_MS = 3000;
 
 // RuleActionsOptions 描述规则动作协调器依赖的页面数据、刷新函数和外部联动目标。
 export interface RuleActionsOptions {
@@ -181,6 +186,10 @@ export interface RuleActionsState {
   handleSaveReplyRule: () => Promise<void>;
   // handleDeleteReply 删除指定关键词回复规则。
   handleDeleteReply: (id: string) => Promise<void>;
+  // toast 保存关键词回复操作的轻提示内容。
+  toast: ToastValue | null;
+  // showReplyToast 展示关键词回复操作的轻提示。
+  showReplyToast: (type: ToastValue['type'], text: string) => void;
   // openDefaultReplyModal 打开指定账号的默认回复弹窗。
   openDefaultReplyModal: (cookieID?: string) => Promise<void>;
   // handleSaveDefaultReply 保存当前默认回复配置。
@@ -231,13 +240,25 @@ export const useRuleActions = ({
   const [editingReplyRule, setEditingReplyRule] =
     useState<Partial<ReplyRule> | null>(null);
   // defaultForm 保存当前默认回复草稿。
-  const [defaultForm, setDefaultForm] = useState<DefaultReplyForm>({
-    cookie_id: "",
-    enabled: false,
-    reply_content: "",
-    reply_once: false,
-    reply_image_url: "",
-  });
+  const [defaultForm, setDefaultForm] = useState<DefaultReplyForm>({ cookie_id: '', enabled: false, reply_content: '', reply_once: false, reply_image_url: '' });
+  // toast 保存关键词回复操作的轻提示内容。
+  const [toast, setToast] = useState<ToastValue | null>(null);
+  // toastTimer 保存轻提示自动消失的定时器句柄。
+  const toastTimer = useRef<number | null>(null);
+
+  // showReplyToast 展示关键词回复操作的轻提示并重置自动消失计时。
+  const showReplyToast = useCallback(/* showToastAction 写入轻提示状态。 */ (type: ToastValue['type'], text: string) => {
+    setToast({ type, text });
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(/* 当前回调在提示展示结束后清理状态。 */ () => {
+      toastTimer.current = null;
+      setToast(null);
+    }, RULE_TOAST_DURATION_MS);
+  }, []);
+
+  useEffect(/* 当前副作用在动作协调器卸载时清理未触发的轻提示定时器。 */ () => /* 当前回调清理轻提示定时器。 */ () => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+  }, []);
 
   // selectedRuleItem 查找当前自动化规则草稿绑定的商品。
   const selectedRuleItem = useMemo(
@@ -629,7 +650,7 @@ export const useRuleActions = ({
         : [];
       if (trigger !== "review_missing_timeout" && trigger !== "order_created") {
         if (!variants.length) return alert("请至少添加一条发货内容");
-        if (variants.some((variant) =>
+        if (variants.some(/* variant 是当前校验的发货内容，要求库存或模板选择完整。 */ (variant) =>
           variant.delivery_mode === "template"
             ? !variant.delivery_template_id
             : variant.source_type !== "external" && !variant.card_id,
@@ -639,23 +660,25 @@ export const useRuleActions = ({
               ? "请选择评价赠品卡密库存或发货模板"
               : "请选择发货卡密库存或发货模板",
           );
-        if (variants.some((variant) => {
+        if (variants.some(/* variant 是需要核对卡密绑定的模板发货内容。 */ (variant) => {
           if (variant.delivery_mode !== "template") return false;
+          // template 保存当前选中的模板摘要，缺失时禁止提交。
           const template = deliveryTemplates.find(
-            (candidate) => candidate.id === variant.delivery_template_id,
+            /* candidate 是当前匹配模板标识的候选摘要。 */ (candidate) => candidate.id === variant.delivery_template_id,
           );
           return !template || !hasCompleteTemplateBindings(
             template.keys,
             variant.template_bindings,
           );
         })) return alert("请为发货模板的每个变量绑定卡密库存");
-        if (variants.some((variant) => {
+        if (variants.some(/* variant 是需要检查自定义变量完整性的模板发货内容。 */ (variant) => {
           if (variant.delivery_mode !== "template") return false;
+          // template 保存当前发货模板要求的自定义变量集合。
           const template = deliveryTemplates.find(
-            (candidate) => candidate.id === variant.delivery_template_id,
+            /* candidate 是当前匹配模板标识的候选摘要。 */ (candidate) => candidate.id === variant.delivery_template_id,
           );
           return (template?.custom_keys || []).some(
-            (key) => !variant.custom_variables?.[key]?.trim(),
+            /* key 是当前必须填写的模板自定义变量名称。 */ (key) => !variant.custom_variables?.[key]?.trim(),
           );
         })) return alert("请填写发货模板要求的全部自定义变量");
         if (
@@ -884,77 +907,29 @@ export const useRuleActions = ({
   );
 
   // handleAddReplyRule 打开一个空的关键词回复草稿。
-  const handleAddReplyRule = useCallback(
-    /* addReplyAction 创建关键词回复草稿。 */ () => {
-      if (!selectedAccountId) return alert("请先选择账号");
-      setEditingReplyRule({
-        keyword: "",
-        reply_content: "",
-        image_url: "",
-        item_id: "",
-        type: "text",
-        match_type: "fuzzy",
-        enabled: true,
-      });
-      setShowReplyModal(true);
-    },
-    [selectedAccountId],
-  );
+  const handleAddReplyRule = useCallback(/* addReplyAction 创建关键词回复草稿。 */ () => {
+    if (!selectedAccountId) return showReplyToast('error', '请先选择账号');
+    setEditingReplyRule({ keyword: '', reply_content: '', image_url: '', item_id: '', item_ids: [], type: 'text', match_type: 'fuzzy', enabled: true });
+    setShowReplyModal(true);
+  }, [selectedAccountId, showReplyToast]);
 
   // handleSaveReplyRule 校验并保存关键词回复规则。
-  const handleSaveReplyRule = useCallback(
-    /* saveReplyAction 保存关键词回复。 */ async () => {
-      if (
-        !editingReplyRule ||
-        !selectedAccountId ||
-        replySubmitState.submitting
-      )
-        return;
-      // hasReplyContent 表示当前回复是否填写了文字或图片。
-      const hasReplyContent =
-        editingReplyRule.type === "image"
-          ? Boolean(editingReplyRule.image_url?.trim())
-          : Boolean(editingReplyRule.reply_content?.trim());
-      if (!editingReplyRule.keyword?.trim() || !hasReplyContent)
-        return alert("请填写关键词和回复内容");
-      setReplySubmitState(startRuleSubmission(replySubmitState));
-      // succeeded 记录保存是否成功。
-      let succeeded = false;
-      try {
-        await updateReplyRule(
-          { ...editingReplyRule, match_type: "fuzzy", enabled: true },
-          selectedAccountId,
-        );
-        setShowReplyModal(false);
-        await loadReplyRules();
-        alert("保存成功");
-        succeeded = true;
-      } catch (/* error 表示关键词回复保存异常。 */ error) {
-        alert("保存失败：" + (error as Error).message);
-      } finally {
-        setReplySubmitState(
-          /* current 保存关键词提交状态。 */ (current) =>
-            finishRuleSubmission(current, succeeded),
-        );
-      }
-    },
-    [editingReplyRule, loadReplyRules, replySubmitState, selectedAccountId],
-  );
+  const handleSaveReplyRule = useCallback(/* saveReplyAction 保存关键词回复。 */ async () => {
+    if (!editingReplyRule || !selectedAccountId || replySubmitState.submitting) return;
+    // hasReplyContent 表示当前回复是否填写了文字或图片。
+    const hasReplyContent = editingReplyRule.type === 'image' ? Boolean(editingReplyRule.image_url?.trim()) : Boolean(editingReplyRule.reply_content?.trim());
+    if (!editingReplyRule.keyword?.trim() || !hasReplyContent) return showReplyToast('error', '请填写关键词和回复内容');
+    setReplySubmitState(startRuleSubmission(replySubmitState));
+    // succeeded 记录保存是否成功。
+    let succeeded = false;
+    try { await updateReplyRule({ ...editingReplyRule, match_type: 'fuzzy', enabled: true }, selectedAccountId); setShowReplyModal(false); await loadReplyRules(); showReplyToast('success', '保存成功'); succeeded = true; } catch (/* error 表示关键词回复保存异常。 */ error) { showReplyToast('error', '保存失败：' + (error as Error).message); } finally { setReplySubmitState(/* current 保存关键词提交状态。 */ current => finishRuleSubmission(current, succeeded)); }
+  }, [editingReplyRule, loadReplyRules, replySubmitState, selectedAccountId, showReplyToast]);
 
   // handleDeleteReply 删除指定关键词回复并刷新列表。
-  const handleDeleteReply = useCallback(
-    /* deleteReplyAction 删除关键词回复。 */ async (id: string) => {
-      if (!selectedAccountId || !confirm("确定删除该回复规则吗？")) return;
-      try {
-        await deleteReplyRule(id, selectedAccountId);
-        await loadReplyRules();
-        alert("删除成功");
-      } catch (/* error 表示关键词回复删除异常。 */ error) {
-        alert("删除失败：" + (error as Error).message);
-      }
-    },
-    [loadReplyRules, selectedAccountId],
-  );
+  const handleDeleteReply = useCallback(/* deleteReplyAction 删除关键词回复。 */ async (id: string) => {
+    if (!selectedAccountId || !confirm('确定删除该回复规则吗？')) return;
+    try { await deleteReplyRule(id, selectedAccountId); await loadReplyRules(); showReplyToast('success', '删除成功'); } catch (/* error 表示关键词回复删除异常。 */ error) { showReplyToast('error', '删除失败：' + (error as Error).message); }
+  }, [loadReplyRules, selectedAccountId, showReplyToast]);
 
   // openDefaultReplyModal 加载指定账号的默认回复配置并打开弹窗。
   const openDefaultReplyModal = useCallback(
@@ -1098,6 +1073,8 @@ export const useRuleActions = ({
     handleAddReplyRule,
     handleSaveReplyRule,
     handleDeleteReply,
+    toast,
+    showReplyToast,
     openDefaultReplyModal,
     handleSaveDefaultReply,
     handleDeleteDefaultReply,
