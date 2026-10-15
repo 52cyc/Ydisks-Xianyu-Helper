@@ -49,6 +49,8 @@ type cardAppendRequest struct {
 
 // cardAPITestRequest 是临时 API 测试请求的具名 DTO。
 type cardAPITestRequest struct {
+	// CardID 指向已保存卡密；省略时只测试完整的新建草稿。
+	CardID int64 `json:"card_id,omitempty"`
 	// APIConfig 是与卡券保存接口一致的 API 配置对象或历史 JSON 字符串。
 	APIConfig json.RawMessage `json:"api_config"`
 }
@@ -101,6 +103,18 @@ func (s *Server) testCardAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// session 是当前已认证用户，已保存模板只能按该用户的所有权读取。
+	session := auth.SessionFromContext(r.Context())
+	if session == nil {
+		writeErr(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	config, err = s.cardsApplication().PrepareAPITest(r.Context(), session.UserID, request.CardID, config)
+	if err != nil {
+		writeCardAPIError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	// result、err 分别是临时远端调用的脱敏诊断和本地配置或网络错误。
 	result, err := s.applications.apiRequestTester.Test(r.Context(), cardsapp.APIRequestTestInput{Config: config})
 	if err != nil {

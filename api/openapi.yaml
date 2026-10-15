@@ -2198,6 +2198,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   "/api/v1/cards/{card_id}":
     delete:
       operationId: deleteApiV1CardsBycard_id
@@ -2370,6 +2389,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardAppendResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/cards/{card_id}/api-editor":
+    get:
+      operationId: getApiV1CardsBycard_idApiEditor
+      summary: getApiV1CardsBycard_idApiEditor
+      parameters:
+          - name: card_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardAPIEditorResponse'
         '400':
           description: 统一错误响应
           content:
@@ -7911,10 +7978,24 @@ components:
         params_configured: {type: boolean}
         ready: {type: boolean}
         validation_error: {type: string}
+    CardAPIEditorResponse:
+      type: object
+      required: [url, method, timeout_seconds, content_type, headers, params, body, response_path, retry_enabled]
+      properties:
+        url: {type: string}
+        method: {type: string, enum: [GET, POST]}
+        timeout_seconds: {type: integer}
+        content_type: {type: string}
+        headers: {type: string, description: 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录}
+        params: {type: string}
+        body: {type: string}
+        response_path: {type: string}
+        retry_enabled: {type: boolean}
     CardAPITestRequest:
       type: object
       required: [api_config]
       properties:
+        card_id: {type: integer, minimum: 1, description: 已保存卡密标识；提供时合并其模板并校验当前用户所有权}
         api_config:
           oneOf:
             - $ref: '#/components/schemas/APICardConfigMutation'
