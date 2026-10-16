@@ -82,6 +82,7 @@ git diff --check
 ## 后续窄范围安全修复记录
 
 - 2026-10-09（确认收货业务键解析修复）：平台确认收货通知使用「订单号:阶段码:业务键:序号」四段 `updateKey`（如 `3310145690545023995:20:BUYER_CONFIRM_RATE_SELLER:74`，买家侧同一布局的业务键为 `BUYER_CONFIRM_RATE_BUTER`），原 `parseUpdateKey` 统一把第二段当作订单号，使完成事实写入不存在的短数字伪订单、真实订单缺少 `completed_at`，自动评价因此永远没有候选，并在重试上限耗尽后固定显示「跳过」。现按「第二段为短纯数字即平台业务阶段码」改用第一段作为订单号，会话在前格式与非数字订单标识的历史兼容保持不变。新增四段确认收货键的表驱动用例，以及从协议解析到订单完成事实的端到端回归（未修复时稳定复现 `OrderID="20"`）；`go test ./internal/automation -count=1`、`go vet ./...`、`go run ./tools/commentlint -mode check -root .`、`go run ./tools/architecturecheck`、`go run ./tools/apicheck` 与 `git diff --check` 通过。未修改数据库 schema、HTTP/OpenAPI、依赖、冻结 CAPTCHA 或六阶段状态，未扩展注释基线；未调用真实账号平台。
+- 2026-09-25（SMTP LOGIN 兼容修复，未发布）：按服务器声明为仅支持 LOGIN 的邮件服务协商认证，保留 PLAIN 优先及既有 TLS、主机身份校验；补充本地 SMTP 回归和配置说明。不新增依赖、配置或 API，不改变数据库、冻结 CAPTCHA 或六阶段状态。
 
 - 2026-09-20（订单批量同步详情风控修复，本地未发布）：批量“一键同步订单”现在只调用已售订单列表接口，直接写回列表提供的订单号、商品、买家、时间、状态、数量、金额、收货信息和砍价标记，并继续执行缺失订单清理；不再扫描本地订单游标或批量请求订单详情，因此列表同步不会因详情接口风控失败。详情中的 `spec_name`、`spec_value` 等列表缺失字段仍由单订单刷新或自动发货准备阶段按需补全，自动发货的规格匹配链路未改变。旧任务结果中的详情统计字段保留兼容形状并在批量列表同步中固定为零。新增批量详情调用次数为零、无本地详情游标读取及列表字段落库回归；`go test ./... -count=1`、`go vet ./internal/application/orders`、`make comments` 与 `git diff --check` 通过。未修改数据库 schema、HTTP/OpenAPI、冻结 CAPTCHA 或六阶段状态，未调用真实账号平台。
 
