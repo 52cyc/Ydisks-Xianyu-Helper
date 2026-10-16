@@ -142,6 +142,10 @@ func (k *Keywords) DeleteByIndex(ctx context.Context, cookieID string, index int
 		}
 		ids = append(ids, id)
 	}
+	// iterErr 是逐行读取中途的数据库错误；截断的标识列表会让下标对应到错误的关键字或误报不存在。
+	if iterErr := rows.Err(); iterErr != nil {
+		return iterErr
+	}
 	if index < 0 || index >= len(ids) {
 		return ErrNotFound
 	}
