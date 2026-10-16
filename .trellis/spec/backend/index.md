@@ -21,6 +21,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels, and automation event diagnostics | Active |
 | [External Fulfillment](./external-fulfillment.md) | Supplier catalog mapping and background quote pacing | Active |
 | [Item Clone Automation](./item-clone-automation.md) | Cross-account item clone rule copying and idempotency | Active |
+| [Keyword Matching](./keyword-matching.md) | Local OR separators, empty terms and item-rule priority | Active |
 
 ---
 

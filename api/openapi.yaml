@@ -7923,7 +7923,7 @@ components:
       type: object
       required: [keyword, reply]
       properties:
-        keyword: {type: string}
+        keyword: {type: string, description: 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发}
         reply: {type: string}
     KeywordBasicListResponse:
       type: array
@@ -7932,7 +7932,7 @@ components:
       type: object
       required: [keyword, reply, item_id]
       properties:
-        keyword: {type: string}
+        keyword: {type: string, description: 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发}
         reply: {type: string}
         item_id: {type: string}
     KeywordItemListResponse:
@@ -7943,7 +7943,7 @@ components:
       required: [id, keyword, reply, item_id, item_ids, type, image_url]
       properties:
         id: {type: integer}
-        keyword: {type: string}
+        keyword: {type: string, description: 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发}
         reply: {type: string}
         item_id: {type: string, description: 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复}
         item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；空集合表示账号级回复}
@@ -7956,7 +7956,7 @@ components:
       type: object
       required: [keyword, reply, item_id, item_ids, type, image_url]
       properties:
-        keyword: {type: string}
+        keyword: {type: string, description: 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发}
         reply: {type: string}
         item_id: {type: string, description: 兼容旧单值调用方；多选时由 item_ids 合并而来}
         item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；一条规则可关联多个商品，空集合表示账号级回复}

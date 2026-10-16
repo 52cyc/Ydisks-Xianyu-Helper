@@ -2591,11 +2591,13 @@ export interface components {
             channel_ids: number[] | null;
         };
         KeywordBasicResponse: {
+            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
             reply: string;
         };
         KeywordBasicListResponse: components["schemas"]["KeywordBasicResponse"][];
         KeywordItemResponse: {
+            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
             reply: string;
             item_id: string;
@@ -2603,6 +2605,7 @@ export interface components {
         KeywordItemListResponse: components["schemas"]["KeywordItemResponse"][];
         KeywordTypedResponse: {
             id: number;
+            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
             reply: string;
             /** @description 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复 */
@@ -2614,6 +2617,7 @@ export interface components {
         };
         KeywordTypedListResponse: components["schemas"]["KeywordTypedResponse"][];
         KeywordCreateRequest: {
+            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
             reply: string;
             /** @description 兼容旧单值调用方；多选时由 item_ids 合并而来 */

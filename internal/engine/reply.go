@@ -287,22 +287,41 @@ func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyRe
 	// msgLower 用于本次流程后续判断的msgLower
 	msgLower := strings.ToLower(m.Text)
 
-	// 1. 商品ID关键词优先；一条规则可关联多个商品，命中任一即可。
+	// 1. 商品ID关键词优先；一条规则可关联多个商品，且关键词中的任一候选词命中即可。
 	if m.ItemID != "" {
 		// kw 表示当前遍历过程中的kw
 		for _, kw := range kws {
-			if containsItemID(kw.ItemID, m.ItemID) && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
+			if containsItemID(kw.ItemID, m.ItemID) && keywordMatches(msgLower, kw.Keyword) {
 				return r.keywordResult(kw, m)
 			}
 		}
 	}
-	// 2. 通用关键词（无 item_id）。
+	// 2. 通用关键词（无 item_id）；任一分隔后的候选词包含于买家消息时命中。
 	for _, kw := range kws {
-		if kw.ItemID == "" && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
+		if kw.ItemID == "" && keywordMatches(msgLower, kw.Keyword) {
 			return r.keywordResult(kw, m)
 		}
 	}
 	return nil
+}
+
+// keywordMatches 判断已小写化的买家消息 messageLower 是否包含规则 rawKeyword 中的任一候选词。
+// 规则使用 |、中英文逗号、顿号或换行分隔候选词；空片段会被忽略，以保持历史单关键词规则不变。
+func keywordMatches(messageLower, rawKeyword string) bool {
+	// term 表示由规则分隔符拆出的单个候选关键词。
+	for _, term := range strings.FieldsFunc(rawKeyword, isKeywordTermSeparator) {
+		// normalizedTerm 去除候选词首尾空白后参与不区分大小写的包含匹配。
+		normalizedTerm := strings.TrimSpace(term)
+		if normalizedTerm != "" && strings.Contains(messageLower, strings.ToLower(normalizedTerm)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isKeywordTermSeparator 判断字符 separator 是否是关键词规则中表达 OR 语义的分隔符。
+func isKeywordTermSeparator(separator rune) bool {
+	return separator == '|' || separator == ',' || separator == '，' || separator == '、' || separator == '\n' || separator == '\r'
 }
 
 // containsItemID 判断规则的商品范围字段是否覆盖目标商品标识。

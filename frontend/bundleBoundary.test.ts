@@ -11,7 +11,8 @@ const PAGE_CHUNK_BUDGETS: Record<string, number> = {
   Dashboard: 30 * 1024,
   AccountList: 70 * 1024,
   OrderList: 45 * 1024,
-  CardList: 45 * 1024,
+  // cURL 请求解析与安全导入能力随卡密页按路由加载，52 KiB 覆盖该完整交互而仍限制页面总下载量。
+  CardList: 52 * 1024,
   ItemList: 65 * 1024,
   Settings: 30 * 1024,
   // Rules 同时包含外部货源跟价和模板发货配置，按合并后的实际职责保留预算。

@@ -81,6 +81,10 @@ git diff --check
 
 ## 后续窄范围安全修复记录
 
+- 2026-10-16（fork 上游同步）：合并上游 `1afb20e8`，关键词回复按 `|`、中英文逗号、顿号和换行执行任一非空词包含匹配，商品级规则仍优先于账号通用规则；旧规则中的分隔符将获得 OR 语义，不做数据迁移。卡密 API 编辑器引入用户主动粘贴 cURL 的本地解析，沿用 GET/POST、JSON/表单支持范围，不执行 shell。检查发现上游 `--request`、`--header`、`--data*` 独立长选项值未被消费，已最小修复并增加三项先失败后通过的回归。保留 fork 外部履约、跟价、链接采集、OrderList 45 KiB 与 Rules 90 KiB 既有预算，按上游新功能采用 CardList 52 KiB 预算；前端产物从最终源码重建。未改数据库、供应商协议、账号凭证或冻结 CAPTCHA。
+
+  验证：`env -u GOROOT CGO_ENABLED=1 make cover` 全部 Go 包通过，statement 79.8%（未设置 `RUN_BROWSER_INTEGRATION=1`）；`env -u GOROOT CGO_ENABLED=1 make cover-browser` 设置 `RUN_BROWSER_INTEGRATION=1`，浏览器 statement 64.1%；Node 24 的 `npm --prefix frontend run test:coverage`，101 个测试文件共 596 项通过，statement 76.57%。前端类型检查、生成漂移、构建、中文注释、架构、全套 API 契约、全库 vet、服务构建与临时空库 Chromium 启动及 `/health` 验证通过。Go 注释检查仍为 142 项既有欠缺，无新增；本机未安装 `golangci-lint`，lint 未执行。未调用真实闲鱼账号、供应商交易、外部卡密 API，未连接 MySQL/PostgreSQL；覆盖率产物不提交。Trellis 记录本次同步与关键词契约，六阶段状态和所有门禁保持不变。
+
 - 2026-10-10（fork 上游同步）：合并上游 `42a476fa` 及其前三个新增提交，接入多商品关键词、同步帧付款消息完整分发、卖家身份门禁、列表订单同步和账号级明确全商品授权。保留 fork 的外部货源、跟价、处理中订单主动刷新及 waiting 恢复通知边界；已拆分的自动化兼容入口继续留在原职责文件，未知角色事件防重键接入既有 `trigger_key.go`。上游删除的商品详情能力仅保留分享链接主动采集依赖的私有请求与规格解析，不恢复自动回复发布人查询或批量同步详情探测；新增本地 Token 轮换、耗尽与刷新失败回归。三项外部履约测试补齐平台明确卖家角色，所有采购、利润和通知断言保留；采集成功响应登记到真实 OpenAPI 覆盖场景。合并后超过 800 行的事件、通知及协议恢复文件按既有职责拆分，不改变行为、包依赖、迁移编号或冻结 CAPTCHA。
 
   验证：`env -u GOROOT CGO_ENABLED=1 make cover` 全部 Go 包通过，statement 79.8%（未设置 `RUN_BROWSER_INTEGRATION=1`）；`env -u GOROOT CGO_ENABLED=1 make cover-browser` 使用 `RUN_BROWSER_INTEGRATION=1`，浏览器 statement 64.1%；Node 24 执行 `make cover-frontend`，588 项测试通过、statement 76.45%。前端类型检查、构建、架构检查、OpenAPI 生成漂移/路由/场景/真实成功响应/特殊契约检查、全库 vet 和服务构建通过；临时空库启动实际 Chromium 成功，`127.0.0.1:59219/health` 返回正常，测试服务已关闭。前端中文注释检查通过；`make comments` 仍受 142 项既有 Go 声明注释欠缺阻断，未修改基线或增加豁免；`make lint` 因本机没有 `golangci-lint` 未执行。未请求真实闲鱼账号、供应商采购或外部交易，未连接 MySQL/PostgreSQL；相关真实账号与平台集成例外保留。覆盖率产物不提交，六阶段完成状态保持不变。
