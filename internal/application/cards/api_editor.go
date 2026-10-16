@@ -2,11 +2,10 @@ package cards
 
 import (
 	"context"
-	"sort"
+	"encoding/json"
 )
 
-// APIEditor 是所属用户打开编辑弹窗时的脱敏配置视图：只包含非敏感字段和模板顶层键名，
-// 请求头、查询参数和正文的值一律留在服务端，编辑与测试通过“保留”语义由服务端合并。
+// APIEditor 是仅供所属用户主动编辑的配置视图；秘密只在当前编辑会话中使用，不进入列表或日志。
 type APIEditor struct {
 	// URL 是请求目标地址。
 	URL string
@@ -16,8 +15,8 @@ type APIEditor struct {
 	TimeoutSeconds int
 	// ContentType 是正文编码类型。
 	ContentType string
-	// HeaderKeys、ParamKeys、BodyKeys 是已保存模板按字典序排列的顶层键名，不含任何值；空切片表示未配置。
-	HeaderKeys, ParamKeys, BodyKeys []string
+	// Headers、Params 和 Body 是完整 JSON 模板，允许所属用户编辑，不可记录到日志。
+	Headers, Params, Body string
 	// ResponsePath 是返回值提取路径。
 	ResponsePath string
 	// RetryEnabled 表示是否启用幂等重试。
@@ -45,7 +44,7 @@ func (s *Service) ownedAPIConfig(ctx context.Context, userID, cardID int64) (str
 	return card.APIConfig, nil
 }
 
-// GetAPIEditor 为所属用户读取 cardID 的脱敏编辑视图；模板值不离开服务端，普通详情仍只返回摘要。
+// GetAPIEditor 为所属用户读取 cardID 的完整编辑视图，普通详情仍只返回摘要。
 func (s *Service) GetAPIEditor(ctx context.Context, userID, cardID int64) (APIEditor, error) {
 	// raw、err 保存权限核验后的模板及查询错误。
 	raw, err := s.ownedAPIConfig(ctx, userID, cardID)
@@ -57,21 +56,14 @@ func (s *Service) GetAPIEditor(ctx context.Context, userID, cardID int64) (APIEd
 	if err != nil {
 		return APIEditor{}, &ValidationError{Message: "已保存的 API 配置无效"}
 	}
+	// headers、params、body 来自已经解码成功的 JSON 对象，重新编码不会失败。
+	headers, _ := json.Marshal(config.Headers)
+	// params 保存查询参数模板的 JSON 文本。
+	params, _ := json.Marshal(config.Params)
+	// body 保存请求正文模板的 JSON 文本。
+	body, _ := json.MarshalIndent(config.Body, "", "  ")
 	return APIEditor{URL: config.URL, Method: config.Method, TimeoutSeconds: config.Timeout, ContentType: config.ContentType,
-		HeaderKeys: apiTemplateKeys(config.Headers), ParamKeys: apiTemplateKeys(config.Params), BodyKeys: apiTemplateKeys(config.Body),
-		ResponsePath: config.ResponsePath, RetryEnabled: config.RetryEnabled}, nil
-}
-
-// apiTemplateKeys 返回模板顶层键名的有序副本，丢弃全部值；nil 或空模板返回非 nil 空切片，便于 JSON 输出 []。
-func apiTemplateKeys(template map[string]any) []string {
-	// keys 只保存键名，长度等于模板顶层字段数。
-	keys := make([]string, 0, len(template))
-	// key 是当前模板字段名，对应的值可能是密钥，因此不读取。
-	for key := range template {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+		Headers: string(headers), Params: string(params), Body: string(body), ResponsePath: config.ResponsePath, RetryEnabled: config.RetryEnabled}, nil
 }
 
 // PrepareAPITest 合并 userID 所有的 cardID 已保存配置和 raw 草稿，不写数据库；零标识表示新增测试。

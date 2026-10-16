@@ -232,6 +232,13 @@ until their recorded phase is completed; agents MUST NOT add new violations.
 - New ownership checks return existence/non-sensitive identity rather than maps of decrypted Cookie values.
 - Do not hold credential locks across slow external I/O unless an authoritative protocol invariant explicitly
   requires it and the lock order is documented and tested.
+- **Sole documented exception (API card editor):** `GET /api/v1/cards/{card_id}/api-editor` may return the
+  owner's saved API-card request template (headers, query parameters and body, including third-party API keys) so
+  the owner can review and edit it. This exception was explicitly approved by the project owner and is limited to
+  that one endpoint. It requires: login plus card-ownership and `type=api` checks, `Cache-Control: no-store`,
+  no values in ordinary card lists/details, logs, notifications or error messages, secret-bearing inputs masked by
+  default in the UI, and the draft cleared when the dialog closes or the card switches. It is not a precedent: any
+  other endpoint that would return a stored secret still needs its own recorded approval.
 
 ## Mandatory HTTP API constraints
 

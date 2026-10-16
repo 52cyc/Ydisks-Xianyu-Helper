@@ -27,7 +27,6 @@ const CardList: React.FC = () => {
     closeEdit,
     editLoading,
     editError,
-    editSavedKeys,
     showAddModal,
     setShowAddModal,
     selectedCard,
@@ -285,8 +284,6 @@ const CardList: React.FC = () => {
                       body={editForm.api_body || ''}
                       responsePath={editForm.api_response_path || ''}
                       retryEnabled={editForm.api_retry_enabled || false}
-                      savedKeys={editSavedKeys ?? undefined}
-                      templateActions={{ headers: editForm.api_headers_action || 'retain', params: editForm.api_params_action || 'retain', body: editForm.api_body_action || 'retain' }}
                       onTest={/* editAPITest 合并同一保存草稿并绑定当前卡密与取消信号。 */ signal => testCardAPI(apiConfigFromEditForm(editForm), selectedCard.id, { signal })}
                       onChange={/* updateRequestField 将字段修改写回当前草稿。 */ (field, value) => setEditForm(/* updateDraft 合并最新表单与字段变更。 */ current => updateAPIEditForm(current, field, value))}
                     />

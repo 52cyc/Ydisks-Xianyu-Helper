@@ -101,7 +101,7 @@ export const getCardDetails = async (cardId: string | number): Promise<Card> => 
   return normalizeCard(card);
 };
 
-// getCardAPIEditor 读取拥有者的脱敏编辑视图（只含模板键名），关闭弹窗时可取消请求。
+// getCardAPIEditor 读取拥有者的完整编辑配置，关闭弹窗时可取消请求。
 export const getCardAPIEditor = async (cardId: number, options?: RequestControlOptions): Promise<CardAPIEditor> => {
   return runContractRequest(/* signal 绑定当前编辑弹窗的请求生命周期。 */ signal => contractClient.GET('/api/v1/cards/{card_id}/api-editor', { params: { path: { card_id: String(cardId) } }, signal }), options);
 };

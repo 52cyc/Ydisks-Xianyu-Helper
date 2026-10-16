@@ -7989,16 +7989,15 @@ components:
         validation_error: {type: string}
     CardAPIEditorResponse:
       type: object
-      description: 所属用户编辑 API 卡密时的脱敏视图；请求头、查询参数和正文只返回顶层键名，任何值都不下发到浏览器
-      required: [url, method, timeout_seconds, content_type, header_keys, param_keys, body_keys, response_path, retry_enabled]
+      required: [url, method, timeout_seconds, content_type, headers, params, body, response_path, retry_enabled]
       properties:
         url: {type: string}
         method: {type: string, enum: [GET, POST]}
         timeout_seconds: {type: integer}
         content_type: {type: string}
-        header_keys: {type: array, items: {type: string}, description: 已保存请求头的顶层键名，不含值}
-        param_keys: {type: array, items: {type: string}, description: 已保存查询参数的顶层键名，不含值}
-        body_keys: {type: array, items: {type: string}, description: 已保存请求正文的顶层键名，不含值}
+        headers: {type: string, description: 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录}
+        params: {type: string}
+        body: {type: string}
         response_path: {type: string}
         retry_enabled: {type: boolean}
     CardAPITestRequest:

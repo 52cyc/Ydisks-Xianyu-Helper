@@ -2554,19 +2554,16 @@ export interface components {
             ready: boolean;
             validation_error?: string;
         };
-        /** @description 所属用户编辑 API 卡密时的脱敏视图；请求头、查询参数和正文只返回顶层键名，任何值都不下发到浏览器 */
         CardAPIEditorResponse: {
             url: string;
             /** @enum {string} */
             method: "GET" | "POST";
             timeout_seconds: number;
             content_type: string;
-            /** @description 已保存请求头的顶层键名，不含值 */
-            header_keys: string[];
-            /** @description 已保存查询参数的顶层键名，不含值 */
-            param_keys: string[];
-            /** @description 已保存请求正文的顶层键名，不含值 */
-            body_keys: string[];
+            /** @description 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录 */
+            headers: string;
+            params: string;
+            body: string;
             response_path: string;
             retry_enabled: boolean;
         };

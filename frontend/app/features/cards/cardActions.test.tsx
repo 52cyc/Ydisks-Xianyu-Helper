@@ -53,7 +53,7 @@ describe('useCardActions 卡密动作协调器', /* 当前回调验证卡密筛�
   beforeEach(/* 当前回调重置卡密 API 和浏览器提示替身。 */ () => {
     vi.clearAllMocks();
     cardActionMocks.getCardAPIEditor.mockResolvedValue({ url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10,
-      content_type: 'application/json', header_keys: ['Authorization', 'Idempotency-Key'], param_keys: ['order_id'], body_keys: ['trigger_type'], response_path: 'data.content', retry_enabled: true });
+      content_type: 'application/json', headers: '{"Authorization":"Bearer fixture-secret","Idempotency-Key":"{idempotency_key}"}', params: '{"order_id":"{order_id}"}', body: '{"trigger_type":"{trigger_type}"}', response_path: 'data.content', retry_enabled: true });
     cardActionMocks.createCard.mockResolvedValue({ success: true, id: 3 });
     cardActionMocks.deleteCard.mockResolvedValue({ success: true });
     cardActionMocks.updateCard.mockResolvedValue({ success: true });
@@ -167,25 +167,12 @@ describe('useCardActions 卡密动作协调器', /* 当前回调验证卡密筛�
     const signal = cardActionMocks.getCardAPIEditor.mock.calls[0][1].signal as AbortSignal;
     await act(/* openSecond 切换到第二张 API 卡并等待配置。 */ async () => hook.result.current.handleEdit({ id: 4, name: '新卡', type: 'api', enabled: true }));
     expect(signal.aborted).toBe(true);
-    await act(/* finishOld 完成迟到响应，不能污染新草稿。 */ async () => { finish({ url: 'https://stale.example', method: 'GET', timeout_seconds: 5, content_type: 'text/plain', header_keys: ['Stale'], param_keys: [], body_keys: [], response_path: '', retry_enabled: false }); await pending; });
+    await act(/* finishOld 完成迟到响应，不能污染新草稿。 */ async () => { finish({ headers: 'stale-secret' }); await pending; });
     expect(hook.result.current.editForm.name).toBe('新卡');
-    expect(hook.result.current.editForm.api_url).toBe('https://example.com/claim');
-    expect(hook.result.current.editSavedKeys?.headers).toEqual(['Authorization', 'Idempotency-Key']);
+    expect(hook.result.current.editForm.api_headers).not.toContain('stale-secret');
     act(/* closeEditor 关闭弹窗并销毁敏感草稿。 */ () => hook.result.current.closeEdit());
     expect(hook.result.current.editForm).toEqual({});
-    expect(hook.result.current.editSavedKeys).toBeNull();
     expect(hook.result.current.selectedCard).toBeNull();
-  });
-
-  test('载入编辑视图后按键名决定沿用或直接填写，草稿中不含任何模板值', /* redactedEditor 验证脱敏视图到表单的映射。 */ async () => {
-    cardActionMocks.getCardAPIEditor.mockResolvedValueOnce({ url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10,
-      content_type: 'application/json', header_keys: ['Authorization'], param_keys: [], body_keys: ['trigger_type'], response_path: '', retry_enabled: false });
-    // hook 保存当前编辑协调器。
-    const { hook } = createCardHook();
-    await act(/* openEditor 打开 API 卡并等待脱敏视图。 */ async () => hook.result.current.handleEdit({ id: 5, name: '接口卡', type: 'api', enabled: true }));
-    expect(hook.result.current.editForm).toMatchObject({ api_headers_action: 'retain', api_params_action: 'replace', api_body_action: 'retain', api_headers: '', api_params: '', api_body: '' });
-    expect(hook.result.current.editSavedKeys).toEqual({ headers: ['Authorization'], params: [], body: ['trigger_type'] });
-    expect(hook.result.current.editLoading).toBe(false);
   });
 
   test('删除取消、删除失败和状态切换失败均不制造虚假成功', /* 当前回调验证卡密删除和启停异常分支。 */ async () => {

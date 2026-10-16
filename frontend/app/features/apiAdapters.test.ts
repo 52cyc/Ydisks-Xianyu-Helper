@@ -1779,7 +1779,7 @@ test('通知编辑可单独更新收件地址', /* recipientPatchAdapterTest 检
 
 test('API 卡密编辑走专用接口，测试携带卡密标识及保留模板语义', /* cardEditorTransport 验证真实请求序列化不丢失草稿控制字段。 */ async () => {
   // editor 是完整编辑接口的确定性响应，仅包含测试凭证。
-  const editor = { url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10, content_type: 'application/json', header_keys: ['Authorization'], param_keys: [], body_keys: [], response_path: 'data.content', retry_enabled: true };
+  const editor = { url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10, content_type: 'application/json', headers: '{"Authorization":"Bearer fixture"}', params: '{}', body: '{}', response_path: 'data.content', retry_enabled: true };
   // fetchMock 捕获完整编辑与临时测试的真实请求形状。
   const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(editor)).mockResolvedValueOnce(jsonResponse({ status: 'success', status_code: 200, response_content_type: 'application/json', response_fields: ['data'] }));
   stubContractFetch(fetchMock);

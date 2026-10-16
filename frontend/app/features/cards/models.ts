@@ -56,14 +56,14 @@ export interface CardAPIConfigSummary {
   validation_error?: string;
 }
 
-/** 拥有者打开编辑弹窗时载入的脱敏配置：模板只给出顶层键名，值始终留在服务端。 */
+/** 仅在拥有者打开编辑弹窗时载入的完整配置，不进入列表缓存。 */
 export interface CardAPIEditor extends Pick<CardAPIConfigSummary, 'url' | 'method' | 'content_type' | 'timeout_seconds' | 'response_path' | 'retry_enabled'> {
-  /** 已保存请求头的顶层键名，不含值。 */
-  header_keys: string[];
-  /** 已保存查询参数的顶层键名，不含值。 */
-  param_keys: string[];
-  /** 已保存请求正文的顶层键名，不含值。 */
-  body_keys: string[];
+  /** 完整请求头模板，仅保留在当前编辑草稿。 */
+  headers: string;
+  /** 完整查询参数模板。 */
+  params: string;
+  /** 完整请求正文模板。 */
+  body: string;
 }
 
 /** API 卡券提交用的具名配置；敏感模板为空时由服务端保留旧值。 */
