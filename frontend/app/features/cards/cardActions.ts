@@ -3,6 +3,7 @@ import type { Card,CardMutation } from './api';
 import { createCard,deleteCard,getCardAPIEditor,updateCard } from './api';
 import { apiConfigFromEditForm, apiConfigFromAddForm } from './editConfig';
 import { filterCards } from './batchState';
+import type { APISavedTemplateKeys } from './components/APIRequestBuilder';
 import type { AddCardForm,EditCardForm } from './types';
 
 // emptyAddForm 创建新增卡密组表单的初始值。
@@ -53,6 +54,8 @@ export interface CardActionsState {
   editLoading: boolean;
   // editError 保存配置读取失败的安全提示。
   editError: string;
+  // editSavedKeys 是已保存模板的键名，只用于提示用户哪些字段会被沿用；不含任何值。
+  editSavedKeys: APISavedTemplateKeys | null;
   // showAddModal 表示新增卡密弹窗是否打开。
   showAddModal: boolean;
   // setShowAddModal 更新新增弹窗展示状态。
@@ -116,11 +119,14 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
   const [editLoading, setEditLoading] = useState(false);
   // editError 显示读取失败提示，避免使用不完整表单覆盖配置。
   const [editError, setEditError] = useState('');
+  // editSavedKeys 是服务端返回的已保存模板键名（服务端数据，不混入表单草稿）；null 表示尚未载入或非 API 卡密。
+  const [editSavedKeys, setEditSavedKeys] = useState<APISavedTemplateKeys | null>(null);
   // closeEdit 立即清除当前弹窗持有的敏感配置。
   const closeEdit = useCallback(/* closeEditor 结束当前编辑会话。 */ () => {
     editorRequest.current?.abort();
     editorRequest.current = null;
     setEditForm({});
+    setEditSavedKeys(null);
     setSelectedCard(null);
     setEditLoading(false);
     setEditError('');
@@ -137,6 +143,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     editorRequest.current = request;
     setEditLoading(card.type === 'api');
     setEditError('');
+    setEditSavedKeys(null);
     setSelectedCard(card);
     setEditForm({
       id: card.id,
@@ -153,6 +160,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       api_retry_enabled: card.api_config?.retry_enabled || false,
       api_headers_action: 'retain',
       api_params_action: 'retain',
+      api_body_action: 'retain',
       text_content: card.text_content || '',
       data_content: card.data_content || '',
       image_url: card.image_url || '',
@@ -163,13 +171,16 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     setShowEditModal(true);
     if (card.type !== 'api') return;
     try {
-      // config 只进入当前编辑草稿，不写入列表缓存或浏览器存储。
+      // config 是脱敏编辑视图：模板只有键名，值始终留在服务端。
       const config = await getCardAPIEditor(card.id, { signal: request.signal });
       if (request.signal.aborted) return;
-      setEditForm(/* loadEditor 将已授权的完整配置载入当前草稿。 */ current => ({
+      setEditSavedKeys({ headers: config.header_keys, params: config.param_keys, body: config.body_keys });
+      // actionFor 有已保存字段时默认沿用，没有时直接进入填写。
+      const actionFor = (keys: string[]) => (keys.length > 0 ? 'retain' as const : 'replace' as const);
+      setEditForm(/* loadEditor 将非敏感字段和模板处理方式载入当前草稿。 */ current => ({
         ...current, api_url: config.url, api_method: config.method, api_timeout: config.timeout_seconds,
-        api_content_type: config.content_type, api_headers: config.headers, api_params: config.params,
-        api_body: config.body, api_response_path: config.response_path || '', api_retry_enabled: config.retry_enabled,
+        api_content_type: config.content_type, api_response_path: config.response_path || '', api_retry_enabled: config.retry_enabled,
+        api_headers_action: actionFor(config.header_keys), api_params_action: actionFor(config.param_keys), api_body_action: actionFor(config.body_keys),
       }));
     } catch {
       if (!request.signal.aborted) setEditError('读取配置失败，请重试');
@@ -326,6 +337,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     closeEdit,
     editLoading,
     editError,
+    editSavedKeys,
     showAddModal,
     setShowAddModal,
     selectedCard,

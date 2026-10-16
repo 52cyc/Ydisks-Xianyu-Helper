@@ -57,6 +57,8 @@ export type EditCardForm = Partial<Card> & {
   api_headers_action?: 'retain' | 'replace' | 'clear';
   // api_params_action 保存请求参数模板的三态变更意图。
   api_params_action?: 'retain' | 'replace' | 'clear';
+  // api_body_action 保存请求正文模板的三态变更意图；保留时不提交正文，由服务端沿用已保存值。
+  api_body_action?: 'retain' | 'replace' | 'clear';
 };
 
 // CardBatchTab 表示批量导入弹窗当前展示的操作页签。

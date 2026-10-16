@@ -3,6 +3,8 @@ package cards
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -34,17 +36,34 @@ func TestAPIEditorApplicationBranches(t *testing.T) {
 	repository := &editorRepository{cardRepositoryStub: cardRepositoryStub{card: card}, full: card}
 	// service 是本次测试的卡密用例入口。
 	service := NewService(repository)
-	// editor、err 验证空模板以可再次编辑的 JSON 对象回显。
+	// editor、err 验证空模板以非 nil 空键名列表回显，前端据此直接进入填写状态。
 	editor, err := service.GetAPIEditor(ctx, 7, 1)
-	if err != nil || editor.Headers != "{}" || editor.Params != "{}" || editor.Body != "{}" {
+	if err != nil || editor.HeaderKeys == nil || editor.ParamKeys == nil || editor.BodyKeys == nil ||
+		len(editor.HeaderKeys)+len(editor.ParamKeys)+len(editor.BodyKeys) != 0 {
 		t.Fatalf("空模板回显错误: %+v %v", editor, err)
 	}
-	// 完整正文保持原来的业务字段，不应被空对象覆盖。
-	repository.full.APIConfig = `{"url":"https://example.com","method":"POST","body":{"order_id":"{order_id}"}}`
-	// withBody、bodyErr 是包含正文时的完整编辑视图。
-	withBody, bodyErr := service.GetAPIEditor(ctx, 7, 1)
-	if bodyErr != nil || withBody.Body == "{}" {
-		t.Fatal("正文模板丢失", bodyErr)
+	// 已保存模板只回显有序键名，任何值（含凭证）都不得出现在编辑视图中。
+	repository.full.APIConfig = `{"url":"https://example.com","method":"POST","headers":{"X-Sign":"editor-secret-sign","Authorization":"Bearer editor-secret-token"},"params":{"order_id":"{order_id}"},"body":{"order_id":"{order_id}","secret":"editor-secret-body"}}`
+	// withValues、valuesErr 是包含三类模板时的脱敏编辑视图。
+	withValues, valuesErr := service.GetAPIEditor(ctx, 7, 1)
+	if valuesErr != nil {
+		t.Fatal(valuesErr)
+	}
+	if // got 是逗号拼接的请求头键名，应按字典序排列。
+	got := strings.Join(withValues.HeaderKeys, ","); got != "Authorization,X-Sign" {
+		t.Fatalf("请求头键名=%q", got)
+	}
+	if // got 是逗号拼接的查询参数键名。
+	got := strings.Join(withValues.ParamKeys, ","); got != "order_id" {
+		t.Fatalf("参数键名=%q", got)
+	}
+	if // got 是逗号拼接的正文键名，键名本身可回显而值不可。
+	got := strings.Join(withValues.BodyKeys, ","); got != "order_id,secret" {
+		t.Fatalf("正文键名=%q", got)
+	}
+	if // dump 是整个编辑视图的文本展开，用于确认任何字段都没有携带模板值。
+	dump := fmt.Sprintf("%+v", withValues); strings.Contains(dump, "editor-secret") || strings.Contains(dump, "{order_id}") {
+		t.Fatalf("编辑视图泄露了模板值: %s", dump)
 	}
 	repository.full = card
 	repository.reads = 1

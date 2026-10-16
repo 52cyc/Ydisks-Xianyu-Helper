@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act,cleanup,fireEvent,render,screen,waitFor } from '@testing-library/react';
+import { act,cleanup,fireEvent,render,screen,waitFor,within } from '@testing-library/react';
 import { afterEach,beforeEach,describe,expect,test,vi } from 'vitest';
 import type { Card } from '../api';
 
@@ -86,7 +86,7 @@ describe('CardList 页面组合行为', /* 当前回调验证卡密筛选、批�
   beforeEach(/* 当前回调重置卡密页面 API、库存和浏览器提示替身。 */ () => {
     vi.clearAllMocks();
     cardListMocks.getCardAPIEditor.mockResolvedValue({ url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10,
-      content_type: 'application/json', headers: '{"Authorization":"Bearer fixture-secret","Idempotency-Key":"{idempotency_key}"}', params: '{"order_id":"{order_id}"}', body: '{"trigger_type":"{trigger_type}"}', response_path: 'data.content', retry_enabled: true });
+      content_type: 'application/json', header_keys: ['Authorization', 'Idempotency-Key'], param_keys: ['order_id'], body_keys: ['trigger_type'], response_path: 'data.content', retry_enabled: true });
     cardListMocks.cards = [cardFixture, textCardFixture];
     cardListMocks.loadCards.mockResolvedValue(undefined);
     cardListMocks.createCard.mockResolvedValue({ success: true, id: 3 });
@@ -192,33 +192,72 @@ describe('CardList 页面组合行为', /* 当前回调验证卡密筛选、批�
     expect(screen.getByText('响应字段：未识别 JSON 字段')).toBeTruthy();
   });
 
-  test('编辑已保存 API 卡密完整回显，密钥默认隐藏且测试与保存共用草稿', /* editorRegression 覆盖截图中的重新打开后测试失败路径。 */ async () => {
+  test('编辑已保存 API 卡密只显示键名，沿用时由服务端合并密钥，重新填写后测试与保存共用草稿', /* editorRegression 覆盖重新打开后测试失败路径，且模板值不进入浏览器。 */ async () => {
     cardListMocks.cards = [{ id: 3, name: '积分卡', type: 'api', enabled: true }];
     render(<CardList />);
     fireEvent.click(screen.getByTitle('编辑'));
-    await waitFor(/* waitEditor 等待完整模板载入。 */ () => expect(screen.getByDisplayValue('{idempotency_key}')).toBeTruthy());
-    // secret 是默认遮罩的完整认证字段。
+    // headersGroup 是请求头沿用状态下的键名提示区块。
+    const headersGroup = await screen.findByRole('group', { name: '请求头已保存' });
+    expect(headersGroup.textContent).toContain('Authorization、Idempotency-Key');
+    expect(screen.getByRole('group', { name: '查询参数已保存' }).textContent).toContain('order_id');
+    expect(screen.getByRole('group', { name: '请求正文已保存' }).textContent).toContain('trigger_type');
+    expect(screen.queryByLabelText('Headers / 请求头第1行值')).toBeNull();
+    expect(screen.queryByLabelText('JSON 请求正文')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '测试请求' }));
+    await waitFor(/* waitSavedTest 等待沿用已保存配置的测试完成。 */ () => expect(screen.getByText('测试成功')).toBeTruthy());
+    // retained 是沿用状态下的测试草稿：三个模板都不携带值，由服务端按卡密标识合并。
+    const retained = cardListMocks.testCardAPI.mock.calls[0][0];
+    expect(retained).toMatchObject({ headers_action: 'retain', params_action: 'retain', retry_enabled: true });
+    expect(retained.headers).toBeUndefined();
+    expect(retained.params).toBeUndefined();
+    expect(retained.body).toBeUndefined();
+    expect(cardListMocks.testCardAPI.mock.calls[0][1]).toBe(3);
+
+    fireEvent.click(within(headersGroup).getByRole('button', { name: '重新填写' }));
+    fireEvent.change(screen.getByLabelText('Headers / 请求头第1行键名'), { target: { value: 'Authorization' } });
+    // secret 是用户重新填写的认证字段，默认遮罩。
     const secret = screen.getByLabelText('Headers / 请求头第1行值') as HTMLInputElement;
-    expect(secret.value).toBe('Bearer fixture-secret');
+    expect(secret.value).toBe('');
     expect(secret.type).toBe('password');
+    fireEvent.change(secret, { target: { value: 'Bearer replacement' } });
     fireEvent.click(screen.getByRole('button', { name: '显示Authorization' }));
     expect(secret.type).toBe('text');
-    fireEvent.click(screen.getByRole('button', { name: '隐藏Authorization' }));
-    expect(secret.type).toBe('password');
-    expect((screen.getByLabelText('JSON 请求正文') as HTMLTextAreaElement).value).toContain('{trigger_type}');
-    fireEvent.click(screen.getByRole('button', { name: '测试请求' }));
-    await waitFor(/* waitSavedTest 等待保存配置的测试完成。 */ () => expect(screen.getByText('测试成功')).toBeTruthy());
-    expect(cardListMocks.testCardAPI).toHaveBeenCalledWith(expect.objectContaining({ headers_action: 'retain', params_action: 'retain', retry_enabled: true }), 3, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    fireEvent.change(secret, { target: { value: 'Bearer replacement' } });
+    fireEvent.click(within(screen.getByRole('group', { name: '查询参数已保存' })).getByRole('button', { name: '清除' }));
+    expect(screen.getByRole('group', { name: '查询参数将清除' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '测试请求' }));
     await waitFor(/* waitDraftTest 等待新草稿的测试完成。 */ () => expect(cardListMocks.testCardAPI).toHaveBeenCalledTimes(2));
     // tested 是测试实际接收的草稿，随后保存必须使用同样的映射。
     const tested = cardListMocks.testCardAPI.mock.calls[1][0];
     expect(tested.headers_action).toBe('replace');
     expect(tested.headers).toContain('Bearer replacement');
+    expect(tested.params_action).toBe('clear');
+    expect(tested.body).toBeUndefined();
     fireEvent.click(screen.getByText('保存更改'));
     await waitFor(/* waitSave 验证保存和测试采用完全相同的 API 配置。 */ () => expect(cardListMocks.updateCard).toHaveBeenCalledWith(3, expect.objectContaining({ api_config: tested })));
     expect(cardListMocks.getCardAPIEditor).toHaveBeenCalledWith(3, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  test('重新填写后可改回沿用，撤销清除恢复沿用，未保存模板直接进入填写', /* templateToggle 验证三态切换不会提交残留草稿。 */ async () => {
+    cardListMocks.cards = [{ id: 3, name: '积分卡', type: 'api', enabled: true }];
+    cardListMocks.getCardAPIEditor.mockResolvedValueOnce({ url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10,
+      content_type: 'application/json', header_keys: ['Authorization'], param_keys: [], body_keys: ['trigger_type'], response_path: '', retry_enabled: false });
+    render(<CardList />);
+    fireEvent.click(screen.getByTitle('编辑'));
+    // bodyGroup 是请求正文沿用状态区块。
+    const bodyGroup = await screen.findByRole('group', { name: '请求正文已保存' });
+    expect(screen.getByLabelText('Params / 查询参数第1行键名')).toBeTruthy();
+    fireEvent.click(within(bodyGroup).getByRole('button', { name: '重新填写' }));
+    fireEvent.change(screen.getByLabelText('JSON 请求正文'), { target: { value: '{"draft":"value"}' } });
+    fireEvent.click(screen.getByRole('button', { name: '改回沿用已保存的请求正文' }));
+    fireEvent.click(within(screen.getByRole('group', { name: '请求头已保存' })).getByRole('button', { name: '清除' }));
+    fireEvent.click(within(screen.getByRole('group', { name: '请求头将清除' })).getByRole('button', { name: '撤销' }));
+    fireEvent.click(screen.getByText('保存更改'));
+    await waitFor(/* waitSave 等待保存请求。 */ () => expect(cardListMocks.updateCard).toHaveBeenCalled());
+    // saved 是最终提交的 API 配置：正文和请求头沿用，空查询参数按替换提交。
+    const saved = cardListMocks.updateCard.mock.calls[0][1].api_config;
+    expect(saved).toMatchObject({ headers_action: 'retain', params_action: 'replace', params: {} });
+    expect(saved.body).toBeUndefined();
+    expect(saved.headers).toBeUndefined();
   });
 
   test('读取失败禁用测试与保存，重试恢复且关闭会取消测试', /* editorFailure 验证错误恢复和弹窗生命周期。 */ async () => {
@@ -229,7 +268,7 @@ describe('CardList 页面组合行为', /* 当前回调验证卡密筛选、批�
     await waitFor(/* waitFailure 等待安全错误提示。 */ () => expect(screen.getByRole('alert')).toBeTruthy());
     expect((screen.getByText('保存更改') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByText('重试'));
-    await waitFor(/* waitRetry 等待重新载入完整配置。 */ () => expect(screen.getByDisplayValue('{idempotency_key}')).toBeTruthy());
+    await screen.findByRole('group', { name: '请求头已保存' });
     // finish 保存迟到的测试结果，用于验证关闭后的隔离。
     let finish!: (value: unknown) => void;
     cardListMocks.testCardAPI.mockImplementationOnce(/* pendingTest 模拟未完成的远端请求。 */ () => new Promise(/* captureTest 保留完成回调。 */ resolve => { finish = resolve; }));

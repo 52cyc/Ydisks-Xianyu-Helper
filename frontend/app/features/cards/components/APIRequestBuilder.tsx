@@ -1,10 +1,33 @@
 import { Eye, EyeOff, Loader2, Play, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import type { CardAPITestResult } from '../models';
 import { CurlImportError, parseCurlCommand } from '../curlImport';
 
 // APIRequestMethod 是 API 发货请求支持的 HTTP 方法。
 export type APIRequestMethod = 'GET' | 'POST';
+
+// APITemplateAction 描述编辑已保存卡密时对服务端模板的处理方式：保留沿用、重新填写替换或清除。
+export type APITemplateAction = 'retain' | 'replace' | 'clear';
+
+// APISavedTemplateKeys 是服务端返回的已保存模板顶层键名；值永不下发到浏览器。
+export interface APISavedTemplateKeys {
+  // headers 是已保存请求头的键名。
+  headers: string[];
+  // params 是已保存查询参数的键名。
+  params: string[];
+  // body 是已保存请求正文的键名。
+  body: string[];
+}
+
+// APITemplateActions 是三个模板当前的处理方式，与 APISavedTemplateKeys 一一对应。
+export interface APITemplateActions {
+  // headers 是请求头模板的处理方式。
+  headers: APITemplateAction;
+  // params 是查询参数模板的处理方式。
+  params: APITemplateAction;
+  // body 是请求正文模板的处理方式。
+  body: APITemplateAction;
+}
 
 // APIKeyValueRow 是 Postman 风格键值编辑器中的一行表单数据。
 export interface APIKeyValueRow {
@@ -34,6 +57,10 @@ export interface APIRequestBuilderProps {
   responsePath: string;
   // retryEnabled 表示是否启用带幂等键的重试。
   retryEnabled: boolean;
+  // savedKeys 仅在编辑已保存卡密时提供，列出服务端已保存模板的键名；新建时省略。
+  savedKeys?: APISavedTemplateKeys;
+  // templateActions 是编辑已保存卡密时三个模板的处理方式，与 savedKeys 同时提供。
+  templateActions?: APITemplateActions;
   // onChange 更新指定 API 配置字段。
 	onChange: (field: APIRequestField, value: string | number | boolean) => void;
 	// onTest 使用当前配置执行临时测试请求。
@@ -50,7 +77,10 @@ export type APIRequestField =
   | 'contentType'
   | 'body'
   | 'responsePath'
-  | 'retryEnabled';
+  | 'retryEnabled'
+  | 'headersAction'
+  | 'paramsAction'
+  | 'bodyAction';
 
 // APITestState 保存 API 测试请求的加载状态、非敏感诊断结果与请求错误。
 interface APITestState {
@@ -157,6 +187,46 @@ const SensitiveValue = ({ label, fieldName, value, onChange }: SensitiveValuePro
   </div>;
 };
 
+// SavedTemplateSectionProps 描述一个可能已在服务端保存了值的模板区块。
+interface SavedTemplateSectionProps {
+  // label 是模板区块的可见名称。
+  label: string;
+  // keys 是服务端已保存模板的键名；未提供或为空表示没有可保留的值。
+  keys?: string[];
+  // action 是当前处理方式；未提供时视为直接填写。
+  action?: APITemplateAction;
+  // onAction 切换当前模板的处理方式。
+  onAction: (action: APITemplateAction) => void;
+  // children 是重新填写时显示的编辑器。
+  children: ReactNode;
+}
+
+// SavedTemplateSection 在保留已保存模板时只展示键名，值从不进入浏览器；需要修改时整体重新填写或清除。
+const SavedTemplateSection = ({ label, keys, action, onAction, children }: SavedTemplateSectionProps) => {
+  if (!keys || keys.length === 0 || !action) return <>{children}</>;
+  if (action === 'retain') {
+    return <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-3" role="group" aria-label={`${label}已保存`}>
+      <p className="text-sm font-bold text-gray-800">{label}</p>
+      <p className="text-xs text-gray-600">已保存 {keys.length} 个字段：<span className="font-mono">{keys.join('、')}</span></p>
+      <p className="text-xs text-gray-500">值只保存在服务端，不会显示；保存和测试时自动沿用。</p>
+      <div className="flex gap-2">
+        <button type="button" onClick={/* replaceTemplate 放弃沿用，改为整体重新填写。 */ () => onAction('replace')} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-bold text-white">重新填写</button>
+        <button type="button" onClick={/* clearTemplate 保存时清除该模板。 */ () => onAction('clear')} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-700">清除</button>
+      </div>
+    </div>;
+  }
+  if (action === 'clear') {
+    return <div className="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs" role="group" aria-label={`${label}将清除`}>
+      <span className="font-semibold text-red-700">保存后将清除已保存的{label}</span>
+      <button type="button" onClick={/* undoClear 撤销清除，继续沿用已保存值。 */ () => onAction('retain')} className="rounded-lg bg-white px-3 py-1.5 font-bold text-gray-700">撤销</button>
+    </div>;
+  }
+  return <div className="space-y-2">
+    {children}
+    <button type="button" onClick={/* restoreTemplate 放弃本次填写，改回沿用服务端已保存值。 */ () => onAction('retain')} className="text-xs font-semibold text-blue-600 hover:underline">改回沿用已保存的{label}</button>
+  </div>;
+};
+
 // KeyValueEditor 渲染可增删的键值对输入行。
 const KeyValueEditor = ({ label, value, placeholder, onChange }: KeyValueEditorProps) => {
   // rows 保存当前键值编辑行；空行也必须保留在本地状态中，才能支持连续添加。
@@ -254,6 +324,8 @@ export const APIRequestBuilder = ({
   body,
   responsePath,
   retryEnabled,
+  savedKeys,
+  templateActions,
 	onChange,
 	onTest,
 }: APIRequestBuilderProps) => {
@@ -271,7 +343,7 @@ export const APIRequestBuilder = ({
     testRequest.current = null;
     setTestState({ loading: false });
     return /* abortTest 取消配置变化或组件卸载后的请求。 */ () => testRequest.current?.abort();
-  }, [url, method, timeout, headers, params, contentType, body, responsePath, retryEnabled]);
+  }, [url, method, timeout, headers, params, contentType, body, responsePath, retryEnabled, templateActions?.headers, templateActions?.params, templateActions?.body]);
   // runTest 仅展示本次请求的结果，不接受关闭或修改表单后的迟到响应。
   const runTest = async () => {
     if (!onTest) return;
@@ -314,7 +386,7 @@ export const APIRequestBuilder = ({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-bold text-gray-900">API 请求配置</h3>
-          <p className="mt-1 text-xs text-gray-500">密钥加密保存，默认隐藏，可点击查看。</p>
+          <p className="mt-1 text-xs text-gray-500">请求头、参数和正文加密保存在服务端，保存后不再回显；修改时请重新填写。</p>
         </div>
 		<span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-blue-600 shadow-sm">API</span>
 	      </div>
@@ -381,11 +453,13 @@ export const APIRequestBuilder = ({
       </div>
 
       <div className="space-y-5 border-t border-blue-100 pt-5">
-        <KeyValueEditor label="Headers / 请求头" value={headers} onChange={/* 当前回调保存请求头键值对象。 */ nextValue => onChange('headers', nextValue)} placeholder="Authorization" />
+        <SavedTemplateSection label="请求头" keys={savedKeys?.headers} action={templateActions?.headers} onAction={/* headersAction 切换请求头模板处理方式。 */ action => onChange('headersAction', action)}>
+          <KeyValueEditor label="Headers / 请求头" value={headers} onChange={/* 当前回调保存请求头键值对象。 */ nextValue => onChange('headers', nextValue)} placeholder="Authorization" />
+        </SavedTemplateSection>
 
-
-        <KeyValueEditor label="Params / 查询参数" value={params} onChange={/* 当前回调保存查询参数键值对象。 */ nextValue => onChange('params', nextValue)} placeholder="order_id" />
-
+        <SavedTemplateSection label="查询参数" keys={savedKeys?.params} action={templateActions?.params} onAction={/* paramsAction 切换查询参数模板处理方式。 */ action => onChange('paramsAction', action)}>
+          <KeyValueEditor label="Params / 查询参数" value={params} onChange={/* 当前回调保存查询参数键值对象。 */ nextValue => onChange('params', nextValue)} placeholder="order_id" />
+        </SavedTemplateSection>
 
         <div className="space-y-2">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -394,6 +468,7 @@ export const APIRequestBuilder = ({
               {contentTypes.map(/* 当前回调渲染一个常用 Content-Type 选项。 */ contentTypeOption => <option key={contentTypeOption.value} value={contentTypeOption.value}>{contentTypeOption.label}</option>)}
             </select>
           </div>
+          <SavedTemplateSection label="请求正文" keys={savedKeys?.body} action={templateActions?.body} onAction={/* bodyAction 切换请求正文模板处理方式。 */ action => onChange('bodyAction', action)}>
           {jsonBody ? (
             <textarea
               aria-label="JSON 请求正文"
@@ -405,6 +480,7 @@ export const APIRequestBuilder = ({
           ) : (
             <KeyValueEditor label="Body 字段" value={body} onChange={/* 当前回调保存非 JSON 正文键值对象。 */ nextValue => onChange('body', nextValue)} placeholder="field" />
           )}
+          </SavedTemplateSection>
           <p className="text-xs text-gray-500">GET 请求通常只使用 Params；POST 请求会按所选 Content-Type 发送 Body。</p>
         </div>
       </div>

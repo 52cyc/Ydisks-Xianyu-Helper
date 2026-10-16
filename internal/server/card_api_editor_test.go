@@ -28,7 +28,7 @@ func (tester *editorAPITester) Test(ctx context.Context, input cardsapp.APIReque
 	return cardsapp.APIRequestTestResult{Status: "success", StatusCode: 200, ResponseContentType: "application/json", ResponseFields: []string{"data"}}, ctx.Err()
 }
 
-// TestCardAPIEditorContract 验证完整回显仅属于当前用户，编辑测试合并旧模板且不写回数据库。
+// TestCardAPIEditorContract 验证编辑视图仅属于当前用户且只含键名，编辑测试在服务端合并旧模板且不写回数据库。
 func TestCardAPIEditorContract(t *testing.T) {
 	// srv、store、cleanup 为真实路由和数据库提供隔离测试环境。
 	srv, store, cleanup := newTestServer(t)
@@ -77,7 +77,7 @@ func TestCardAPIEditorContract(t *testing.T) {
 	// response 是拥有者主动打开编辑的结果。
 	response := perform(http.MethodGet, path, "", http.StatusOK)
 	if response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("完整模板不得缓存")
+		t.Fatal("编辑视图不得缓存")
 	}
 	// editor 保存专用 HTTP 编辑模型。
 	var editor cardAPIEditorResponse
@@ -85,8 +85,16 @@ func TestCardAPIEditorContract(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &editor); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(editor.Headers, "editor-fixture-secret") || !strings.Contains(editor.Headers, "{idempotency_key}") || !strings.Contains(editor.Body, "{trigger_type}") {
-		t.Fatal("编辑模板未完整返回")
+	if strings.Join(editor.HeaderKeys, ",") != "Authorization,Idempotency-Key" || strings.Join(editor.ParamKeys, ",") != "order_id" || strings.Join(editor.BodyKeys, ",") != "trigger_type" {
+		t.Fatalf("编辑视图键名错误: %+v", editor)
+	}
+	// rawEditor 是编辑接口的原始响应正文；任何模板值（含凭证与模板变量）都不得下发到浏览器。
+	rawEditor := response.Body.String()
+	// leaked 是已保存模板中的值，逐一确认不在编辑响应里。
+	for _, leaked := range []string{"editor-fixture-secret", "{idempotency_key}", "{order_id}", "{trigger_type}"} {
+		if strings.Contains(rawEditor, leaked) {
+			t.Fatalf("编辑接口泄露模板值 %q: %s", leaked, rawEditor)
+		}
 	}
 	// summaryPath 分别验证列表和普通详情仍不返回敏感模板。
 	for _, summaryPath := range []string{"/api/v1/cards", "/api/v1/cards/" + strconv.FormatInt(cardID, 10) + "/details"} {
