@@ -89,3 +89,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: 合并上游关键词与 cURL 更新
+
+**Date**: 2026-10-16
+**Task**: 合并上游关键词与 cURL 更新
+**Branch**: `main`
+
+### Summary
+
+合并 upstream/main 1afb20e8，保留 fork 外部履约、跟价和链接采集；最小修复 cURL 长选项解析并加入回归。Go全量、前端596项、浏览器、API、vet、构建和健康检查通过。既有142项Go注释欠缺与lint工具缺失已记录。未推送、未部署。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `59b2f9bb` | (see git log) |
+
+### Status
+
+[OK] **Completed**
