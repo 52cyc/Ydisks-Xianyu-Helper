@@ -298,8 +298,6 @@ export const APIRequestBuilder = ({
 			onChange('method', config.method);
 			onChange('headers', config.headers);
 			onChange('params', config.params);
-			onChange('headersAction', 'replace');
-			onChange('paramsAction', 'replace');
 			onChange('contentType', config.contentType);
 			onChange('body', config.body);
 			setCurlImport({ command: '' });
