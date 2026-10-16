@@ -224,6 +224,38 @@ func TestExtractTaskFromWS_BargainPendingCard(t *testing.T) {
 	}
 }
 
+// TestExtractTaskFromWS_BargainCardsRequireSystemMarker 验证两个砍价阶段卡片缺少系统消息标记时不生成任务，
+// 与普通付款卡片的系统消息门禁一致；带系统方向、bizTag 系统标识的同标题卡片仍正常识别。
+func TestExtractTaskFromWS_BargainCardsRequireSystemMarker(t *testing.T) {
+	// cases 覆盖无方向、普通聊天方向和带系统标识的两阶段卡片。
+	cases := []struct {
+		// name 是场景名称；raw 是平台报文；want 是期望的触发类型，空字符串表示不生成任务。
+		name, raw, want string
+	}{
+		{name: "成功小刀无系统标记", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}}}}`, want: ""},
+		{name: "待刀成无系统标记", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: ""},
+		{name: "成功小刀普通聊天方向", raw: `{"1":{"7":2,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}}}}`, want: ""},
+		{name: "待刀成普通聊天方向", raw: `{"1":{"7":2,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: ""},
+		{name: "成功小刀系统 bizTag", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}},"10":{"bizTag":"{\"taskName\":\"seller_trade\"}"}}}`, want: TriggerOrderPaid},
+		{name: "待刀成系统方向", raw: `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: TriggerBargainPending},
+	}
+	// testCase 是当前验证的平台报文场景。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// task 是从当前报文提取的自动化任务。
+			task := ExtractTaskFromWS("acc1", "cookie", mustMap(t, testCase.raw))
+			// got 是实际触发类型，未生成任务时为空。
+			got := ""
+			if task != nil {
+				got = task.TriggerType
+			}
+			if got != testCase.want {
+				t.Fatalf("trigger=%q want %q task=%+v", got, testCase.want, task)
+			}
+		})
+	}
+}
+
 // TestExtractTaskFromWS_BargainReadyBuyerIgnored 验证成功小刀卡片的买家副本不会进入卖家自动发货。
 func TestExtractTaskFromWS_BargainReadyBuyerIgnored(t *testing.T) {
 	// raw 保存带有买家角色订单链接的成功小刀卡片。

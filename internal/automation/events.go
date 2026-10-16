@@ -131,10 +131,11 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		Raw:       raw,
 	}
 	switch {
-	case isBargainPendingCard(f):
+	// 砍价两个阶段与普通付款一致，必须带系统消息标记；同标题的非系统卡片不能触发免拼或发卡。
+	case isBargainPendingCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerBargainPending
 		task.IsBargain = true
-	case isBargainReadyCard(f):
+	case isBargainReadyCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerOrderPaid
 		task.IsBargain = true
 	case isOrderPaidEvent(f):
