@@ -1,6 +1,7 @@
 import { Loader2, Play, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { CardAPITestResult } from '../models';
+import { CurlImportError, parseCurlCommand } from '../curlImport';
 
 // APIRequestMethod 是 API 发货请求支持的 HTTP 方法。
 export type APIRequestMethod = 'GET' | 'POST';
@@ -67,6 +68,14 @@ interface APITestState {
   // result 是远端完成请求后返回的状态和响应结构诊断。
   result?: CardAPITestResult;
   // error 是本地请求、超时或配置错误的用户可见提示。
+  error?: string;
+}
+
+// CurlImportState 保存仅在当前弹窗存活的 cURL 粘贴文本和解析错误；它不会写入服务端或日志。
+interface CurlImportState {
+  // command 保存用户刚刚粘贴、尚未确认导入的 cURL 命令。
+  command: string;
+  // error 保存导入失败时可修正的本地提示。
   error?: string;
 }
 
@@ -236,6 +245,8 @@ export const APIRequestBuilder = ({
 	const jsonBody = isJSONContentType(contentType);
 	// testState 保存最近一次 API 测试的加载、结果和错误状态。
 		const [testState, setTestState] = useState<APITestState>({ loading: false });
+	// curlImport 保存当前弹窗的 cURL 粘贴草稿与本地解析结果，不会持久化未确认命令。
+	const [curlImport, setCurlImport] = useState<CurlImportState>({ command: '' });
 	// runTest 触发临时请求并保留结果在当前弹窗中。
 	const runTest = async () => {
 		if (!onTest) return;
@@ -244,6 +255,28 @@ export const APIRequestBuilder = ({
 			setTestState({ loading: false, result: await onTest() });
 		} catch (/* error 表示测试请求的本地错误或共享 HTTP 客户端返回的异常。 */ error) {
 			setTestState({ loading: false, error: error instanceof Error ? error.message : 'API 测试请求失败' });
+		}
+	};
+
+	// importCurl 由用户点击导入触发，只在全部字段成功解析后才批量覆盖当前 API 草稿。
+	const importCurl = () => {
+		try {
+			// config 保存解析得到的受支持 API 请求字段。
+			const config = parseCurlCommand(curlImport.command);
+			onChange('url', config.url);
+			onChange('method', config.method);
+			onChange('headers', config.headers);
+			onChange('params', config.params);
+			onChange('headersAction', 'replace');
+			onChange('paramsAction', 'replace');
+			onChange('contentType', config.contentType);
+			onChange('body', config.body);
+			setCurlImport({ command: '' });
+		} catch (/* error 保存 cURL 解析失败原因；命令只继续保留在当前本地草稿中。 */ error: unknown) {
+			setCurlImport(/* previous 保留用户粘贴文本以便修正后再次导入。 */ previous => ({
+				...previous,
+				error: error instanceof CurlImportError || error instanceof Error ? error.message : 'cURL 解析失败',
+			}));
 		}
 	};
 
@@ -276,6 +309,23 @@ export const APIRequestBuilder = ({
 		  )}
 		</div>
 	      )}
+
+      <div className="space-y-2 rounded-xl border border-dashed border-blue-200 bg-white/70 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <label className="text-sm font-bold text-gray-800" htmlFor="api-curl-import">从 cURL 导入</label>
+          <button type="button" onClick={importCurl} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-blue-700">解析并填充</button>
+        </div>
+        <textarea
+          id="api-curl-import"
+          aria-label="cURL 命令"
+          value={curlImport.command}
+          onChange={/* 当前回调只更新未持久化的 cURL 粘贴草稿，并清除上一次解析错误。 */ (event: ChangeEvent<HTMLTextAreaElement>) => setCurlImport({ command: event.target.value })}
+          className="h-24 w-full resize-y ios-input rounded-xl px-3 py-2 font-mono text-xs"
+          placeholder={'curl -X POST \'https://api.example.com/code\' -H \'Content-Type: application/json\' -d \'{"order_id":"{order_id}"}\''}
+        />
+        <p className="text-xs text-gray-500">支持 GET/POST、URL 参数、Headers、JSON 和表单正文；原始 XML、纯文本和文件上传需手动填写。导入仅在本地解析，需保存后才会写入卡密配置。</p>
+        {curlImport.error && <p role="alert" className="text-xs font-semibold text-red-600">{curlImport.error}</p>}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_130px_130px]">
         <div className="space-y-2">

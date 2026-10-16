@@ -550,7 +550,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
               <div key={rule.id} className="flex flex-col md:flex-row md:items-center justify-between p-5 rounded-2xl border border-gray-100 bg-surface-subtle hover:bg-white hover:shadow-lg transition-all gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-3 mb-2">
-                    <span className="px-3 py-1 bg-black text-white rounded-lg text-xs font-bold">包含匹配</span>
+                    <span className="px-3 py-1 bg-black text-white rounded-lg text-xs font-bold">任一包含匹配</span>
                     <h3 className="font-bold text-gray-900">“{rule.keyword}”</h3>
                     {itemLabels.length === 0 ? (
                       <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">账号级</span>
@@ -1124,9 +1124,10 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                   type="text"
                   value={editingReplyRule.keyword || ''}
                   onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, keyword: event.target.value })}
-                  placeholder="买家发送的关键词"
+                  placeholder="例如：在吗 | 在不在 | 有人吗"
                   className="w-full ios-input px-4 py-3 rounded-xl"
                 />
+                <p className="mt-2 text-xs text-gray-400">多个关键词用 |、中英文逗号、顿号或换行分隔；买家消息包含任一关键词即回复。</p>
               </div>
 
               {editingReplyRule.type === 'image' ? (

@@ -134,10 +134,25 @@ describe('CardList 页面组合行为', /* 当前回调验证卡密筛选、批�
     expect(screen.getByLabelText('Headers / 请求头第1行键名')).toBeTruthy();
     expect(screen.getByLabelText('Params / 查询参数第1行键名')).toBeTruthy();
     expect(screen.getByLabelText('JSON 请求正文')).toBeTruthy();
+    expect(screen.getByLabelText('cURL 命令')).toBeTruthy();
     fireEvent.change(screen.getByRole('combobox', { name: '请求正文 Content-Type' }), { target: { value: 'application/x-www-form-urlencoded' } });
     expect(screen.getByLabelText('Body 字段第1行键名')).toBeTruthy();
     fireEvent.click(screen.getByTitle('添加Headers / 请求头字段'));
     expect(screen.getByLabelText('Headers / 请求头第2行键名')).toBeTruthy();
+  });
+
+  test('cURL 导入会填充新增 API 卡密的所有受支持请求字段', /* 当前回调等待受控编辑器完成批量状态写回后验证新增表单。 */ async () => {
+    render(<CardList />);
+    fireEvent.click(screen.getByText('添加新卡密'));
+    fireEvent.click(screen.getByRole('button', { name: 'API 接口' }));
+    fireEvent.change(screen.getByLabelText('cURL 命令'), { target: { value: "curl -X POST 'https://api.example.com/code?shop=main' -H 'Authorization: Bearer sample-token' -H 'Content-Type: application/json' -d '{\"order_id\":\"{order_id}\"}'" } });
+    fireEvent.click(screen.getByRole('button', { name: '解析并填充' }));
+    await waitFor(/* curlImportAssertion 等待批量表单更新完成字段回填。 */ () => expect(screen.getByDisplayValue('https://api.example.com/code')).toBeTruthy());
+    expect(screen.getByDisplayValue('Bearer sample-token')).toBeTruthy();
+    expect(screen.getByDisplayValue('main')).toBeTruthy();
+    // jsonBody 保存 cURL 导入后正文编辑器中的格式化 JSON 文本。
+    const jsonBody = screen.getByLabelText('JSON 请求正文') as HTMLTextAreaElement;
+    expect(jsonBody.value).toBe('{\n  "order_id": "{order_id}"\n}');
   });
 
   test('新增卡密类型单行排列且 API 测试展示远端诊断', /* 当前回调验证类型顺序和 API 测试结果可见。 */ async () => {
