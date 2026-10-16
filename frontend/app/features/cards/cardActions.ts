@@ -214,8 +214,11 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       } else if (editForm.type === 'text') {
         updateData.text_content = editForm.text_content?.trim() || '';
       } else if (editForm.type === 'data') {
-        // 仅在用户实际修改库存编辑框时提交，避免旧库存快照覆盖自动发货结果。
-        if (editForm.data_content !== selectedCard.data_content) updateData.data_content = editForm.data_content?.trim() || '';
+        // 仅在用户实际修改库存编辑框时提交，并附带打开时的库存快照；编辑期间库存被自动发货消费时服务端拒绝覆盖。
+        if (editForm.data_content !== selectedCard.data_content) {
+          updateData.data_content = editForm.data_content?.trim() || '';
+          updateData.expected_data_content = selectedCard.data_content ?? '';
+        }
       } else if (editForm.type === 'image') {
         updateData.image_url = editForm.image_url?.trim() || '';
       }

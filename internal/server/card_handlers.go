@@ -25,6 +25,8 @@ type cardMutationRequest struct {
 	TextContent string `json:"text_content"`
 	// DataContent 是 data 类型尚未消费的逐行卡密库存；指针用于区分省略和显式空库存。
 	DataContent *string `json:"data_content"`
+	// ExpectedDataContent 是编辑者打开弹窗时看到的库存快照；提交时服务端只在库存未变化时覆盖。
+	ExpectedDataContent *string `json:"expected_data_content"`
 	// ImageURL 是 image 类型自动发货时发送的图片地址。
 	ImageURL string `json:"image_url"`
 	// Description 是用户维护的卡券组说明。
@@ -213,6 +215,8 @@ func (s *Server) updateCard(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "卡券不存在")
 		case errors.Is(err, cardsapp.ErrForbidden):
 			writeErr(w, http.StatusForbidden, "无权操作该卡密组")
+		case errors.Is(err, cardsapp.ErrDataStockChanged):
+			writeErr(w, http.StatusConflict, cardsapp.ErrDataStockChanged.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, "更新失败")
 		}
@@ -265,6 +269,11 @@ func decodeCardDraft(r *http.Request) (cardsapp.Draft, error) {
 	if request.DataContent != nil {
 		dataContent = *request.DataContent
 	}
+	// expectedData、expectedDataSet 保存库存快照及请求是否提交该守卫字段。
+	expectedData, expectedDataSet := "", request.ExpectedDataContent != nil
+	if request.ExpectedDataContent != nil {
+		expectedData = *request.ExpectedDataContent
+	}
 	// isMultiSpec、isMultiSpecSet 保存多规格开关及请求是否明确提交该字段。
 	isMultiSpec, isMultiSpecSet := false, request.IsMultiSpec != nil
 	if request.IsMultiSpec != nil {
@@ -283,6 +292,7 @@ func decodeCardDraft(r *http.Request) (cardsapp.Draft, error) {
 	return cardsapp.Draft{
 		Name: request.Name, Type: request.Type, APIConfig: apiConfig,
 		TextContent: request.TextContent, DataContent: dataContent, DataContentSet: dataContentSet, ImageURL: request.ImageURL,
+		ExpectedDataContent: expectedData, ExpectedDataContentSet: expectedDataSet,
 		Description: request.Description, Enabled: request.Enabled, DelaySeconds: request.DelaySeconds,
 		IsMultiSpec: isMultiSpec, IsMultiSpecSet: isMultiSpecSet,
 		SpecName: specName, SpecNameSet: specNameSet,

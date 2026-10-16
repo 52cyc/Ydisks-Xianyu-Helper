@@ -2359,6 +2359,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: 统一错误响应
           content:
@@ -7877,6 +7883,9 @@ components:
             - type: string
         text_content: {type: string}
         data_content: {type: string}
+        expected_data_content:
+          type: string
+          description: 编辑 data 卡库存时打开弹窗所见的库存快照；提交后服务端仅在当前库存仍与之相同时覆盖，否则返回 409。
         image_url: {type: string}
         description: {type: string}
         enabled: {type: boolean}

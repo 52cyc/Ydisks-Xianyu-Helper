@@ -228,6 +228,28 @@ describe('useCardActions 卡密动作协调器', /* 当前回调验证卡密筛�
     expect(mutation).not.toHaveProperty('data_content');
   });
 
+  test('修改数据卡库存时附带打开时的库存快照', /* 当前回调验证库存替换携带并发守卫快照。 */ async () => {
+    // actionContext 保存 data 卡库存编辑的 Hook 和刷新替身。
+    const { hook, loadCards } = createCardHook();
+    await act(/* editAction 打开 data 卡编辑草稿。 */ async () => hook.result.current.handleEdit(cardFixture));
+    act(/* stockAction 在原库存后追加一行。 */ () => hook.result.current.setEditForm(current => ({ ...current, data_content: 'A\nB\nC' })));
+    await act(/* saveAction 提交库存替换。 */ async () => hook.result.current.handleSaveEdit());
+    expect(cardActionMocks.updateCard).toHaveBeenCalledWith(1, expect.objectContaining({ data_content: 'A\nB\nC', expected_data_content: 'A\nB' }));
+    expect(loadCards).toHaveBeenCalledTimes(1);
+  });
+
+  test('库存在编辑期间被自动发货消费时提示冲突并保留弹窗', /* 当前回调验证服务端 409 冲突不会关闭编辑草稿。 */ async () => {
+    // actionContext 保存冲突场景的 Hook 和刷新替身。
+    const { hook, loadCards } = createCardHook();
+    cardActionMocks.updateCard.mockRejectedValueOnce(new Error('库存已被自动发货或其他操作更新，请刷新后重新编辑'));
+    await act(/* editAction 打开 data 卡编辑草稿。 */ async () => hook.result.current.handleEdit(cardFixture));
+    act(/* stockAction 修改库存正文。 */ () => hook.result.current.setEditForm(current => ({ ...current, data_content: 'A\nB\nC' })));
+    await act(/* saveAction 提交被服务端拒绝的库存替换。 */ async () => hook.result.current.handleSaveEdit());
+    expect(window.alert).toHaveBeenCalledWith('库存已被自动发货或其他操作更新，请刷新后重新编辑');
+    expect(hook.result.current.showEditModal).toBe(true);
+    expect(loadCards).not.toHaveBeenCalled();
+  });
+
   test('复制卡密标识和下载模板均提供浏览器动作', /* 当前回调验证卡密复制和模板下载边界。 */ async () => {
     // actionContext 保存卡密展示动作 Hook 和库存刷新替身。
     const { hook } = createCardHook();

@@ -60,6 +60,7 @@ const cardPayload = (data: CardMutation) => ({
   api_config: typeof data.api_config === 'string' ? data.api_config : data.api_config ? apiConfigPayload(data.api_config) : undefined,
   text_content: data.text_content,
   data_content: data.data_content,
+  expected_data_content: data.expected_data_content,
   image_url: data.image_url,
   description: data.description,
   enabled: data.enabled,

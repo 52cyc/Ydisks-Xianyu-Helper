@@ -2460,6 +2460,8 @@ export interface components {
             api_config?: components["schemas"]["APICardConfigMutation"] | string;
             text_content?: string;
             data_content?: string;
+            /** @description 编辑 data 卡库存时打开弹窗所见的库存快照；提交后服务端仅在当前库存仍与之相同时覆盖，否则返回 409。 */
+            expected_data_content?: string;
             image_url?: string;
             description?: string;
             enabled?: boolean;
@@ -6564,6 +6566,15 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

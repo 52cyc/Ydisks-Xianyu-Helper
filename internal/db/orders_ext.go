@@ -524,20 +524,47 @@ func (c *Cards) Create(ctx context.Context, cf *CardFull) (int64, error) {
 
 // Update 更新卡券。
 func (c *Cards) Update(ctx context.Context, cf *CardFull) error {
+	// err 保存加密或写入错误；无条件更新不关心影响行数。
+	_, err := c.updateCard(ctx, cf, "")
+	return err
+}
+
+// UpdateIfDataUnchanged 仅当数据库中仍是 data 卡且库存正文等于 expectedData 时整体更新卡券。
+// expectedData 是编辑者打开弹窗时看到的库存快照；自动发货在此期间消费过库存时返回 false 且不写入，
+// 防止旧快照把已发出的卡密写回库存造成重复发货。
+func (c *Cards) UpdateIfDataUnchanged(ctx context.Context, cf *CardFull, expectedData string) (bool, error) {
+	// guard 保存附加在 WHERE 中的库存快照比较条件，NULL 与空库存视为相同。
+	guard := " AND type='data' AND COALESCE(data_content,'')=?"
+	return c.updateCard(ctx, cf, guard, expectedData)
+}
+
+// updateCard 加密 API 模板后写入卡券全部可编辑字段；guard 为空时无条件更新，否则附加到 WHERE 条件。
+// guardArgs 是 guard 中占位符对应的参数；返回值表示是否有行被更新。
+func (c *Cards) updateCard(ctx context.Context, cf *CardFull, guard string, guardArgs ...any) (bool, error) {
 	// apiConfig 保存更新写入数据库前按用户所有权加密后的 API 请求模板。
 	apiConfig, err := c.encryptAPIConfig(cf.Type, cf.UserID, cf.APIConfig)
 	if err != nil {
-		return err
+		return false, err
 	}
-	// err 用于本次流程后续判断的err
-	_, err = c.DB.ExecContext(ctx,
+	// args 保存 SET 字段、主键和可选守卫条件的参数，顺序与 SQL 占位符一致。
+	args := []any{cf.Name, cf.Type, nullable(apiConfig), nullable(cf.TextContent), nullable(cf.DataContent),
+		nullable(cf.ImageURL), nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
+		boolToInt(cf.IsMultiSpec), nullable(cf.SpecName), nullable(cf.SpecValue), cf.ID}
+	args = append(args, guardArgs...)
+	// result 保存更新语句的执行结果，用于判断守卫条件是否命中。
+	result, err := c.DB.ExecContext(ctx,
 		`UPDATE cards SET name=?, type=?, api_config=?, text_content=?, data_content=?, image_url=?,
 		    description=?, enabled=?, delay_seconds=?, is_multi_spec=?, spec_name=?, spec_value=?, updated_at=CURRENT_TIMESTAMP
-		 WHERE id=?`,
-		cf.Name, cf.Type, nullable(apiConfig), nullable(cf.TextContent), nullable(cf.DataContent),
-		nullable(cf.ImageURL), nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
-		boolToInt(cf.IsMultiSpec), nullable(cf.SpecName), nullable(cf.SpecValue), cf.ID)
-	return err
+		 WHERE id=?`+guard, args...)
+	if err != nil {
+		return false, err
+	}
+	// affected 保存匹配守卫条件的行数；MySQL 连接已启用 clientFoundRows，三种方言均按匹配行计数。
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 // UpdateDataMetadata 只更新 data 卡券的元数据，避免覆盖自动发货并发消费后的库存正文。

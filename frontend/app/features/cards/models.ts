@@ -112,6 +112,8 @@ export interface CardAPITestResult {
 export type CardMutation = Omit<Partial<Card>, 'api_config'> & {
   /** API 卡券具名请求配置或历史 JSON 字符串。 */
   api_config?: CardAPIConfigInput | string;
+  /** 编辑 data 卡库存时打开弹窗所见的库存快照；服务端仅在库存未被自动发货改动时覆盖。 */
+  expected_data_content?: string;
 };
 
 /** 卡券批量创建接口的逐行结果。 */
