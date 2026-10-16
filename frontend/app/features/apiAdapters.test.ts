@@ -800,6 +800,23 @@ test('账号编辑子模块请求支持取消过期响应', async () => {
   expect(fetchMock.mock.calls[2][1].signal).toBeInstanceOf(AbortSignal);
 } /* 测试回调验证：账号编辑子模块请求支持取消过期响应。 */);
 
+test('updateAccountAISettings 提交 AI 工作模式并在缺省时回退为仅砍价', /* 当前回调验证账号 AI 设置请求载荷的模式字段与默认值。 */ async () => {
+  // fetchMock 是账号 AI 设置保存接口的网络替身；每次调用返回新的响应对象，避免正文被重复读取。
+  const fetchMock = vi.fn().mockImplementation(/* 当前回调为每次请求生成独立的成功响应。 */ () => Promise.resolve(jsonResponse({ success: true })));
+  stubContractFetch(fetchMock);
+
+  await updateAccountAISettings('acc1', { ai_enabled: true, max_discount_percent: 15, ai_mode: 'full_service' });
+  await updateAccountAISettings('acc1', {});
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/settings/ai-reply/acc1', expect.objectContaining({ method: 'PUT' }));
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    ai_enabled: true, auto_adjust_price_enabled: false, max_discount_percent: 15, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'full_service',
+  });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    ai_enabled: false, auto_adjust_price_enabled: false, max_discount_percent: 10, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'bargain_only',
+  });
+});
+
 test('getShippingRules exposes buyer reviewed gift rules as automation rules', async () => {
   stubContractFetch(vi.fn().mockResolvedValue(jsonResponse([{
     id: 12,

@@ -329,3 +329,38 @@ func TestMatchKeywordExpressionsKeepsSeparatorSplittingInContainsMode(t *testing
 		})
 	}
 }
+
+// TestKeywordMatchesLogsUnknownModeWithoutLeakingRawValue 验证未知匹配模式既不命中也不抛错，
+// 日志只记录稳定的错误类别，不回显调用方传入的原始模式文本或表达式。
+func TestKeywordMatchesLogsUnknownModeWithoutLeakingRawValue(t *testing.T) {
+	// logBuffer 收集诊断日志文本。
+	var logBuffer bytes.Buffer
+	// service 注入测试日志端口；账号上下文用于确认日志可追踪。
+	service := &ReplyService{cookieID: "account-mode", logger: newTestLogger(&logBuffer)}
+	// keyword 使用未知模式 glob-secret 与会命中的表达式，二者都不得进入日志。
+	keyword := db.Keyword{Expressions: []string{"可用-secret"}, MatchType: "glob-secret"}
+	if service.keywordMatches(keyword, "消息 可用-secret") {
+		t.Fatal("未知匹配模式不得命中")
+	}
+	// output 是脱敏后的日志。
+	output := logBuffer.String()
+	if !strings.Contains(output, "unknown_match_type") {
+		t.Fatalf("日志应记录稳定类别: %q", output)
+	}
+	if strings.Contains(output, "glob-secret") || strings.Contains(output, "可用-secret") {
+		t.Fatalf("日志不得泄露原始模式或表达式: %q", output)
+	}
+}
+
+// TestMatchKeywordExpressionsSkipsBlankExpressions 验证历史遗留的空白表达式被跳过，
+// 既不会匹配所有消息，也不会阻止同一规则中的有效表达式命中。
+func TestMatchKeywordExpressionsSkipsBlankExpressions(t *testing.T) {
+	// invalid、matched、unknown 保存 matchKeywordExpressions 调用的返回结果，供随后的断言使用。
+	if matched, invalid, unknown := matchKeywordExpressions([]string{"", "   "}, "contains", "任意消息"); matched || len(invalid) != 0 || unknown {
+		t.Fatalf("只有空白表达式时不得命中: matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+	// matched 保存 matchKeywordExpressions 调用的返回结果，供随后的断言使用。
+	if matched, _, _ := matchKeywordExpressions([]string{"  ", "有效"}, "regexp", "这条有效"); !matched {
+		t.Fatal("空白表达式不得阻止后续有效表达式命中")
+	}
+}

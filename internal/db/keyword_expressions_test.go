@@ -302,3 +302,175 @@ func TestMultiDBKeywordExpressionsMigration(t *testing.T) {
 func nextMultiDBTestID() uint64 {
 	return atomic.AddUint64(&multidbCounter, 1)
 }
+
+// TestKeywordExpressionCodecRules 验证表达式 JSON 编解码规则：
+// 解码时非法或空数据回退历史单关键词，去空白并按首次出现顺序去重；编码时丢弃空白项、无有效项时回退 fallback；
+// 持久化字段以第一条表达式同步兼容的 keyword 列，匹配模式统一小写且空值为 contains。
+func TestKeywordExpressionCodecRules(t *testing.T) {
+	// decodeCases 描述解码输入及期望结果。
+	decodeCases := []struct {
+		// name 是子用例说明。
+		name string
+		// raw、fallback 是 JSON 文本与历史关键词。
+		raw, fallback string
+		// want 是期望的表达式集合。
+		want []string
+	}{
+		{"空 JSON 回退历史关键词", "", " 旧词 ", []string{"旧词"}},
+		{"纯空白 JSON 回退历史关键词", "   ", "旧词", []string{"旧词"}},
+		{"非法 JSON 回退历史关键词", "{坏", "旧词", []string{"旧词"}},
+		{"JSON 为字符串而非数组回退", `"字符串"`, "旧词", []string{"旧词"}},
+		{"去空白并去重保持顺序", `[" 乙 ","甲","乙",""]`, "旧词", []string{"乙", "甲"}},
+		{"数组全为空白回退历史关键词", `["  ",""]`, "旧词", []string{"旧词"}},
+		{"没有任何可用内容", "[]", "  ", nil},
+	}
+	// tc 是当前解码场景。
+	for _, tc := range decodeCases {
+		// got 保存 decodeKeywordExpressions 调用的返回结果，供随后的断言使用。
+		if got := decodeKeywordExpressions(tc.raw, tc.fallback); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("decode %s: got=%v want=%v", tc.name, got, tc.want)
+		}
+	}
+	// encodeCases 描述编码输入及期望的 JSON 文本。
+	encodeCases := []struct {
+		// name 是子用例说明。
+		name string
+		// expressions、fallback 是待编码集合与回退关键词。
+		expressions []string
+		fallback    string
+		// want 是期望的 JSON 文本。
+		want string
+	}{
+		{"去空白去重", []string{" 甲 ", "甲", "乙"}, "", `["甲","乙"]`},
+		{"全部空白时回退 fallback", []string{" ", ""}, "旧词", `["旧词"]`},
+		{"没有任何内容编码为空数组", nil, "", `[]`},
+		{"保留特殊字符不转义中文", []string{`a"b`, "中文"}, "", `["a\"b","中文"]`},
+	}
+	// tc 是当前编码场景。
+	for _, tc := range encodeCases {
+		// got 保存 encodeKeywordExpressions 调用的返回结果，供随后的断言使用。
+		if got := encodeKeywordExpressions(tc.expressions, tc.fallback); got != tc.want {
+			t.Errorf("encode %s: got=%s want=%s", tc.name, got, tc.want)
+		}
+	}
+	// keyword、encoded、matchType 是持久化字段：keyword 取第一条规范化表达式，模式统一小写。
+	keyword, encoded, matchType := keywordPersistenceFields("旧", []string{" 首 ", "次"}, " REGEXP ")
+	if keyword != "首" || encoded != `["首","次"]` || matchType != "regexp" {
+		t.Fatalf("持久化字段异常: keyword=%q encoded=%s match=%q", keyword, encoded, matchType)
+	}
+	// 没有表达式集合时沿用历史 keyword，空模式规整为 contains。
+	keyword, encoded, matchType = keywordPersistenceFields("只有旧词", nil, "")
+	if keyword != "只有旧词" || encoded != `["只有旧词"]` || matchType != "contains" {
+		t.Fatalf("历史单值写入异常: keyword=%q encoded=%s match=%q", keyword, encoded, matchType)
+	}
+}
+
+// TestKeywordRowsIsolateAccountsAndReportMissingRules 验证按主键更新、删除和按序号删除只作用于所属账号：
+// 其他账号的同主键请求以 ErrNotFound 失败且不改动数据；无变化的更新不会被误判为不存在。
+func TestKeywordRowsIsolateAccountsAndReportMissingRules(t *testing.T) {
+	// store、cleanup 是隔离 SQLite 存储及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// userID、cookieID 是测试账号归属。
+	userID, cookieID := seedAccount(t, store)
+	_ = userID
+	// ctx 是本测试共用的上下文。
+	ctx := context.Background()
+	// ruleID、addErr 是新增规则的主键与错误。
+	ruleID, addErr := store.Keywords.AddWithExpressions(ctx, cookieID, []string{"甲", "乙"}, "回复", "", "text", "contains", "")
+	if addErr != nil {
+		t.Fatal(addErr)
+	}
+	// original 是更新前读取的规则行。
+	rows, rowsErr := store.Keywords.AllRows(ctx, cookieID)
+	if rowsErr != nil || len(rows) != 1 {
+		t.Fatalf("AllRows: rows=%v err=%v", rows, rowsErr)
+	}
+	// 其他账号更新同主键必须 ErrNotFound，原数据不变。
+	foreign := rows[0]
+	foreign.CookieID = "another-account"
+	foreign.Reply = "被篡改"
+	// err 保存 UpdateByID 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.UpdateByID(ctx, foreign); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("跨账号更新应 ErrNotFound，got %v", err)
+	}
+	// 不存在的主键同样 ErrNotFound。
+	missing := rows[0]
+	missing.ID = ruleID + 1000
+	// err 保存 UpdateByID 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.UpdateByID(ctx, missing); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的规则更新应 ErrNotFound，got %v", err)
+	}
+	// 使用完全相同的内容再次更新（无变化）必须成功。
+	if err := store.Keywords.UpdateByID(ctx, rows[0]); err != nil {
+		t.Fatalf("无变化更新不应失败: %v", err)
+	}
+	// 跨账号删除与不存在的删除、越界序号删除都返回 ErrNotFound。
+	if err := store.Keywords.DeleteByID(ctx, "another-account", ruleID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("跨账号删除应 ErrNotFound，got %v", err)
+	}
+	// err 保存 DeleteByID 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.DeleteByID(ctx, cookieID, ruleID+1000); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在的规则删除应 ErrNotFound，got %v", err)
+	}
+	// err 保存 DeleteByIndex 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.DeleteByIndex(ctx, cookieID, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("越界序号删除应 ErrNotFound，got %v", err)
+	}
+	// err 保存 DeleteByIndex 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.DeleteByIndex(ctx, cookieID, -1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("负序号删除应 ErrNotFound，got %v", err)
+	}
+	// 以上失败操作后规则内容保持不变。
+	after, afterErr := store.Keywords.AllRows(ctx, cookieID)
+	if afterErr != nil || len(after) != 1 || after[0].Reply != "回复" || !reflect.DeepEqual(after[0].Expressions, []string{"甲", "乙"}) {
+		t.Fatalf("失败操作后数据被改动: %+v err=%v", after, afterErr)
+	}
+	// ReplaceForCookie 以空集合清空账号规则，且不影响其他账号。
+	if err := store.Keywords.ReplaceForCookie(ctx, cookieID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// cleared、err 保存 AllRows 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	if cleared, err := store.Keywords.AllRows(ctx, cookieID); err != nil || len(cleared) != 0 {
+		t.Fatalf("空集合替换应清空规则: %+v err=%v", cleared, err)
+	}
+}
+
+// TestKeywordRowsReportDatabaseErrors 验证数据库不可用时关键词仓储的每个入口都返回错误，不会返回部分结果或伪装成功。
+func TestKeywordRowsReportDatabaseErrors(t *testing.T) {
+	// store、cleanup 是隔离存储；seedAccount 之后主动关闭连接池模拟故障。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// cookieID 保存 seedAccount 调用的返回结果，供随后的断言使用。
+	_, cookieID := seedAccount(t, store)
+	// ctx 是本测试共用的上下文。
+	ctx := context.Background()
+	// err 保存 Close 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// err 保存 UpdateByID 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.UpdateByID(ctx, KeywordRow{ID: 1, CookieID: cookieID, Keyword: "甲", Reply: "回复"}); err == nil {
+		t.Error("UpdateByID 数据库故障必须返回错误")
+	}
+	// err 保存 DeleteByID 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.DeleteByID(ctx, cookieID, 1); err == nil {
+		t.Error("DeleteByID 数据库故障必须返回错误")
+	}
+	// err、rows 保存 AllRows 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	if rows, err := store.Keywords.AllRows(ctx, cookieID); err == nil || rows != nil {
+		t.Errorf("AllRows 数据库故障必须返回错误且无结果: rows=%v err=%v", rows, err)
+	}
+	// err 保存 ReplaceForCookie 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.ReplaceForCookie(ctx, cookieID, []KeywordRow{{Keyword: "甲", Reply: "回复"}}); err == nil {
+		t.Error("ReplaceForCookie 数据库故障必须返回错误")
+	}
+	// err 保存 DeleteByIndex 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := store.Keywords.DeleteByIndex(ctx, cookieID, 0); err == nil {
+		t.Error("DeleteByIndex 数据库故障必须返回错误")
+	}
+	// err、rows 保存 AllWithType 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	if rows, err := store.Keywords.AllWithType(ctx, cookieID); err == nil || rows != nil {
+		t.Errorf("AllWithType 数据库故障必须返回错误且无结果: rows=%v err=%v", rows, err)
+	}
+}
