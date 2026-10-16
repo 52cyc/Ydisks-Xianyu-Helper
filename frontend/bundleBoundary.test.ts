@@ -11,9 +11,8 @@ const PAGE_CHUNK_BUDGETS: Record<string, number> = {
   Dashboard: 30 * 1024,
   AccountList: 70 * 1024,
   OrderList: 40 * 1024,
-  // cURL 请求解析与安全导入能力随卡密页按路由加载；API 卡密编辑脱敏后新增请求头、参数、正文的“沿用 / 重新填写 / 清除”三态界面，
-  // 54 KiB 覆盖该完整交互而仍限制页面总下载量（功能级 dynamic import 受架构门禁限制，不能拆出独立分片）。
-  CardList: 54 * 1024,
+  // cURL 请求解析与安全导入能力随卡密页按路由加载，52 KiB 覆盖该完整交互而仍限制页面总下载量。
+  CardList: 52 * 1024,
   ItemList: 65 * 1024,
   Settings: 30 * 1024,
   // Rules 页面现在包含模板发货模式入口和模板变量编辑器。
