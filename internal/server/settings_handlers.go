@@ -427,6 +427,11 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "最大砍价轮次必须在 1 到 10 之间")
 		return
 	}
+	// requestedMode 是请求中去除首尾空白后的 AI 工作模式；空值表示沿用默认的仅砍价模式，其余取值必须是已支持的模式。
+	if requestedMode := strings.TrimSpace(req.AIMode); requestedMode != "" && requestedMode != "bargain_only" && requestedMode != "full_service" {
+		writeErr(w, http.StatusBadRequest, "AI 模式无效，仅支持 bargain_only 或 full_service")
+		return
+	}
 	if req.AutoAdjustPriceEnabled && !req.AIEnabled {
 		writeErr(w, http.StatusBadRequest, "开启 AI 自动改价前必须先启用 AI 议价")
 		return
