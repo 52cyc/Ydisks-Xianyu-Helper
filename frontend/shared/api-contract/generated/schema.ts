@@ -2233,22 +2233,41 @@ export interface components {
             channel_ids: number[] | null;
         };
         KeywordBasicResponse: {
-            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；缺省时使用 keyword */
+            expressions?: string[];
+            /**
+             * @description 匹配模式；历史规则按 contains 处理，contains 下每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词
+             * @enum {string}
+             */
+            match_type?: "contains" | "regexp";
             reply: string;
         };
         KeywordBasicListResponse: components["schemas"]["KeywordBasicResponse"][];
         KeywordItemResponse: {
-            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式 */
+            expressions?: string[];
+            /**
+             * @description 匹配模式
+             * @enum {string}
+             */
+            match_type?: "contains" | "regexp";
             reply: string;
             item_id: string;
         };
         KeywordItemListResponse: components["schemas"]["KeywordItemResponse"][];
         KeywordTypedResponse: {
             id: number;
-            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
+            /** @description 第一条表达式的兼容单值字段 */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
+            expressions: string[];
+            /**
+             * @description contains 为大小写不敏感普通包含（每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词，任一命中即触发），regexp 为大小写不敏感 Go/RE2 正则（| 为正则分支，不做拆分）
+             * @enum {string}
+             */
+            match_type: "contains" | "regexp";
             reply: string;
             /** @description 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复 */
             item_id: string;
@@ -2259,8 +2278,16 @@ export interface components {
         };
         KeywordTypedListResponse: components["schemas"]["KeywordTypedResponse"][];
         KeywordCreateRequest: {
-            /** @description 触发回复的关键词；可用 |、中英文逗号、顿号或换行分隔多个候选词，任一包含匹配即触发 */
+            /** @description 兼容旧单值调用方；新调用方可同时传 expressions */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
+            expressions?: string[];
+            /**
+             * @description 匹配模式；regexp 使用大小写不敏感 Go/RE2
+             * @default contains
+             * @enum {string}
+             */
+            match_type: "contains" | "regexp";
             reply: string;
             /** @description 兼容旧单值调用方；多选时由 item_ids 合并而来 */
             item_id: string;
