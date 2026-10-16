@@ -329,7 +329,7 @@ func buildSystemPrompt(customPrompts, itemTitle string, itemPrice float64, itemD
 	}
 	base = appendItemContext(base, itemContext)
 	if aiMode == "full_service" && !isBargainMessage {
-		return base
+		return base + fullServiceCommitmentRule
 	}
 	// prompt 保存基础业务文案与后端不可覆盖的价格安全规则。
 	prompt := base + fmt.Sprintf(`
@@ -345,6 +345,15 @@ func buildSystemPrompt(customPrompts, itemTitle string, itemPrice float64, itemD
 	}
 	return prompt
 }
+
+// fullServiceCommitmentRule 是全场景客服回复非砍价消息时由后端追加、店铺规则不可覆盖的承诺边界。
+// 非砍价消息不走成交价扫描（运费等金额会误报），因此用提示词约束 AI 不得口头承诺价格、退款或赔偿。
+const fullServiceCommitmentRule = `
+
+不可覆盖的承诺边界：
+- 不得报出、承诺或暗示任何折扣价、优惠或让价；
+- 不得承诺退款、退货、赔偿、补偿或售后处理结果；
+- 遇到上述诉求，请礼貌建议买家联系人工客服确认。`
 
 // buildFullServicePrompt 构造全场景客服模式的基础提示词。
 func buildFullServicePrompt(customPrompts, itemTitle string, itemPrice float64, itemDesc string) string {
