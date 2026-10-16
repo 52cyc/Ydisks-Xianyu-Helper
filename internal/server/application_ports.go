@@ -310,6 +310,10 @@ type PublishAutomationRulesPort interface {
 
 // CardsPort 定义卡券库存 CRUD 与归属校验能力。
 type CardsPort interface {
+	// GetAPIEditor 读取所属用户主动打开的完整编辑模板。
+	GetAPIEditor(context.Context, int64, int64) (cardsapp.APIEditor, error)
+	// PrepareAPITest 合并所属卡密的已保存配置与临时测试草稿。
+	PrepareAPITest(context.Context, int64, int64, string) (string, error)
 	List(context.Context, int64) ([]cardsapp.Card, error)
 	Get(context.Context, int64, int64) (cardsapp.Card, error)
 	ExistsOwned(context.Context, int64, int64) (bool, error)

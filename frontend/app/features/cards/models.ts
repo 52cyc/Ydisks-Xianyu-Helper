@@ -56,6 +56,16 @@ export interface CardAPIConfigSummary {
   validation_error?: string;
 }
 
+/** 仅在拥有者打开编辑弹窗时载入的完整配置，不进入列表缓存。 */
+export interface CardAPIEditor extends Pick<CardAPIConfigSummary, 'url' | 'method' | 'content_type' | 'timeout_seconds' | 'response_path' | 'retry_enabled'> {
+  /** 完整请求头模板，仅保留在当前编辑草稿。 */
+  headers: string;
+  /** 完整查询参数模板。 */
+  params: string;
+  /** 完整请求正文模板。 */
+  body: string;
+}
+
 /** API 卡券提交用的具名配置；敏感模板为空时由服务端保留旧值。 */
 export interface CardAPIConfigInput {
   /** API 卡券请求地址。 */

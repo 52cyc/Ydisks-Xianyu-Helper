@@ -631,6 +631,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cards/{card_id}/api-editor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1CardsBycard_idApiEditor */
+        get: operations["getApiV1CardsBycard_idApiEditor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cards/{card_id}/details": {
         parameters: {
             query?: never;
@@ -2535,7 +2552,22 @@ export interface components {
             ready: boolean;
             validation_error?: string;
         };
+        CardAPIEditorResponse: {
+            url: string;
+            /** @enum {string} */
+            method: "GET" | "POST";
+            timeout_seconds: number;
+            content_type: string;
+            /** @description 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录 */
+            headers: string;
+            params: string;
+            body: string;
+            response_path: string;
+            retry_enabled: boolean;
+        };
         CardAPITestRequest: {
+            /** @description 已保存卡密标识；提供时合并其模板并校验当前用户所有权 */
+            card_id?: number;
             api_config: components["schemas"]["APICardConfigMutation"] | string;
         };
         CardAPITestResponse: {
@@ -6372,6 +6404,33 @@ export interface operations {
                 };
             };
             /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6609,6 +6668,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CardAppendResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1CardsBycard_idApiEditor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CardAPIEditorResponse"];
                 };
             };
             /** @description 统一错误响应 */
