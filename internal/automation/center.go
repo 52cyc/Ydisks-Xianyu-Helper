@@ -365,13 +365,13 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return true, nil
 	}
 	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
-		// autoConfirm、autoConfirmErr 分别保存参考项目自动发货入口要求的账号开关和读取错误。
-		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)
-		if autoConfirmErr != nil {
-			return false, fmt.Errorf("读取自动确认发货设置: %w", autoConfirmErr)
+		// autoDelivery、autoDeliveryErr 分别保存账号自动发货总开关（auto_confirm）和读取错误。
+		autoDelivery, autoDeliveryErr := c.autoDeliveryEnabled(ctx, task.AccountID)
+		if autoDeliveryErr != nil {
+			return false, autoDeliveryErr
 		}
-		if !autoConfirm {
-			c.logger.Info("账号未启用自动确认发货，跳过付款自动发货", "account", task.AccountID, "order_id", task.OrderID)
+		if !autoDelivery {
+			c.logger.Info("账号未开启自动发货，跳过付款自动发货", "account", task.AccountID, "order_id", task.OrderID)
 			return false, nil
 		}
 	}
@@ -505,17 +505,18 @@ func taskAutomationRunID(task Task) int64 {
 	return id
 }
 
-// paidDeliveryAutoConfirmEnabled 返回账号是否开启「自动确认发货」。
+// autoDeliveryEnabled 返回账号是否开启自动发货总开关（库字段 auto_confirm，付款后自动发卡密或发货模板）。
+// 它不是发货后的“自动确认发货”开关；后者由 auto_consign 控制，在发卡成功后才读取。实时付款事件、
+// 待发货兜底与运行续跑都必须先通过本开关；读取失败时返回错误，调用方不得失败开放。
 // 兜底扫描必须在重开运行或领取冷却窗口之前检查它：开关关闭时 HandleTask 会直接返回而不收口运行，
-// 被它重开的运行会留在 running 并继续持有租约；租约到期后失败运行恢复链路直接执行 executeRule，
-// 从而绕过账号开关与自动确认设置。
-func (c *Center) paidDeliveryAutoConfirmEnabled(ctx context.Context, accountID string) (bool, error) {
-	// autoConfirm、err 保存账号自动确认发货开关与读取错误。
-	autoConfirm, err := c.store.Cookies.GetAutoConfirm(ctx, accountID)
+// 被重开的运行会留在 running 并继续持有租约，租约到期后失败运行恢复链路直接执行 executeRule 而绕过本开关。
+func (c *Center) autoDeliveryEnabled(ctx context.Context, accountID string) (bool, error) {
+	// enabled、err 保存账号自动发货总开关与读取错误。
+	enabled, err := c.store.Cookies.GetAutoConfirm(ctx, accountID)
 	if err != nil {
-		return false, fmt.Errorf("读取自动确认发货设置: %w", err)
+		return false, fmt.Errorf("读取自动发货设置: %w", err)
 	}
-	return autoConfirm, nil
+	return enabled, nil
 }
 
 // taskDelayCursor 封装任务延迟游标业务协调。

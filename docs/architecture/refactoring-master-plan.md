@@ -101,6 +101,8 @@ git diff --check
 
 - 2026-10-16（结果集迭代错误检查修复，本地未发布）：`AutomationRules.ListIssues` 的运行问题查询、`AutomationRules.ClaimDueDeferredTasks`、`Notifications.ClaimOutbox` 与 `Keywords.DeleteByIndex` 在逐行读取结束后未检查 `rows.Err()`，连接中断等中途错误会被当作完整结果：问题列表少显示、本轮领取少领，按下标删除关键字可能误报不存在。四处现在在关闭结果集前检查迭代错误并原样返回，不再继续领取或删除。新增最小 database/sql 测试驱动，模拟首行前中断，验证四个方法返回原始错误且不执行后续写语句（移除修复后四个用例均失败）。不修改 SQL、schema 或冻结 CAPTCHA。
 
+- 2026-10-16（自动发货开关命名与说明修正，本地未发布）：账号字段 `auto_confirm` 在界面和请求 DTO 中是“自动发货”总开关（付款后自动发卡密或发货模板），`auto_consign` 才是发货后的自动确认发货；但自动化中心的私有方法 `paidDeliveryAutoConfirmEnabled`、付款入口与两条兜底扫描的日志和错误、`GetAutoConfirm` 注释以及多处 DTO/应用模型注释把 `auto_confirm` 写成“自动确认发货 / 自动确认收货 / 自动确认订单”，排查日志时容易看错开关。私有方法更名为 `autoDeliveryEnabled` 并由付款入口复用，日志与错误统一为“自动发货”，注释说明两个开关的分工；库字段、JSON 字段、Go 字段名和全部行为不变。新增开关读取测试，确认只读 `auto_confirm`、与 `auto_consign` 独立且读取失败不失败开放。不修改冻结 CAPTCHA。
+
 - 2026-09-20（订单批量同步详情风控修复，本地未发布）：批量“一键同步订单”现在只调用已售订单列表接口，直接写回列表提供的订单号、商品、买家、时间、状态、数量、金额、收货信息和砍价标记，并继续执行缺失订单清理；不再扫描本地订单游标或批量请求订单详情，因此列表同步不会因详情接口风控失败。详情中的 `spec_name`、`spec_value` 等列表缺失字段仍由单订单刷新或自动发货准备阶段按需补全，自动发货的规格匹配链路未改变。旧任务结果中的详情统计字段保留兼容形状并在批量列表同步中固定为零。新增批量详情调用次数为零、无本地详情游标读取及列表字段落库回归；`go test ./... -count=1`、`go vet ./internal/application/orders`、`make comments` 与 `git diff --check` 通过。未修改数据库 schema、HTTP/OpenAPI、冻结 CAPTCHA 或六阶段状态，未调用真实账号平台。
 
 - 2026-09-19（账号级自动发货规格匹配修复，本地未发布）：修复账号级付款发货规则已命中但因订单携带 SKU 被错误过滤的问题。账号级 `order_paid` 规则只有配置 JSON 明确为布尔值 `allow_all_items: true` 时，才允许空规格发卡/模板动作匹配任意订单规格；商品级规则仍要求完整规格组合匹配。该授权随自动化运行快照固化，并覆盖普通事件、人工完整发货和恢复运行，避免重试时重新猜测规则范围。新增动作规划、授权门禁及 SQLite 端到端带规格订单发卡回归；`make comments`、自动化全量测试、`go vet ./internal/automation` 与 `git diff --check` 通过。未修改数据库 schema、HTTP/OpenAPI、冻结 CAPTCHA 或六阶段状态；未调用真实账号平台。

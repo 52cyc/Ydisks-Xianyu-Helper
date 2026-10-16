@@ -76,7 +76,7 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		}
 	}
 	// enabled、settingsErr 保存账号当前自动发货总开关及读取错误。
-	enabled, settingsErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, run.CookieID)
+	enabled, settingsErr := s.center.autoDeliveryEnabled(ctx, run.CookieID)
 	if settingsErr != nil {
 		// postponeErr 保存设置暂时不可读时的恢复延期结果，禁止失败开放。
 		postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(defaultReviewRequestScanInterval).Unix())
@@ -159,10 +159,10 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			if !allowed {
 				continue
 			}
-			// paid、paidErr 保存账号自动确认发货开关及读取错误。
-			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, order.CookieID)
+			// paid、paidErr 保存账号自动发货总开关及读取错误。
+			paid, paidErr := s.center.autoDeliveryEnabled(ctx, order.CookieID)
 			if paidErr != nil {
-				s.center.logger.Warn("检查待发货兜底自动确认发货开关失败", "account", order.CookieID, "order_id", order.OrderID, "err", paidErr)
+				s.center.logger.Warn("检查待发货兜底自动发货开关失败", "account", order.CookieID, "order_id", order.OrderID, "err", paidErr)
 				continue
 			}
 			if !paid {

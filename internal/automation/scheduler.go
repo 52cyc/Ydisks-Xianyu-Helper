@@ -315,10 +315,10 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			}
 			// paid、paidErr 保存付款自动发货的账号级开关检查结果，必须在重开运行之前检查：
 			// 开关关闭时 HandleTask 会直接返回而不收口运行，被重开的运行会留在 running 并继续持有租约，
-			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号开关与自动确认设置。
-			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, candidate.Order.CookieID)
+			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号自动发货总开关。
+			paid, paidErr := s.center.autoDeliveryEnabled(ctx, candidate.Order.CookieID)
 			if paidErr != nil {
-				s.center.logger.Warn("检查待发货续跑自动确认发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
+				s.center.logger.Warn("检查待发货续跑自动发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
 				continue
 			}
 			if !paid {
