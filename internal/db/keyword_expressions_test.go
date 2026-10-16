@@ -254,7 +254,7 @@ func TestMultiDBKeywordExpressionsCRUD(t *testing.T) {
 	}
 }
 
-// TestMultiDBKeywordExpressionsMigration 验证三方言 00052 迁移可回退到 00051 后重新升级到最新版本。
+// TestMultiDBKeywordExpressionsMigration 验证三方言 00054 迁移可回退到 00053 后重新升级到最新版本。
 func TestMultiDBKeywordExpressionsMigration(t *testing.T) {
 	// target 表示当前可用的数据库方言迁移目标。
 	for _, target := range allTestTargets(t) {
@@ -272,26 +272,26 @@ func TestMultiDBKeywordExpressionsMigration(t *testing.T) {
 			goose.SetBaseFS(migrationsFS)
 			// version、versionErr 保存回退前的迁移版本及读取错误。
 			version, versionErr := goose.GetDBVersion(target.store.DB)
-			if versionErr != nil || version != 52 {
+			if versionErr != nil || version != 54 {
 				t.Fatalf("initial migration version=%d err=%v", version, versionErr)
 			}
 			// downErr 保存回退关键词表达式迁移的错误。
-			if downErr := goose.DownTo(target.store.DB, "migrations/"+subdir, 51); downErr != nil {
+			if downErr := goose.DownTo(target.store.DB, "migrations/"+subdir, 53); downErr != nil {
 				t.Fatalf("down keyword expression migration: %v", downErr)
 			}
 			if columnExistsForDialect(t, target.store.DB, target.dialect, "keywords", "keyword_expressions") || columnExistsForDialect(t, target.store.DB, target.dialect, "keywords", "match_type") {
-				t.Fatal("keyword expression columns should be absent after down to 00051")
+				t.Fatal("keyword expression columns should be absent after down to 00053")
 			}
 			// upErr 保存重新应用关键词表达式迁移的错误。
-			if upErr := goose.UpTo(target.store.DB, "migrations/"+subdir, 52); upErr != nil {
+			if upErr := goose.UpTo(target.store.DB, "migrations/"+subdir, 54); upErr != nil {
 				t.Fatalf("up keyword expression migration: %v", upErr)
 			}
 			if !columnExistsForDialect(t, target.store.DB, target.dialect, "keywords", "keyword_expressions") || !columnExistsForDialect(t, target.store.DB, target.dialect, "keywords", "match_type") {
-				t.Fatal("keyword expression columns should exist after up to 00052")
+				t.Fatal("keyword expression columns should exist after up to 00054")
 			}
 			// finalVersion、finalVersionErr 保存重新升级后的最新迁移版本及读取错误。
 			finalVersion, finalVersionErr := goose.GetDBVersion(target.store.DB)
-			if finalVersionErr != nil || finalVersion != 52 {
+			if finalVersionErr != nil || finalVersion != 54 {
 				t.Fatalf("final migration version=%d err=%v", finalVersion, finalVersionErr)
 			}
 		})
