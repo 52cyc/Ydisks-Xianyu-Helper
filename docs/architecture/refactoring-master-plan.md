@@ -81,6 +81,8 @@ git diff --check
 
 ## 后续窄范围安全修复记录
 
+- 2026-10-16（WebSocket 拨号失败退避重试修复，对应 issue #80，本地未发布）：账号连接循环在拨号（Open）阶段失败一次，就经 `handleWSConnectFailure` 无条件置为凭证失效并终止 `Run`，DNS 或链路瞬时故障后账号永久离线，只能人工重启。拨号阶段尚未携带 Token，失败只可能是网络类故障。现新增 `connectionCoordinator.handleWSOpenFailure`：非 `ws.RegError` 的错误清除连接 Token、累计 `connFailures`、状态置为重连中，并按 5s、15s、30s、60s、此后固定 120s 退避（可被 `dialRetryDelayFn` 仅测试覆盖），第 3 次连续失败才发送一次“正在自动重试”的离线通知，连接成功后沿用既有计数清零与恢复通知；服务端明确返回的 `RegError`（Token 无效、鉴权失败、会话被移除）仍按原路径终止账号，/reg 阶段的非 `RegError` 网络错误同样退避。原测试 `TestRun_DialFailureRequiresRelogin` 固化了旧行为，已按本次授权改为 `TestRun_DialFailureRetriesWithBackoff`，并新增失败分类、通知次数、取消与退避序列测试。`go test ./internal/engine -count=1`、相关用例 `-race`、`make comments`、`go run ./tools/architecturecheck` 通过。未修改数据库 schema、HTTP/OpenAPI、冻结 CAPTCHA 或六阶段状态；真实断网重连需要真实账号，未执行。
+
 - 2026-10-09（确认收货业务键解析修复）：平台确认收货通知使用「订单号:阶段码:业务键:序号」四段 `updateKey`（如 `3310145690545023995:20:BUYER_CONFIRM_RATE_SELLER:74`，买家侧同一布局的业务键为 `BUYER_CONFIRM_RATE_BUTER`），原 `parseUpdateKey` 统一把第二段当作订单号，使完成事实写入不存在的短数字伪订单、真实订单缺少 `completed_at`，自动评价因此永远没有候选，并在重试上限耗尽后固定显示「跳过」。现按「第二段为短纯数字即平台业务阶段码」改用第一段作为订单号，会话在前格式与非数字订单标识的历史兼容保持不变。新增四段确认收货键的表驱动用例，以及从协议解析到订单完成事实的端到端回归（未修复时稳定复现 `OrderID="20"`）；`go test ./internal/automation -count=1`、`go vet ./...`、`go run ./tools/commentlint -mode check -root .`、`go run ./tools/architecturecheck`、`go run ./tools/apicheck` 与 `git diff --check` 通过。未修改数据库 schema、HTTP/OpenAPI、依赖、冻结 CAPTCHA 或六阶段状态，未扩展注释基线；未调用真实账号平台。
 
 - 2026-09-25（SMTP LOGIN 兼容修复，未发布）：按服务器声明为仅支持 LOGIN 的邮件服务协商认证，保留 PLAIN 优先及既有 TLS、主机身份校验；补充本地 SMTP 回归和配置说明。不新增依赖、配置或 API，不改变数据库、冻结 CAPTCHA 或六阶段状态。
