@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"xianyu-go/internal/db"
 )
+
+// simplifiedEventResolveWindow 是简化系统事件按会话回溯近期订单的时间窗口；窗口外的订单不参与识别，保持原有延期行为。
+const simplifiedEventResolveWindow = 30 * time.Minute
 
 // resolvePaidTaskOrder 为交易系统消息回填本账号已有订单事实，避免未知角色事件因协议字段缺失而无法完成卖家核验。
 func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, error) {
@@ -24,21 +28,40 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, err
 		}
 		return mergeOrderIntoTask(task, order), nil
 	}
-	if task.TriggerType == TriggerOrderCreated || task.ChatID == "" {
+	if task.ChatID == "" {
 		return task, nil
 	}
-	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
-	order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	// isCreated 表示拍下事件；拍下事件没有待发货语义，只允许在订单号和商品都缺失时按近期订单识别重复事件。
+	isCreated := task.TriggerType == TriggerOrderCreated
+	if isCreated && task.ItemID != "" {
+		return task, nil
+	}
+	if !isCreated {
+		// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
+		order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+		if err != nil && !errors.Is(err, db.ErrNotFound) {
+			return task, fmt.Errorf("按会话回填自动发货订单: %w", err)
+		}
+		if order != nil {
+			return mergeOrderIntoTask(task, order), nil
+		}
+	}
+	// recent 保存同会话近期已被完整事件处理的订单（如已发货）；简化事件只含会话标识，
+	// 命中后合并订单事实，使后续角色门禁把“订单已不是待发货”判为不可重试并安全收口，而不是反复延期后误报人工处理。
+	recent, err := c.store.Orders.FindRecentByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID, time.Now().Add(-simplifiedEventResolveWindow))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return task, nil
 		}
-		return task, fmt.Errorf("按会话回填自动发货订单: %w", err)
+		return task, fmt.Errorf("按会话识别近期订单: %w", err)
 	}
-	if order == nil {
+	if recent == nil {
 		return task, nil
 	}
-	return mergeOrderIntoTask(task, order), nil
+	if c.logger != nil {
+		c.logger.Info("简化交易事件已按会话关联近期订单", "account", task.AccountID, "order_id", recent.OrderID, "trigger", task.TriggerType)
+	}
+	return mergeOrderIntoTask(task, recent), nil
 }
 
 // prepareBuyerNickname 补齐模板渲染所需的买家昵称摘要。

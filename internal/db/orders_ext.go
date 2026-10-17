@@ -220,6 +220,45 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 	return o.Get(ctx, orderID)
 }
 
+// FindRecentByChat 按账号和会话查找 since 之后更新过的最近一笔订单，不限订单状态。
+// 供只含会话标识的简化系统消息识别“同一会话里已被完整事件处理（如已发货）的订单”；
+// buyerID、itemID 为空时不作为条件，非空时必须一致，避免同会话跨商品串单。since 按 UTC 比较，与 updated_at 的存储口径一致。
+func (o *Orders) FindRecentByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string, since time.Time) (*Order, error) {
+	// accountID 是经过空白清理的账号标识，限制订单归属范围。
+	accountID := strings.TrimSpace(cookieID)
+	// sessionID 是去除协议后缀的会话标识，兼容订单表历史存储格式。
+	sessionID := strings.TrimSpace(strings.TrimSuffix(chatID, "@goofish"))
+	if accountID == "" || sessionID == "" {
+		return nil, nil
+	}
+	// where 保存跨数据库通用的订单筛选条件；updated_at 使用 UTC 文本，与其他按时间截断的查询口径一致。
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "updated_at>=?"}
+	// args 保存 where 条件对应的绑定参数。
+	args := []any{accountID, sessionID, since.UTC().Format("2006-01-02 15:04:05")}
+	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
+	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
+		where = append(where, "buyer_id IN (?,?)")
+		args = append(args, normalizedBuyerID, normalizedBuyerID+"@goofish")
+	}
+	// productID 是可选的商品约束，防止同一会话内跨商品串单。
+	if productID := strings.TrimSpace(itemID); productID != "" {
+		where = append(where, "item_id=?")
+		args = append(args, productID)
+	}
+	// orderID 保存查询出的最近订单业务标识。
+	var orderID string
+	// query 保存按更新时间和订单号倒序选择候选订单的 SQL。
+	query := `SELECT order_id FROM orders WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, order_id DESC LIMIT 1`
+	// err 保存候选订单查询或扫描错误。
+	if err := o.DB.QueryRowContext(ctx, query, args...).Scan(&orderID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return o.Get(ctx, orderID)
+}
+
 // ByCookiePage 分页读取账号订单，供需要完整扫描的后台任务使用。
 func (o *Orders) ByCookiePage(ctx context.Context, cookieID string, limit, offset int) ([]OrderRow, error) {
 	if limit <= 0 {
