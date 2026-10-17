@@ -11,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/keywordmatch"
 	"xianyu-go/internal/xianyu/ws"
 )
 
@@ -356,10 +356,8 @@ func matchKeywordExpressions(expressions []string, matchType, text string) (bool
 			continue
 		}
 		if normalizedMatchType == "regexp" {
-			// pattern 是保持默认大小写不敏感且允许 RE2 内联标志覆盖的包装表达式。
-			pattern := "(?i:" + expression + ")"
-			// compiled、compileErr 保存当前正则的编译结果。
-			compiled, compileErr := regexp.Compile(pattern)
+			// compiled、compileErr 保存与保存时校验共用的默认忽略大小写正则及编译错误，已编译结果带缓存。
+			compiled, compileErr := keywordmatch.CompileExpression(expression)
 			if compileErr != nil {
 				invalidIndexes = append(invalidIndexes, expressionIndex)
 				continue

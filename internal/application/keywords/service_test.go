@@ -704,3 +704,11 @@ func TestNormalizeMatchTypeRules(t *testing.T) {
 		t.Fatalf("未知模式应被拒绝: %v", unknownErr)
 	}
 }
+
+// TestNormalizeMatchTypeRejectsUnbalancedRegexpWrapper 验证保存时拒绝试图逃出忽略大小写范围的不配对括号。
+func TestNormalizeMatchTypeRejectsUnbalancedRegexpWrapper(t *testing.T) {
+	// _, err 保存不配对括号表达式的校验结果，期望返回错误。
+	if _, err := normalizeMatchType("regexp", []string{"foo)|(BAR"}); err == nil {
+		t.Fatal("不配对括号必须被拒绝")
+	}
+}

@@ -5,7 +5,9 @@ import type { BrowserNotificationPreferenceState } from '../../../../shared/brow
 import { useBrowserNotificationPreference } from '../../../../shared/browser/browserNotifications';
 import BrowserNotificationToggle from './BrowserNotificationToggle';
 
-vi.mock('../../../../shared/browser/browserNotifications', /* browserNotificationMockFactory 提供通知开关的确定性偏好状态。 */ () => ({
+vi.mock('../../../../shared/browser/browserNotifications', /* browserNotificationMockFactory 提供通知开关的确定性偏好状态。 */ async (importOriginal) => ({
+  // 提示文案函数保持真实实现，只替换带浏览器副作用的偏好 Hook。
+  ...(await importOriginal<typeof import('../../../../shared/browser/browserNotifications')>()),
   useBrowserNotificationPreference: vi.fn(),
 }));
 
@@ -58,6 +60,7 @@ describe('BrowserNotificationToggle', /* 当前测试组验证聊天页通知开
     expect((toggle as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText('权限已拒绝')).not.toBeNull();
     expect(screen.getByRole('status').textContent).toContain('通知权限已被拒绝');
+    expect(screen.queryByText(/站点设置/)).not.toBeNull();
   });
 
   test('请求权限期间禁用开关并展示进行中状态', /* 当前回调验证异步权限请求不会被重复点击。 */ () => {

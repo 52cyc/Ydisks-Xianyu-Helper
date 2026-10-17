@@ -364,3 +364,18 @@ func TestMatchKeywordExpressionsSkipsBlankExpressions(t *testing.T) {
 		t.Fatal("空白表达式不得阻止后续有效表达式命中")
 	}
 }
+
+// TestMatchKeywordExpressionsRegexpWrapperEscape 验证不配对括号的正则被当作非法跳过，
+// 不会因逃出忽略大小写范围而造成部分分支大小写敏感。
+func TestMatchKeywordExpressionsRegexpWrapperEscape(t *testing.T) {
+	// matched、invalid、unknown 分别是命中结果、非法表达式位置与未知模式标记。
+	matched, invalid, unknown := matchKeywordExpressions([]string{"foo)|(BAR"}, "regexp", "bar")
+	if matched || unknown || len(invalid) != 1 || invalid[0] != 0 {
+		t.Fatalf("matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+	// 顶层竖线的所有分支都应忽略大小写。
+	matched, _, _ = matchKeywordExpressions([]string{"foo|BAR"}, "regexp", "xbarx")
+	if !matched {
+		t.Fatal("顶层分支应忽略大小写")
+	}
+}
