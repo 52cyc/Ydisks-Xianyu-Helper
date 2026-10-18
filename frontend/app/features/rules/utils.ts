@@ -22,7 +22,7 @@ export const triggerMeta: Record<AutomationTriggerType, TriggerMeta> = {
   order_paid: {
     label: '付款后自动发货',
     shortLabel: '自动发货',
-    description: '闲鱼付款系统卡片进入自动化中心后，先发送卡密，成功后再确认发货。',
+    description: '闲鱼付款系统卡片进入自动化中心后，先发送卡密；发送成功后，按账号“自动确认发货”开关决定是否确认发货。',
     flow: ['付款系统卡片', '匹配商品/规格', '发送卡密', '确认发货'],
     accent: 'blue',
     icon: PackageCheck,

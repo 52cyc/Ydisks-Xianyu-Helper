@@ -1045,7 +1045,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                     <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-4 items-end">
                       <div>
 						<label className="block text-sm font-bold text-gray-700 mb-2">优先级</label>
-						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则。</p>
+						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则；商品级规则存在时，账号级规则不会生效。</p>
                         <input
                           type="number"
                           value={editingAutomationRule.priority || 100}
