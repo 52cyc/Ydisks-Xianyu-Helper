@@ -712,3 +712,12 @@ func TestNormalizeMatchTypeRejectsUnbalancedRegexpWrapper(t *testing.T) {
 		t.Fatal("不配对括号必须被拒绝")
 	}
 }
+
+// TestNormalizeMatchTypeAcceptsPaddedRegexp 验证带首尾空白的合法正则与运行时一致地通过校验。
+func TestNormalizeMatchTypeAcceptsPaddedRegexp(t *testing.T) {
+	// matchType、err 是规范模式及校验错误。
+	matchType, err := normalizeMatchType("regexp", []string{"  foo|bar  "})
+	if err != nil || matchType != KeywordMatchTypeRegexp {
+		t.Fatalf("matchType=%q err=%v", matchType, err)
+	}
+}

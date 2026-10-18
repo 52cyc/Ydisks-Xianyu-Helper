@@ -1,6 +1,9 @@
 package keywordmatch
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // TestCompileExpressionCaseInsensitiveAcrossAlternation 验证 (?i) 覆盖整条表达式的所有分支。
 func TestCompileExpressionCaseInsensitiveAcrossAlternation(t *testing.T) {
@@ -68,4 +71,46 @@ func TestCompileExpressionInvalid(t *testing.T) {
 	if _, err := CompileExpression("("); err == nil {
 		t.Fatal("非法表达式必须返回错误")
 	}
+}
+
+// TestCompileExpressionTrimsAndSharesCacheKey 验证首尾空白不同的同一表达式共用同一缓存实例。
+func TestCompileExpressionTrimsAndSharesCacheKey(t *testing.T) {
+	// plain 是无空白表达式的编译结果。
+	plain, _ := CompileExpression("trim-me")
+	// padded 是带首尾空白的同一表达式的编译结果。
+	padded, _ := CompileExpression("  trim-me\t\n")
+	if plain != padded {
+		t.Fatal("去除首尾空白后应复用同一缓存实例")
+	}
+}
+
+// TestCompileExpressionEmpty 验证空表达式可编译并匹配任意文本，由调用方负责跳过空表达式。
+func TestCompileExpressionEmpty(t *testing.T) {
+	// re、err 是空表达式的编译结果。
+	re, err := CompileExpression("   ")
+	if err != nil || !re.MatchString("任意") {
+		t.Fatalf("空表达式应可编译: %v", err)
+	}
+}
+
+// TestCompileExpressionConcurrent 验证缓存在并发读写（含超限清空）下无数据竞争。
+func TestCompileExpressionConcurrent(t *testing.T) {
+	// wg 等待所有并发编译协程结束。
+	var wg sync.WaitGroup
+	// worker 是并发协程序号，用于生成部分重叠的表达式。
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			// n 是当前协程的迭代序号。
+			for n := 0; n < 400; n++ {
+				// err 保存本次并发编译的错误，期望为空。
+				if _, err := CompileExpression(string(rune(0x4e00 + (n*7+worker)%1500))); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
 }

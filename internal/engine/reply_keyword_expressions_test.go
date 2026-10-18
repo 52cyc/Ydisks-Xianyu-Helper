@@ -379,3 +379,12 @@ func TestMatchKeywordExpressionsRegexpWrapperEscape(t *testing.T) {
 		t.Fatal("顶层分支应忽略大小写")
 	}
 }
+
+// TestMatchKeywordExpressionsRegexpTrimsAndSkipsEmpty 验证正则模式去除首尾空白并跳过空表达式，且非法项不阻断后续合法项。
+func TestMatchKeywordExpressionsRegexpTrimsAndSkipsEmpty(t *testing.T) {
+	// matched、invalid、unknown 分别是命中结果、非法表达式位置与未知模式标记。
+	matched, invalid, unknown := matchKeywordExpressions([]string{"   ", "(", "  HELLO  "}, "regexp", "say hello")
+	if !matched || unknown || len(invalid) != 1 || invalid[0] != 1 {
+		t.Fatalf("matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+}
