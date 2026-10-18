@@ -44,8 +44,9 @@ To configure review reminders:
 
 1. Create a Review Reminder rule and select account and product.
 2. Set how many hours after shipment to wait, the repeat interval, and the maximum number of reminders.
-3. Enter the copy, save, and enable the rule.
-4. Use a test order to confirm that no message is sent early and that reminders stop at the maximum.
+3. Set "Only process orders shipped within the last N hours". Orders shipped earlier than this window are never reminded, so re-enabling a rule after a pause does not message old orders. The default is the time needed to finish all reminders plus 24 hours, and it is never below the first wait time.
+4. Enter the copy, save, and enable the rule.
+5. Use a test order to confirm that no message is sent early and that reminders stop at the maximum.
 
 ## Exceptions and manual delivery
 

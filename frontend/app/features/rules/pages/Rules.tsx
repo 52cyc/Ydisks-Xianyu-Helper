@@ -29,7 +29,7 @@ import { useRulesData } from '../hooks';
 import { filterAutomationIssues } from '../issueState';
 import { useRuleActions } from '../ruleActions';
 import type { AutomationTriggerType,ReplyRule,RulesProps,RulesTab } from '../types';
-import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
+import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,reviewLookbackHours,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
 
 // Rules 是规则 feature 在旧页面目录下保留的兼容入口组件。
 const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHandled }) => {
@@ -1023,6 +1023,22 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                             })}
                             className="w-full ios-input px-4 py-3 rounded-xl"
                           />
+                        </div>
+                        <div className="md:col-span-3">
+                          <label className="block text-sm font-bold text-gray-700 mb-2">仅处理最近 N 小时内发货的订单</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={reviewLookbackHours(editingAutomationRule.config_json)}
+                            onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingAutomationRule({
+                              ...editingAutomationRule,
+                              config_json: buildReviewConfig(editingAutomationRule.config_json, {
+                                max_lookback_hours: Math.max(1, Number(event.target.value) || 1),
+                              }),
+                            })}
+                            className="w-full ios-input px-4 py-3 rounded-xl"
+                          />
+                          <p className="text-xs text-gray-500 mt-2">发货时间早于该窗口的订单不会求评价，避免规则停用后重新启用时给历史订单补发消息。默认值为走完全部求评流程所需时长再加 24 小时；填写值不会小于「发货后等待小时」。</p>
                         </div>
                         <div className="md:col-span-3">
                           <label className="block text-sm font-bold text-gray-700 mb-2">求评价文案</label>
