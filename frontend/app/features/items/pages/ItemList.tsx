@@ -10,10 +10,12 @@ getShippingRules,
 } from '../api';
 import { batchStatusClass,batchStatusText } from '../batchState';
 import { BatchPhaseIndicator } from '../components/BatchPhaseIndicator';
+import ItemTable from '../components/ItemTable';
 import { ManualLocationPicker } from '../components/ManualLocationPicker';
 import { consumeSelectedFile } from '../fileInput';
 import { useItemPublishBatch } from '../hooks';
 import { useItemActions } from '../itemActions';
+import { matchesRuleCoverageFilter,paginateItems,TRADE_AUTOMATION_TRIGGERS,type RuleCoverageFilter } from '../ruleCoverage';
 import type { ItemListProps } from '../types';
 
 // formatItemPrice 将商品价格转换为本地化展示文本。
@@ -22,6 +24,21 @@ const formatItemPrice = (price?: string) => {
   const value = String(price || '').trim();
   if (!value) return '-';
   return /^[¥￥]/.test(value) ? value : `¥${value}`;
+};
+
+// ITEM_VIEW_MODE_KEY 是浏览器本地保存商品页视图偏好的存储键，只属于当前浏览器，不写入服务端。
+const ITEM_VIEW_MODE_KEY = 'ydisks.items.view_mode';
+
+// ItemViewMode 是商品页的两种展示模式：卡片或列表。
+type ItemViewMode = 'card' | 'list';
+
+// readItemViewMode 读取上次选择的视图模式；存储不可用或值非法时回到卡片模式。
+const readItemViewMode = (): ItemViewMode => {
+  try {
+    return window.localStorage.getItem(ITEM_VIEW_MODE_KEY) === 'list' ? 'list' : 'card';
+  } catch {
+    return 'card';
+  }
 };
 
 // itemAIStatusText 将商品级 AI 三态转换为卡片中的简短状态文本。
@@ -50,6 +67,12 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
   const [selectedAccount, setSelectedAccount] = useState<string>('');
   // [accountFilter, 解构得到当前 Hook 返回的状态和操作函数。
   const [accountFilter, setAccountFilter] = useState<string>('');
+  // ruleFilter 保存用户选择的交易自动化覆盖筛选，空串表示不筛选；可见商品由它与规则列表推导，不存副本。
+  const [ruleFilter, setRuleFilter] = useState<RuleCoverageFilter>('');
+  // viewMode 是用户选择的商品展示模式，初值读取本地偏好。
+  const [viewMode, setViewMode] = useState<ItemViewMode>(readItemViewMode);
+  // listPage 是列表模式的请求页码，渲染时会修正到合法范围；筛选变化时回到第一页。
+  const [listPage, setListPage] = useState(1);
   // [itemAISettingsTarget, setItemAISettingsTarget] 保存当前打开商品级 AI 配置的商品。
   const [itemAISettingsTarget, setItemAISettingsTarget] = useState<Item | null>(null);
   // itemsRequestGeneration 标识商品列表最新一次读取，旧响应不得覆盖较新的同步或刷新结果。
@@ -221,9 +244,20 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
   );
   // visibleItems 可见商品列表。
   const visibleItems = useMemo(
-    /* 当前回调处理集合中的单个元素。 */ () => accountFilter ? items.filter(/* 当前回调处理集合中的单个元素。 */ item => item.cookie_id === accountFilter) : items,
-    [accountFilter, items],
+    /* 先按账号再按交易自动化覆盖情况筛选商品。 */ () => items.filter(/* item 是待判断的商品。 */ item => (!accountFilter || item.cookie_id === accountFilter) && matchesRuleCoverageFilter(item, ruleFilter, shippingRules)),
+    [accountFilter, ruleFilter, items, shippingRules],
   );
+  // pagedItems 是列表模式当前页的分页结果，由可见商品与页码推导。
+  const pagedItems = useMemo(/* 按请求页码切分可见商品。 */ () => paginateItems(visibleItems, listPage), [visibleItems, listPage]);
+  // changeViewMode 切换展示模式并尽力保存偏好；存储失败不影响本次切换。
+  const changeViewMode = (mode: ItemViewMode) => {
+    setViewMode(mode);
+    try {
+      window.localStorage.setItem(ITEM_VIEW_MODE_KEY, mode);
+    } catch {
+      // 隐私模式禁止写入本地存储时，仅本次页面生命周期使用该模式。
+    }
+  };
   // accountName 账号名称。
   const accountName = (cookieId: string) => {
     // account 账号。
@@ -268,13 +302,42 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
                   aria-label="按账号筛选商品列表"
                   className="ios-input w-full pl-10 pr-9 py-3 rounded-xl text-sm"
                   value={accountFilter}
-                  onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setAccountFilter(event.target.value)}
+                  onChange={/* 切换账号筛选并回到列表第一页。 */ event => { setAccountFilter(event.target.value); setListPage(1); }}
                 >
                   <option value="">全部账号</option>
                   {accounts.map(/* 当前回调处理集合中的单个元素。 */ account => (
                     <option key={account.id} value={account.id}>{accountName(account.id)}</option>
                   ))}
                 </select>
+              </div>
+            </div>
+            <div className="flex min-w-[200px] flex-col gap-1.5">
+              <label htmlFor="item-rule-filter" className="px-1 text-[11px] font-extrabold tracking-wide text-gray-500">
+                自动化规则筛选
+              </label>
+              <select
+                id="item-rule-filter"
+                aria-label="按交易自动化规则筛选商品列表"
+                className="ios-input w-full px-4 py-3 rounded-xl text-sm"
+                value={ruleFilter}
+                onChange={/* event 是规则筛选下拉框的选择事件；切换后回到列表第一页。 */ event => { setRuleFilter(event.target.value as RuleCoverageFilter); setListPage(1); }}
+              >
+                <option value="">全部商品</option>
+                <option value="any">未配置任何交易自动化</option>
+                {TRADE_AUTOMATION_TRIGGERS.map(/* entry 是一类可筛选的交易自动化触发器。 */ entry => (
+                  <option key={entry.trigger} value={entry.trigger}>未配置{entry.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="px-1 text-[11px] font-extrabold tracking-wide text-gray-500">展示方式</span>
+              <div role="group" aria-label="商品展示方式" className="flex rounded-xl bg-gray-100 p-1">
+                {(['card', 'list'] as const).map(/* mode 是一种展示模式按钮。 */ mode => (
+                  <button key={mode} type="button" aria-pressed={viewMode === mode} onClick={/* 点击切换到该展示模式。 */ () => changeViewMode(mode)}
+                    className={`rounded-lg px-4 py-2 text-sm font-bold ${viewMode === mode ? 'bg-white text-gray-900 shadow' : 'text-gray-500'}`}>
+                    {mode === 'card' ? '卡片' : '列表'}
+                  </button>
+                ))}
               </div>
             </div>
             <div className="flex min-w-[200px] flex-col gap-1.5">
@@ -337,12 +400,37 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
         </div>
       </div>
 
+      {viewMode === 'list' ? (
+        <div className="space-y-4">
+          <ItemTable
+            items={pagedItems.rows}
+            rules={shippingRules}
+            accountNickname={accountNickname}
+            formatPrice={formatItemPrice}
+            aiStatusText={itemAIStatusText}
+            onConfigureDelivery={onConfigureDelivery}
+            onOpenAISettings={setItemAISettingsTarget}
+            onEdit={handleEdit}
+            onDelete={handleDelete}
+            emptyText={ruleFilter ? '没有符合该规则筛选条件的商品' : accountFilter ? '该账号暂无商品数据' : '暂无商品数据，请选择账号进行同步'}
+          />
+          {pagedItems.totalPages > 1 && (
+            <div className="flex items-center justify-center gap-3 text-sm text-gray-600">
+              <button type="button" disabled={pagedItems.page <= 1} onClick={/* 跳转到上一页。 */ () => setListPage(pagedItems.page - 1)} className="rounded-lg bg-gray-100 px-3 py-1.5 font-bold disabled:opacity-40">上一页</button>
+              <span>第 {pagedItems.page} / {pagedItems.totalPages} 页，共 {visibleItems.length} 件</span>
+              <button type="button" disabled={pagedItems.page >= pagedItems.totalPages} onClick={/* 跳转到下一页。 */ () => setListPage(pagedItems.page + 1)} className="rounded-lg bg-gray-100 px-3 py-1.5 font-bold disabled:opacity-40">下一页</button>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {visibleItems.map(/* 当前回调处理集合中的单个元素。 */ item => {
             // linkedRules 关联规则列表。
             const linkedRules = rulesForItem(item);
             // hasRule 是否存在规则。
             const hasRule = linkedRules.length > 0;
+            // deliveryRuleCount 是该商品生效范围内的付款后自动发货规则条数，用于按钮文案。
+            const deliveryRuleCount = linkedRules.filter(/* rule 是关联规则。 */ rule => rule.trigger_type === 'order_paid').length;
             // aiOverride 是列表 DTO 提供的商品级 AI 摘要状态，缺省时按继承账号处理。
             const aiOverride = item.ai_override || 'inherit';
             return (
@@ -402,7 +490,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
                         onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => onConfigureDelivery(item)}
                         className={`w-full flex items-center justify-between gap-1 px-2.5 py-2 rounded-lg text-[11px] font-extrabold transition-all ${hasRule ? 'bg-gray-900 text-white hover:bg-black' : 'bg-brand text-white hover:bg-brand-highlight shadow-md shadow-blue-100'}`}
                       >
-                        <span className="flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" />{hasRule ? '查看发货规则' : '关联发货规则'}</span>
+                        <span className="flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" />{deliveryRuleCount > 0 ? `${deliveryRuleCount} 条发货规则` : hasRule ? '查看发货规则' : '关联发货规则'}</span>
                         <ArrowRight className="w-3.5 h-3.5" />
                       </button>
                   </div>
@@ -412,10 +500,11 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
           {visibleItems.length === 0 && (
              <div className="col-span-full py-20 text-center text-gray-400">
                  <ShoppingBag className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                 {accountFilter ? '该账号暂无商品数据' : '暂无商品数据，请选择账号进行同步'}
+                 {ruleFilter ? '没有符合该规则筛选条件的商品' : accountFilter ? '该账号暂无商品数据' : '暂无商品数据，请选择账号进行同步'}
              </div>
           )}
       </div>
+      )}
 
       {showEditModal && selectedItem && createPortal(
         <div className="modal-overlay-centered">

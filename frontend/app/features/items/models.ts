@@ -129,7 +129,7 @@ export interface ItemAISettings {
 }
 
 /** 由当前 feature adapter 归一后的 AutomationTriggerType UI 模型；不直接暴露 HTTP DTO。 */
-export type AutomationTriggerType = 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';
+export type AutomationTriggerType = 'order_created' | 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';
 /** 由当前 feature adapter 归一后的 AutomationActionType UI 模型；不直接暴露 HTTP DTO。 */
 export type AutomationActionType = 'confirm_shipment' | 'send_card' | 'send_text';
 
@@ -158,6 +158,8 @@ export interface ShippingRule {
   priority: number;
   /** 规则是否启用。 */
   enabled: boolean;
+  /** 规格迁移状态；非 ready 的规则不会被自动化中心命中，缺省视为就绪。 */
+  sku_migration_status?: 'pending' | 'ready' | 'needs_reconfiguration';
   /** 规则原始配置 JSON。 */
   config_json?: string;
   /** 规则动作列表。 */

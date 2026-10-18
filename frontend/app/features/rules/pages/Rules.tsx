@@ -25,6 +25,7 @@ import AllItemsConfirmation from '../components/AllItemsConfirmation';
 import { AutomationIssuePanel } from '../components/AutomationIssuePanel';
 import TemplateVariantEditor from '../components/TemplateVariantEditor';
 import ReplyRuleEditor from '../components/ReplyRuleEditor';
+import SearchableSelect from '../../../../shared/ui/SearchableSelect';
 import { useRulesData } from '../hooks';
 import { filterAutomationIssues } from '../issueState';
 import { useRuleActions } from '../ruleActions';
@@ -910,16 +911,14 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                             ) : (
                               <div>
                                 <label className="block text-xs font-bold text-gray-600 mb-2">卡密库存</label>
-                                <select
-                                  value={variant.card_id || ''}
-                                  onChange={/* 当前回调选择卡密库存。 */ event => updateVariant(index, { card_id: Number(event.target.value) })}
-                                  className="w-full ios-input px-3 py-2.5 rounded-lg"
-                                >
-                                  <option value="">请选择卡密库存</option>
-                                  {cards.filter(isDeliveryCardReady).map(/* 当前回调处理集合中的单个元素。 */ card => (
-                                    <option key={card.id} value={card.id}>{card.name}</option>
-                                  ))}
-                                </select>
+                                <SearchableSelect
+                                  options={cards.filter(isDeliveryCardReady).map(/* card 转换为可搜索选项，仅保留主键与名称。 */ card => ({ value: card.id, label: card.name }))}
+                                  value={variant.card_id}
+                                  onChange={/* cardID 是用户选中的卡密库存主键，0 表示清空。 */ cardID => updateVariant(index, { card_id: cardID })}
+                                  placeholder="请选择卡密库存"
+                                  ariaLabel="卡密库存"
+                                />
+
                               </div>
                             )}
                             <div>
