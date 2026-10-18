@@ -5,7 +5,7 @@ import { buildCategoryData,buildChartData,buildItemNameMap,buildProductSalesData
 import type { DashboardData,DashboardRangeSelection,DashboardStatus } from './types';
 
 /** Dashboard Hook 的输入参数。 */
-export type UseDashboardOptions = DashboardRangeSelection & { /** customRangeVersion 表示自定义范围版本。 */ customRangeVersion: number };
+export type UseDashboardOptions = DashboardRangeSelection;
 
 /** Dashboard Hook 暴露给页面的可视化数据与操作。 */
 export type UseDashboardResult = {
@@ -30,7 +30,7 @@ const errorMessage = (error: unknown, fallback: string): string => error instanc
 /** 加载 Dashboard 概览、趋势和订单明细，并隔离过期响应。 */
 export const useDashboard = (options: UseDashboardOptions): UseDashboardResult => {
   // { 解构得到当前 Hook 返回的状态和操作函数。
-  const { range, customStartDate, customEndDate, customRangeVersion } = options;
+  const { range, customStartDate, customEndDate } = options;
   // [overview, 解构得到当前 Hook 返回的状态和操作函数。
   const [overview, setOverview] = useState<Pick<DashboardData, 'stats' | 'items' | 'itemNames'> | null>(null);
   // [rangeData, 解构得到当前 Hook 返回的状态和操作函数。
@@ -78,6 +78,8 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
   }, [refreshKey]);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => {
+    // 自定义范围的日期未填齐时不请求，避免静默回退成最近 7 天而与选中状态不一致。
+    if (range === 'custom' && (!customStartDate || !customEndDate)) return;
     // dateRange 日期范围，负责当前功能中的对应处理。
     let dateRange;
     try {
@@ -106,7 +108,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
       setStatus(/* 当前回调处理用户交互或异步状态变化。 */ current => ({ ...current, range: 'error', error: errorMessage(error, '经营数据加载失败') }));
     });
     return /* 当前回调处理用户交互或异步状态变化。 */ () => controller.abort();
-  }, [customRangeVersion, range, refreshKey]);
+  }, [customEndDate, customStartDate, range, refreshKey]);
 
   // data 数据。
   const data = useMemo<DashboardData | null>(

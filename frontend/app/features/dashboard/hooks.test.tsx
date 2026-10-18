@@ -31,7 +31,7 @@ const analyticsFixture: OrderAnalyticsResponse = { revenue_stats: { total_amount
 // validOrdersFixture 是有效订单查询的最小返回结果。
 const validOrdersFixture = { orders: [], total: 0, truncated: false };
 // dashboardOptions 是今天范围的仪表盘 Hook 参数。
-const dashboardOptions: UseDashboardOptions = { range: 'today', customStartDate: '', customEndDate: '', customRangeVersion: 0 };
+const dashboardOptions: UseDashboardOptions = { range: 'today', customStartDate: '', customEndDate: '' };
 
 // renderDashboardHook 是渲染仪表盘 Hook 的具名回调。
 const renderDashboardHook = () => useDashboard(dashboardOptions);
@@ -91,7 +91,7 @@ describe('useDashboard', /* 当前回调处理仪表盘并行请求和派生数�
 
   test('自定义日期倒置时阻断范围请求并提示错误', /* 当前回调验证日期范围校验错误分支。 */ async () => {
     // invalidOptions 是开始日期晚于结束日期的非法范围参数。
-    const invalidOptions: UseDashboardOptions = { range: 'custom', customStartDate: '2026-08-20', customEndDate: '2026-08-01', customRangeVersion: 1 };
+    const invalidOptions: UseDashboardOptions = { range: 'custom', customStartDate: '2026-08-20', customEndDate: '2026-08-01' };
     // renderInvalidHook 是非法日期范围 Hook 的渲染回调。
     const renderInvalidHook = () => useDashboard(invalidOptions);
     // hook 是非法日期范围 Hook 的渲染结果。
@@ -103,6 +103,20 @@ describe('useDashboard', /* 当前回调处理仪表盘并行请求和派生数�
     expect(hook.result.current.status.error).toBe('开始日期不能晚于结束日期');
     expect(getAnalyticsMock).not.toHaveBeenCalled();
     expect(getValidOrdersMock).not.toHaveBeenCalled();
+  });
+
+  test('自定义日期未填齐时不发起范围请求', /* 当前回调验证不会静默回退为 7 天范围。 */ async () => {
+    // incompleteOptions 是只填了开始日期的自定义范围参数。
+    const incompleteOptions: UseDashboardOptions = { range: 'custom', customStartDate: '2026-08-01', customEndDate: '' };
+    // hook 是未填齐日期场景的仪表盘 Hook 渲染结果。
+    const hook = renderHook(/* hookFactory 创建仪表盘 Hook 测试实例。 */ () => useDashboard(incompleteOptions));
+    await waitFor(
+      // overviewAssertion 等待概览请求完成。
+      () => expect(hook.result.current.status.overview).toBe('success'),
+    );
+    expect(getAnalyticsMock).not.toHaveBeenCalled();
+    expect(getValidOrdersMock).not.toHaveBeenCalled();
+    expect(hook.result.current.status.range).toBe('idle');
   });
 
   test('经营数据请求失败时展示范围错误', /* 当前回调验证趋势和有效订单请求失败分支。 */ async () => {

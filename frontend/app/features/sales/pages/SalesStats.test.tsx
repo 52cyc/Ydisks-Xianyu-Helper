@@ -59,4 +59,21 @@ describe('SalesStats 自定义日期', /* 当前测试组验证草稿、校验�
     expect(screen.getByRole('alert').textContent).toContain('请选择开始日期和结束日期');
     expect(statsMock).toHaveBeenCalledTimes(1);
   });
+
+  test('对同一自定义范围再次点击应用会重新请求', /* 当前回调验证范围未变时“应用”仍等价于刷新。 */ async () => {
+    render(<SalesStats />);
+    await flush();
+    fireEvent.click(screen.getByText('自定义'));
+    // dates 是起止日期输入框。
+    const dates = document.querySelectorAll('input[type="date"]');
+    fireEvent.change(dates[0], { target: { value: '2026-10-09' } });
+    fireEvent.change(dates[1], { target: { value: '2026-10-10' } });
+    fireEvent.click(screen.getByText('应用'));
+    await flush();
+    expect(statsMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByText('应用'));
+    await flush();
+    expect(statsMock).toHaveBeenCalledTimes(3);
+    expect(statsMock.mock.calls[2][0]).toEqual({ start_date: '2026-10-09', end_date: '2026-10-10' });
+  });
 });

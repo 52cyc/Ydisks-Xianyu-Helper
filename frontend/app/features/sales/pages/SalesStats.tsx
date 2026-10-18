@@ -51,12 +51,16 @@ const SalesStats: React.FC = () => {
     setDraftError('');
     if (key !== 'custom') setAppliedRange({ range: key, startDate: '', endDate: '' });
   };
-  // applyCustomRange 校验并应用自定义日期；校验失败只提示，不清空已加载数据。
+  // applyCustomRange 校验并应用自定义日期；校验失败只提示，不清空已加载数据；范围未变时重新加载。
   const applyCustomRange = () => {
     // message 是自定义日期校验结果，空字符串表示合法。
     const message = validateCustomDateRange(draftStartDate, draftEndDate);
     setDraftError(message);
     if (message) return;
+    if (appliedRange.range === 'custom' && appliedRange.startDate === draftStartDate && appliedRange.endDate === draftEndDate) {
+      refresh();
+      return;
+    }
     setAppliedRange({ range: 'custom', startDate: draftStartDate, endDate: draftEndDate });
   };
 
