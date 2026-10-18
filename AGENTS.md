@@ -27,6 +27,7 @@ make build      # go build ./cmd/server
 make test       # go test ./...
 make test-server       # go test ./internal/server
 make test-server-race  # server 生命周期与凭证并发 smoke race
+make smoke      # 构建并启动真实二进制，经 HTTP 验证健康/初始化/登录/核心列表/前端首页/优雅退出（临时 SQLite）
 make vet        # go vet ./...
 make lint       # golangci-lint run ./... (0 issues baseline)
 make check      # fmt + architecture + API contract + vet + lint + test + comments
