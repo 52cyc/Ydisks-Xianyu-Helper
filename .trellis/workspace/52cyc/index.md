@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-10-16
+- **Total Sessions**: 6
+- **Last Active**: 2026-10-20
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~112 | Active |
+| `journal-1.md` | ~133 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-10-20 | 合并上游 v1.0.14 及订单恢复更新 | `17669f0f` | `main` |
 | 5 | 2026-10-16 | 合并上游关键词与 cURL 更新 | `59b2f9bb` | `main` |
 | 4 | 2026-09-14 | 默认开启货源跟价买家通知 | `359f495` | `main` |
 | 3 | 2026-09-14 | 批量发布风控与货源下架兜底 | `1e1aaab` | `main` |

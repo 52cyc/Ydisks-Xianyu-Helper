@@ -110,3 +110,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: 合并上游 v1.0.14 及订单恢复更新
+
+**Date**: 2026-10-20
+**Task**: 合并上游 v1.0.14 及订单恢复更新
+**Branch**: `main`
+
+### Summary
+
+合并上游60提交至d999ddd5，保留fork货源/跟价/采集/备份/实时日志；迁移顺延57-59，fork56旧库升级回归通过。组合付款安全门禁与原单等待，补未知发卡结果人工核对及API正文默认遮罩。Go全量、前端全量及后续定向、API、架构、race、smoke通过；浏览器独立重跑通过。历史142项注释欠缺，lint/Docker缺失，未实测真实交易或MySQL/PostgreSQL；未推送部署。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `17669f0f` | (see git log) |
+
+### Status
+
+[OK] **Completed**
