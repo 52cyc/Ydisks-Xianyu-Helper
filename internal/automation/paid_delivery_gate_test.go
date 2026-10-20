@@ -1,0 +1,212 @@
+package automation
+
+import (
+	"context"
+	"testing"
+
+	"xianyu-go/internal/db"
+)
+
+// paidGateFixture 保存付款发货状态门禁测试共用的账号、规则、发送器和中心。
+type paidGateFixture struct {
+	// store 是隔离的测试数据库。
+	store *db.Store
+	// center 使用真实事实记录、规则匹配和运行幂等流程。
+	center *Center
+	// sender 是记录发货内容的本地假发送器，不访问平台。
+	sender *testSender
+	// ruleID 是账号唯一的付款发货规则。
+	ruleID int64
+}
+
+// newPaidGateFixture 建立带启用账号、卡密与付款规则的门禁测试环境，返回夹具和资源释放函数。
+func newPaidGateFixture(t *testing.T) (paidGateFixture, func()) {
+	t.Helper()
+	// cleanup、store 分别保存：测试数据库的关闭函数；隔离的测试数据库仓储。
+	store, cleanup := newAutomationTestStore(t)
+	// ctx 限定夹具创建期间的同步数据库调用。
+	ctx := context.Background()
+	// admin、adminErr 分别保存：测试管理员账号；读取管理员的错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil || admin == nil {
+		t.Fatalf("读取测试管理员失败: %v", adminErr)
+	}
+	// cardID 是付款动作完整性校验所需的卡密组。
+	cardID := catchupCard(t, store, admin.ID)
+	catchupAccount(t, store, admin.ID, "gate-acc")
+	// sender 是在线的假发送器。
+	sender := &testSender{}
+	return paidGateFixture{
+		store:  store,
+		center: New(store, testSenderProvider{sender: sender}, nil),
+		sender: sender,
+		ruleID: catchupRule(t, store, admin.ID, "gate-acc", "gate-item", []db.AutomationActionInput{catchupCardAction(cardID)}),
+	}, cleanup
+}
+
+// seedOrder 写入指定状态的订单事实；systemShipped 为真时同时标记系统已发货。
+func (f paidGateFixture) seedOrder(t *testing.T, orderID, status string, systemShipped bool) {
+	t.Helper()
+	// opts 是订单夹具字段，规格与规则动作保持一致。
+	opts := db.OrderUpsertOpts{ItemID: "gate-item", BuyerID: "gate-buyer", CookieID: "gate-acc", ChatID: "gate-chat", OrderStatus: status, Quantity: "1", Amount: "9.90", SpecName: "颜色", SpecValue: "黑"}
+	if systemShipped {
+		opts.SystemShipped = &systemShipped
+	}
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if err := f.store.Orders.Upsert(context.Background(), orderID, opts); err != nil {
+		t.Fatalf("写入订单夹具失败: %v", err)
+	}
+}
+
+// paidTask 构造明确卖家角色的 WebSocket 付款任务，模拟迟到的付款卡片。
+func paidTask(orderID string) Task {
+	return Task{Source: "ws", AccountID: "gate-acc", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, ChatID: "gate-chat", OrderID: orderID, ItemID: "gate-item", BuyerID: "gate-buyer", Text: "买家已付款"}
+}
+
+// runCount 返回订单的付款运行数量。
+func (f paidGateFixture) runCount(t *testing.T, orderID string) int {
+	t.Helper()
+	// count 保存付款运行数量。
+	var count int
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if err := f.store.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM automation_runs WHERE order_id=? AND trigger_type='order_paid'`, orderID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+// TestPaidDeliveryBlockedReason 验证门禁只拦截已越过待发货阶段的订单，对未知状态与缺失订单放行。
+func TestPaidDeliveryBlockedReason(t *testing.T) {
+	// cases 覆盖拦截、放行与空订单边界。
+	cases := []struct {
+		// name 是用例名称。
+		name string
+		// order 是输入订单。
+		order *db.Order
+		// want 是期望的拦截原因。
+		want string
+	}{
+		{name: "缺失订单放行", order: nil},
+		{name: "未知状态放行", order: &db.Order{OrderStatus: ""}},
+		{name: "处理中放行", order: &db.Order{OrderStatus: "processing"}},
+		{name: "待发货放行", order: &db.Order{OrderStatus: "pending_ship"}},
+		{name: "数字待发货放行", order: &db.Order{OrderStatus: "2"}},
+		{name: "已发货拦截", order: &db.Order{OrderStatus: "shipped"}, want: "order_shipped"},
+		{name: "数字已发货拦截", order: &db.Order{OrderStatus: "3"}, want: "order_shipped"},
+		{name: "已完成拦截", order: &db.Order{OrderStatus: "completed"}, want: "order_completed"},
+		{name: "已取消拦截", order: &db.Order{OrderStatus: "cancelled"}, want: "order_cancelled"},
+		{name: "退款中拦截", order: &db.Order{OrderStatus: "refunding"}, want: "order_refunding"},
+		{name: "系统已发货拦截", order: &db.Order{OrderStatus: "pending_ship", SystemShipped: true}, want: "system_shipped"},
+	}
+	// testCase 是当前待验证的边界。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// got 保存被测函数的实际返回值，用于与期望值比较。
+			if got := paidDeliveryBlockedReason(testCase.order); got != testCase.want {
+				t.Fatalf("paidDeliveryBlockedReason=%q want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestPaidEventSkipsEndedOrdersAndDeliversUnknownStatus 验证迟到的卖家付款事件不会对已结束订单发卡，未知状态订单仍正常发货。
+func TestPaidEventSkipsEndedOrdersAndDeliversUnknownStatus(t *testing.T) {
+	// blocked 列出必须拦截的订单状态与系统已发货标记。
+	blocked := []struct {
+		// status 是订单状态。
+		status string
+		// systemShipped 表示是否系统已发货。
+		systemShipped bool
+	}{{"shipped", false}, {"completed", false}, {"cancelled", false}, {"refunding", false}, {"pending_ship", true}}
+	// item 是当前被拦截的订单夹具。
+	for index, item := range blocked {
+		// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。
+		fixture, cleanup := newPaidGateFixture(t)
+		// orderID 是当前订单号。
+		orderID := "gate-blocked-" + string(rune('a'+index))
+		fixture.seedOrder(t, orderID, item.status, item.systemShipped)
+		// err 保存当前调用返回的错误，非空时测试立即失败。
+		if err := fixture.center.HandleTask(context.Background(), paidTask(orderID)); err != nil {
+			t.Fatalf("迟到付款事件应被安全忽略: %v", err)
+		}
+		if len(fixture.sender.texts) != 0 || fixture.runCount(t, orderID) != 0 {
+			t.Fatalf("状态 %s/system=%v 不应发卡或创建运行: texts=%v runs=%d", item.status, item.systemShipped, fixture.sender.texts, fixture.runCount(t, orderID))
+		}
+		cleanup()
+	}
+
+	// 状态未知的订单是付款事件的正常入口，必须继续发货。
+	fixture, cleanup := newPaidGateFixture(t)
+	defer cleanup()
+	fixture.seedOrder(t, "gate-unknown", "unknown", false)
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if err := fixture.center.HandleTask(context.Background(), paidTask("gate-unknown")); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.sender.texts) == 0 || fixture.runCount(t, "gate-unknown") != 1 {
+		t.Fatalf("未知状态订单应正常发货: texts=%v runs=%d", fixture.sender.texts, fixture.runCount(t, "gate-unknown"))
+	}
+}
+
+// TestDeferredReplayOfPaidEventSkipsCancelledOrder 验证延期任务重放时订单已取消则不再发卡。
+func TestDeferredReplayOfPaidEventSkipsCancelledOrder(t *testing.T) {
+	// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。
+	fixture, cleanup := newPaidGateFixture(t)
+	defer cleanup()
+	fixture.seedOrder(t, "gate-replay", "cancelled", false)
+	// task 模拟从延期队列取出的重放任务，带有延期重放标记。
+	task := paidTask("gate-replay")
+	task.Raw = map[string]any{"automation_deferred_replay": true}
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if err := fixture.center.HandleTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.sender.texts) != 0 || fixture.runCount(t, "gate-replay") != 0 {
+		t.Fatalf("延期重放不应对已取消订单发卡: texts=%v", fixture.sender.texts)
+	}
+}
+
+// TestResumedPaidRunWithoutProgressIsCanceledWhenOrderEnded 验证零进度的恢复运行在订单已结束时被取消，已有进度的运行不被取消。
+func TestResumedPaidRunWithoutProgressIsCanceledWhenOrderEnded(t *testing.T) {
+	// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。
+	fixture, cleanup := newPaidGateFixture(t)
+	defer cleanup()
+	// ctx 限定本测试内的同步调用。
+	ctx := context.Background()
+	fixture.seedOrder(t, "gate-resume", "cancelled", false)
+	// runID 是零进度的运行中记录。
+	runID := catchupRun(t, fixture.store, fixture.ruleID, "gate-acc", "gate-resume", "{}")
+	// task 携带运行 ID，模拟延期或恢复链路继续执行既有运行。
+	task := paidTask("gate-resume")
+	task.Raw = map[string]any{"automation_run_id": runID}
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if err := fixture.center.HandleTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	// run、getErr 是处理后的运行状态。
+	run, getErr := fixture.store.Automation.GetRun(ctx, runID)
+	if getErr != nil || run.Status != "canceled" {
+		t.Fatalf("零进度恢复运行应被取消: run=%+v err=%v", run, getErr)
+	}
+	if len(fixture.sender.texts) != 0 {
+		t.Fatalf("取消的运行不应发送内容: %v", fixture.sender.texts)
+	}
+
+	// 已有动作进度的运行保留凭证与现状，交给原恢复链路处理。
+	fixture.seedOrder(t, "gate-resume-progress", "cancelled", false)
+	// progressRunID 是已推进动作游标的运行。
+	progressRunID := catchupRun(t, fixture.store, fixture.ruleID, "gate-acc", "gate-resume-progress", "{}")
+	// err 保存当前调用返回的错误，非空时测试立即失败。
+	if _, err := fixture.store.DB.ExecContext(ctx, `UPDATE automation_runs SET action_cursor=1 WHERE id=?`, progressRunID); err != nil {
+		t.Fatal(err)
+	}
+	// progressTask 继续该运行。
+	progressTask := paidTask("gate-resume-progress")
+	progressTask.Raw = map[string]any{"automation_run_id": progressRunID}
+	_ = fixture.center.HandleTask(ctx, progressTask)
+	// progressRun 是处理后的运行状态，不得被门禁取消。
+	progressRun, progressErr := fixture.store.Automation.GetRun(ctx, progressRunID)
+	if progressErr != nil || progressRun.Status == "canceled" {
+		t.Fatalf("已有进度的运行不应被门禁取消: run=%+v err=%v", progressRun, progressErr)
+	}
+}

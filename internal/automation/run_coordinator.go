@@ -195,6 +195,23 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 	if prepareErr != nil {
 		return Task{}, nil, false, &preparationError{err: prepareErr}
 	}
+	// blockedReason 是付款发货前对订单最新状态的核对结果；非空表示订单已发货、完成、取消或退款，不得再发货。
+	blockedReason := ""
+	if preparedTask.TriggerType == TriggerOrderPaid && preparedTask.OrderID != "" {
+		// order、orderErr 保存准备阶段写入事实后的最新订单；读取失败按前置失败延期重试，绝不失败放行。
+		order, orderErr := r.store.Orders.Get(ctx, preparedTask.OrderID)
+		if orderErr != nil && !errors.Is(orderErr, db.ErrNotFound) {
+			return Task{}, nil, false, &preparationError{err: fmt.Errorf("核对付款发货订单状态: %w", orderErr)}
+		}
+		if orderErr == nil {
+			blockedReason = paidDeliveryBlockedReason(order)
+		}
+	}
+	if blockedReason != "" && taskAutomationRunID(preparedTask) == 0 {
+		// 迟到的付款事件或延期重放遇到已结束订单时只记录，不创建运行也不触发任何外部动作。
+		r.logger.Info("订单已不再待发货，跳过付款自动发货", "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason, "source", preparedTask.Source)
+		return preparedTask, nil, true, nil
+	}
 	// triggerKey 是用于幂等创建运行的稳定事件键，缺失时安全跳过外部动作。
 	triggerKey := buildTriggerKey(preparedTask)
 	if triggerKey == "" {
@@ -211,6 +228,16 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 			return Task{}, nil, false, getErr
 		}
 		if existingRun.Status != "running" || existingRun.RuleID != rule.ID {
+			return preparedTask, nil, true, nil
+		}
+		if blockedReason != "" && existingRun.SentCount == 0 && existingRun.ActionCursor == 0 && !existingRun.ActionStarted {
+			// 尚未产生任何外部副作用的运行可以安全取消；已有进度的运行保留发货凭证，继续交给原恢复与人工核对链路。
+			cancelReason := "订单状态为 " + blockedReason + "，不再需要自动发货"
+			// cancelErr 保存条件取消尚未执行动作的付款运行时的错误。
+			if _, cancelErr := r.store.Automation.CancelObsoletePaidRecoveryRun(ctx, *existingRun, cancelReason); cancelErr != nil {
+				return Task{}, nil, false, fmt.Errorf("取消已失效付款运行: %w", cancelErr)
+			}
+			r.logger.Info("订单已不再待发货，取消尚未执行动作的付款运行", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
 			return preparedTask, nil, true, nil
 		}
 		// 恢复快照不能借用其他账号或订单的运行检查点；外部动作前还会按数据库中的运行归属再次防御。

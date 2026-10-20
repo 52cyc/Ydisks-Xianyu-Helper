@@ -158,7 +158,7 @@ func normalizedStatusCandidates(status string) []string {
 	case "processing":
 		return []string{"processing", "1"}
 	case "pending_ship":
-		return []string{"pending_ship", "paid", "2"}
+		return append([]string(nil), pendingShipStatuses...)
 	case "shipped":
 		return []string{"shipped", "3"}
 	case "completed":
@@ -193,9 +193,13 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 		return nil, nil
 	}
 	// where 保存跨数据库通用的订单筛选条件。
-	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?,?,?)"}
-	// args 保存 where 条件对应的绑定参数，状态集合覆盖本地和参考项目的待发货别名。
-	args := []any{accountID, sessionID, "pending_ship", "paid", "2", "pending_delivery", "partial_success", "partial_pending_finalize"}
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?)"}
+	// args 保存 where 条件对应的绑定参数，状态集合与兜底扫描共用 pendingShipStatuses。
+	args := []any{accountID, sessionID}
+	// status 是待发货存量取值之一，与兜底扫描共用同一定义。
+	for _, status := range pendingShipStatuses {
+		args = append(args, status)
+	}
 	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
 	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
 		where = append(where, "buyer_id IN (?,?)")
@@ -398,10 +402,30 @@ func (o *Orders) SoftDeleteMissingForCookie(ctx context.Context, cookieID string
 
 // OrderStatusMap 将数字状态码转换为文本状态。
 var OrderStatusMap = map[string]string{
-	"paid": "pending_ship",
-	"1":    "processing", "2": "pending_ship", "3": "shipped", "4": "completed",
+	"paid": "pending_ship", "pending_delivery": "pending_ship",
+	"1": "processing", "2": "pending_ship", "3": "shipped", "4": "completed",
 	"5": "refunding", "6": "cancelled", "7": "refunding", "8": "cancelled",
 	"9": "refunding", "10": "cancelled", "11": "completed", "12": "cancelled",
+}
+
+// pendingShipStatuses 是库内可能出现的全部“待发货”存量取值：规范文本、历史 paid、平台数字码 2 与 pending_delivery 别名。
+// partial_success、partial_pending_finalize 表示部分发货，没有写入方且不得触发自动发货，故刻意不在此列。
+var pendingShipStatuses = []string{"pending_ship", "paid", "2", "pending_delivery"}
+
+// pendingShipStatusSQLList 返回待发货取值的 SQL 字面量列表（含括号），内容全部来自 pendingShipStatuses 常量，不含用户输入。
+func pendingShipStatusSQLList() string {
+	// quoted 保存逐项加单引号后的取值。
+	quoted := make([]string, 0, len(pendingShipStatuses))
+	// status 是待发货存量取值之一。
+	for _, status := range pendingShipStatuses {
+		quoted = append(quoted, "'"+status+"'")
+	}
+	return "(" + strings.Join(quoted, ",") + ")"
+}
+
+// IsPendingShipStatus 判断订单状态（含历史别名与数字码）是否表示付款后待发货。
+func IsPendingShipStatus(status string) bool {
+	return NormalizeOrderStatus(strings.TrimSpace(status)) == "pending_ship"
 }
 
 // NormalizeOrderStatus 数字码归一为文本。

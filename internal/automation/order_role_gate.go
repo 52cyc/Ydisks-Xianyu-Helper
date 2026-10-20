@@ -124,16 +124,31 @@ func (c *Center) authorizeWebSocketSellerTaskWithOrder(ctx context.Context, task
 	return task, true, "", nil
 }
 
-// isPendingShipOrder 判断本地订单是否仍处于付款后待发货阶段，并兼容同步接口写入的状态别名。
+// isPendingShipOrder 判断本地订单是否仍处于付款后待发货阶段；状态别名与数字码的归一规则统一由 db.IsPendingShipStatus 定义。
 func isPendingShipOrder(order *db.Order) bool {
 	if order == nil {
 		return false
 	}
-	switch db.NormalizeOrderStatus(strings.TrimSpace(order.OrderStatus)) {
-	case "pending_ship", "pending_delivery", "partial_success", "partial_pending_finalize":
-		return true
+	return db.IsPendingShipStatus(order.OrderStatus)
+}
+
+// paidDeliveryBlockedReason 判断订单是否已被证明不应再执行付款发货，返回空字符串表示可以继续。
+// 付款 WebSocket 事件本身不写入 pending_ship，订单状态可能仍是 unknown 或 processing，因此这里只拦截已发货、已完成、
+// 已取消、退款中和系统已发货的订单，不要求状态必须等于待发货；订单为 nil（本地尚无记录）时放行，由后续规则与幂等键兜底。
+func paidDeliveryBlockedReason(order *db.Order) string {
+	if order == nil {
+		return ""
+	}
+	if order.SystemShipped {
+		return "system_shipped"
+	}
+	// status 是归一后的订单状态，用于判断是否已越过待发货阶段。
+	status := db.NormalizeOrderStatus(strings.TrimSpace(order.OrderStatus))
+	switch status {
+	case "shipped", "completed", "cancelled", "refunding":
+		return "order_" + status
 	default:
-		return false
+		return ""
 	}
 }
 

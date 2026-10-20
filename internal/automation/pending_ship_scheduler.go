@@ -145,7 +145,7 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			}
 			afterOrderID = order.OrderID
 			// catchupReady、waitReason 保存当前订单是否已越过实时事件优先窗口及未放行原因。
-			catchupReady, waitReason := pendingShipCatchupReady(order, time.Now().UTC())
+			catchupReady, waitReason := pendingShipCatchupReady(order, s.observePendingShip(order.OrderID, time.Now().UTC()), time.Now().UTC(), s.pendingShipSettleWindowValue())
 			if !catchupReady {
 				s.center.logger.Info("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
 				continue
@@ -196,19 +196,63 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 }
 
 // pendingShipCatchupReady 判断已由候选查询确认阶段资格的订单能否安全转换为付款自动化事件。
-// 所有订单都必须先等待实时付款卡片窗口结束；砍价订单是否已完成免拼由查询层的阶段记录决定，兜底不得推断或调用免拼。
-func pendingShipCatchupReady(order db.Order, now time.Time) (bool, string) {
-	// observedAt 保存本地最后一次观测到待发货事实的时间；优先使用更新时间以覆盖订单同步和事件写入两种来源。
-	observedAt := parseDBTime(firstNonEmpty(order.UpdatedAt, order.PaidAt, order.CreatedAt))
+// 所有订单都必须先等待实时付款卡片窗口结束；窗口从扫描器首次观测到该候选订单起算，不使用 updated_at，
+// 因此订单被反复同步或写入不会无限推迟兜底。若已有 paid_at（付款事件时间）则取更晚者，砍价订单是否已完成免拼由查询层的阶段记录决定，兜底不得推断或调用免拼。
+func pendingShipCatchupReady(order db.Order, firstSeen, now time.Time, window time.Duration) (bool, string) {
+	// observedAt 是等待窗口的起点：首次观测时间，且不早于已记录的付款时间。
+	observedAt := firstSeen
+	// paidAt 保存订单已记录的付款时间，解析失败时为零值。
+	if paidAt := parseDBTime(order.PaidAt); paidAt.After(observedAt) {
+		observedAt = paidAt
+	}
 	if observedAt.IsZero() {
 		return false, "missing_observed_time"
 	}
-	// settleDeadline 是实时付款系统卡片应优先完成处理的截止时刻。
-	settleDeadline := observedAt.Add(defaultPendingShipSettleWindow)
-	if now.Before(settleDeadline) {
+	if now.Before(observedAt.Add(window)) {
 		return false, "waiting_for_realtime_payment_event"
 	}
 	return true, ""
+}
+
+// pendingShipSettleWindowValue 返回生效的实时付款卡片等待窗口；零值使用默认值，负值表示不等待。
+func (s *Scheduler) pendingShipSettleWindowValue() time.Duration {
+	if s == nil || s.pendingShipSettleWindow == 0 {
+		return defaultPendingShipSettleWindow
+	}
+	if s.pendingShipSettleWindow < 0 {
+		return 0
+	}
+	return s.pendingShipSettleWindow
+}
+
+// observePendingShip 记录候选订单在本轮扫描被观测到，并返回其连续出现的首次观测时间。
+// 订单缺席超过 pendingShipObservationGap 后重新出现视为再次进入待发货并重新计时；条目过多时顺带清理长期缺席者。
+func (s *Scheduler) observePendingShip(orderID string, now time.Time) time.Time {
+	if s == nil {
+		return now
+	}
+	s.pendingShipMu.Lock()
+	defer s.pendingShipMu.Unlock()
+	if s.pendingShipObserved == nil {
+		// pendingShipObserved 延迟初始化，兼容测试或历史调用方直接构造 Scheduler 的场景。
+		s.pendingShipObserved = make(map[string]pendingShipObservation)
+	}
+	// entry、known 是该订单已有的观测记录及其是否存在。
+	entry, known := s.pendingShipObserved[orderID]
+	if !known || now.Sub(entry.last) > pendingShipObservationGap {
+		entry = pendingShipObservation{first: now}
+	}
+	entry.last = now
+	s.pendingShipObserved[orderID] = entry
+	if len(s.pendingShipObserved) > 1024 {
+		// key、item 是观测表中的订单号与记录，长期缺席的条目不再可能连续计时。
+		for key, item := range s.pendingShipObserved {
+			if now.Sub(item.last) > pendingShipObservationGap {
+				delete(s.pendingShipObserved, key)
+			}
+		}
+	}
+	return entry.first
 }
 
 // pendingShipResumeFrozenPlan 从运行的原始事件快照恢复冻结的动作计划，并判定能否自动续跑。

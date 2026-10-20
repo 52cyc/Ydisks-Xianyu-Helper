@@ -116,7 +116,7 @@ func TestPendingShipDeliveryScanGapBranches(t *testing.T) {
 		catchupAccount(t, store, admin.ID, account)
 		catchupRule(t, store, admin.ID, account, "item-gap", []db.AutomationActionInput{catchupCardAction(catchupCard(t, store, admin.ID))})
 		catchupOrder(t, store, account, "o-"+account, "item-gap", "chat-"+account)
-		return &Scheduler{center: New(store, ready(account), nil), pendingShipCooldown: map[string]time.Time{}}, store
+		return &Scheduler{center: New(store, ready(account), nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}, store
 	}
 
 	t.Run("入口前预算已耗尽", func(t *testing.T) {
