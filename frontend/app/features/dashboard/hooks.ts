@@ -18,6 +18,7 @@ export type UseDashboardResult = {
   /** maxProductSales 表示最大商品销量。 */ maxProductSales: number;
   /** trendPercent 表示趋势Percent。 */ trendPercent: string | null;
   /** selectedRangeLabel 表示选中范围Label。 */ selectedRangeLabel: string;
+  /** dataRangeLabel 表示当前展示的经营数据实际所属的范围名称，范围切换未成功时仍是旧范围。 */ dataRangeLabel: string;
   /** rangeStale 表示当前展示的经营数据属于先前选择的范围，新范围尚未加载成功（加载中或失败）。 */ rangeStale: boolean;
   /** refresh 表示刷新函数。 */ refresh: () => void;
 };
@@ -39,7 +40,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
   const [overview, setOverview] = useState<Pick<DashboardData, 'stats' | 'items' | 'itemNames'> | null>(null);
   // [rangeData, 解构得到当前 Hook 返回的状态和操作函数。
   // rangeData 同时记录这批数据对应的范围选择键 key，范围切换后据此识别旧数据。
-  const [rangeData, setRangeData] = useState<(Pick<DashboardData, 'analytics' | 'previousAnalytics' | 'validOrders' | 'dateRange'> & { /** key 是该批数据对应的范围选择键。 */ key: string }) | null>(null);
+  const [rangeData, setRangeData] = useState<(Pick<DashboardData, 'analytics' | 'previousAnalytics' | 'validOrders' | 'dateRange'> & { /** key 是该批数据对应的范围选择键。 */ key: string; /** selection 是该批数据对应的范围选择，用于生成准确的范围标题。 */ selection: DashboardRangeSelection }) | null>(null);
   // [status, 解构得到当前 Hook 返回的状态和操作函数。
   const [status, setStatus] = useState<DashboardStatus>({ overview: 'idle', range: 'idle', error: '' });
   // [refreshKey, 解构得到当前 Hook 返回的状态和操作函数。
@@ -106,7 +107,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
       getValidOrders({ start_date: dateRange.startDate, end_date: dateRange.endDate }, { signal: controller.signal }),
     ]).then(/* 当前回调处理用户交互或异步状态变化。 */ ([analytics, previousAnalytics, validOrders]) => {
       if (!isCurrentDashboardRequest(requestSequence.current, sequence, controller.signal)) return;
-      setRangeData({ analytics, previousAnalytics, validOrders, dateRange, key: selectionKey({ range, customStartDate, customEndDate }) });
+      setRangeData({ analytics, previousAnalytics, validOrders, dateRange, key: selectionKey({ range, customStartDate, customEndDate }), selection: { range, customStartDate, customEndDate } });
       setStatus(/* 当前回调处理用户交互或异步状态变化。 */ current => ({ ...current, range: 'success' }));
     }).catch(/* 当前回调处理用户交互或异步状态变化。 */ error => {
       if (!isCurrentDashboardRequest(requestSequence.current, sequence, controller.signal) || isAbortError(error)) return;
@@ -121,7 +122,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
     () => {
       if (!overview || !rangeData) return null;
       // key 仅用于范围归属判断，不进入页面数据模型。
-      const { key: _key, ...visibleRange } = rangeData;
+      const { key: _key, selection: _selection, ...visibleRange } = rangeData;
       return { ...overview, ...visibleRange };
     },
     [overview, rangeData],
@@ -157,6 +158,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
     maxProductSales,
     trendPercent: getTrendPercent(analytics, data?.previousAnalytics || null),
     selectedRangeLabel: getRangeLabel(rangeSelection),
+    dataRangeLabel: getRangeLabel(rangeData?.selection || rangeSelection),
     rangeStale: rangeData !== null && rangeData.key !== selectionKey(rangeSelection),
     refresh,
   };

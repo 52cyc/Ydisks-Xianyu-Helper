@@ -81,7 +81,7 @@ const Dashboard: React.FC = () => {
   // dashboard 仪表盘数据。
   const dashboard = useDashboard({ range: appliedRange.range, customStartDate: appliedRange.startDate, customEndDate: appliedRange.endDate });
   // { 解构得到当前 Hook 返回的状态和操作函数。
-  const { data, status, chartData, productSalesData, sourceData: sourceDataData, categoryData: categoryDataData, maxProductSales, trendPercent, selectedRangeLabel, rangeStale, refresh } = dashboard;
+  const { data, status, chartData, productSalesData, sourceData: sourceDataData, categoryData: categoryDataData, maxProductSales, trendPercent, selectedRangeLabel, dataRangeLabel, rangeStale, refresh } = dashboard;
   // selectRange 处理范围标签点击：预设范围立即生效，自定义标签只切换输入区。
   const selectRange = (/* key 是被点击的范围标签。 */ key: TimeRange) => {
     setTimeRange(key);
@@ -169,9 +169,9 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {rangeStale && !ordersLoading && (
+      {rangeStale && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-          当前页面展示的是先前所选范围的数据，「{selectedRangeLabel}」尚未加载成功。
+          当前页面展示的是「{dataRangeLabel}」的数据，「{selectedRangeLabel}」{ordersLoading ? '正在加载' : '尚未加载成功'}。
         </div>
       )}
       {loadError && (
@@ -263,7 +263,7 @@ const Dashboard: React.FC = () => {
         />
       </div>
 
-      <DashboardTrendChart chartData={chartData} selectedRangeLabel={selectedRangeLabel} totalAmount={totalAmount} />
+      <DashboardTrendChart chartData={chartData} selectedRangeLabel={dataRangeLabel} totalAmount={totalAmount} />
 
       {/* 商品销量排行和订单来源分布 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

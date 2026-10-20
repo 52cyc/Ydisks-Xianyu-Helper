@@ -250,3 +250,80 @@ func TestResumedPaidRunWithProgressStopsWhenOrderCancelledOrRefunding(t *testing
 		})
 	}
 }
+
+// TestPaidRunMayResumeOnBlockedOrder 验证订单被门禁拦截时，只有已发货类订单且剩余动作为空或仅有确认发货才允许继续。
+func TestPaidRunMayResumeOnBlockedOrder(t *testing.T) {
+	// card 是发卡动作。
+	card := db.AutomationAction{ActionType: ActionSendCard, Enabled: true}
+	// confirm 是平台侧幂等的确认发货动作。
+	confirm := db.AutomationAction{ActionType: ActionConfirmShipment, Enabled: true}
+	// cases 覆盖各拦截原因与剩余动作组合。
+	cases := []struct {
+		// name 是用例名称。
+		name string
+		// reason 是门禁原因。
+		reason string
+		// cursor 是运行已完成的动作游标。
+		cursor int
+		// actions 是完整动作计划。
+		actions []db.AutomationAction
+		// want 表示是否允许继续。
+		want bool
+	}{
+		{"已发货仅剩确认发货", "order_shipped", 1, []db.AutomationAction{card, confirm}, true},
+		{"已完成无剩余动作", "order_completed", 2, []db.AutomationAction{card, confirm}, true},
+		{"系统已发货仅剩确认发货", "system_shipped", 1, []db.AutomationAction{card, confirm}, true},
+		{"已发货仍有发卡", "order_shipped", 0, []db.AutomationAction{card, confirm}, false},
+		{"部分发货不放行", "order_partial_success", 2, []db.AutomationAction{card, confirm}, false},
+		{"部分发货待收口不放行", "order_partial_pending_finalize", 1, []db.AutomationAction{card, confirm}, false},
+		{"已取消不放行", "order_cancelled", 2, []db.AutomationAction{card, confirm}, false},
+		{"退款中不放行", "order_refunding", 1, []db.AutomationAction{card, confirm}, false},
+	}
+	// testCase 是当前待验证的组合。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// got 保存被测函数对当前组合给出的放行结论。
+			if got := paidRunMayResumeOnBlockedOrder(testCase.reason, &db.AutomationRun{ActionCursor: testCase.cursor}, testCase.actions); got != testCase.want {
+				t.Fatalf("paidRunMayResumeOnBlockedOrder=%v want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestResumedPaidRunWithRemainingCardStopsWhenOrderAlreadyShipped 验证订单已越过待发货阶段且仍有发卡动作时，恢复运行转人工核对而不重复发卡。
+func TestResumedPaidRunWithRemainingCardStopsWhenOrderAlreadyShipped(t *testing.T) {
+	// status 依次覆盖已发货、已完成与部分发货状态。
+	for _, status := range []string{"shipped", "completed", "partial_success", "partial_pending_finalize"} {
+		t.Run(status, func(t *testing.T) {
+			// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。
+			fixture, cleanup := newPaidGateFixture(t)
+			defer cleanup()
+			// ctx 限定本测试内的同步调用。
+			ctx := context.Background()
+			// orderID 是当前状态对应的订单号。
+			orderID := "gate-remaining-" + status
+			fixture.seedOrder(t, orderID, status, false)
+			// runID 是游标尚未越过发卡动作但已有发送计数的运行。
+			runID := catchupRun(t, fixture.store, fixture.ruleID, "gate-acc", orderID, "{}")
+			// execErr 保存构造运行进度的数据库错误。
+			if _, execErr := fixture.store.DB.ExecContext(ctx, `UPDATE automation_runs SET action_cursor=0,sent_count=1 WHERE id=?`, runID); execErr != nil {
+				t.Fatal(execErr)
+			}
+			// task 携带运行 ID，模拟恢复链路继续执行。
+			task := paidTask(orderID)
+			task.Raw = map[string]any{"automation_run_id": runID}
+			// handleErr 保存恢复任务处理结果。
+			if handleErr := fixture.center.HandleTask(ctx, task); handleErr != nil {
+				t.Fatalf("应安全收口: %v", handleErr)
+			}
+			// run、getErr 是处理后的运行状态。
+			run, getErr := fixture.store.Automation.GetRun(ctx, runID)
+			if getErr != nil || run.Status != "needs_review" {
+				t.Fatalf("应转人工核对: run=%+v err=%v", run, getErr)
+			}
+			if len(fixture.sender.texts) != 0 {
+				t.Fatalf("不应再次发送内容: %v", fixture.sender.texts)
+			}
+		})
+	}
+}

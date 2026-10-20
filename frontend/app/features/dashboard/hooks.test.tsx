@@ -109,6 +109,8 @@ describe('useDashboard', /* 当前回调处理仪表盘并行请求和派生数�
     );
     expect(hook.result.current.data).not.toBeNull();
     expect(hook.result.current.rangeStale).toBe(true);
+    expect(hook.result.current.dataRangeLabel).toBe('今天');
+    expect(hook.result.current.selectedRangeLabel).toBe('7天内');
   });
 
   test('自定义日期倒置时阻断范围请求并提示错误', /* 当前回调验证日期范围校验错误分支。 */ async () => {
