@@ -212,3 +212,41 @@ func TestResumedPaidRunWithoutProgressIsCanceledWhenOrderEnded(t *testing.T) {
 		t.Fatalf("已有进度的运行不应被门禁取消: run=%+v err=%v", progressRun, progressErr)
 	}
 }
+
+// TestResumedPaidRunWithProgressStopsWhenOrderCancelledOrRefunding 验证发卡后订单被取消或退款时，延迟恢复的运行转人工核对且不再执行任何外部动作。
+func TestResumedPaidRunWithProgressStopsWhenOrderCancelledOrRefunding(t *testing.T) {
+	// status 依次覆盖取消与退款两种不可继续确认发货的订单终态。
+	for _, status := range []string{"cancelled", "refunding"} {
+		t.Run(status, func(t *testing.T) {
+			// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。
+			fixture, cleanup := newPaidGateFixture(t)
+			defer cleanup()
+			// ctx 限定本测试内的同步调用。
+			ctx := context.Background()
+			// orderID 是当前状态对应的订单号。
+			orderID := "gate-progress-" + status
+			fixture.seedOrder(t, orderID, status, false)
+			// runID 是已完成发卡动作、等待延迟后续动作的运行。
+			runID := catchupRun(t, fixture.store, fixture.ruleID, "gate-acc", orderID, "{}")
+			// err 保存当前调用返回的错误，非空时测试立即失败。
+			if _, err := fixture.store.DB.ExecContext(ctx, `UPDATE automation_runs SET action_cursor=1,sent_count=1 WHERE id=?`, runID); err != nil {
+				t.Fatal(err)
+			}
+			// task 携带运行 ID，模拟延迟任务到期继续执行。
+			task := paidTask(orderID)
+			task.Raw = map[string]any{"automation_run_id": runID}
+			// handleErr 保存延迟任务处理结果，订单已结束时应为空表示安全收口。
+			if handleErr := fixture.center.HandleTask(ctx, task); handleErr != nil {
+				t.Fatalf("订单已结束的延迟任务应被安全收口: %v", handleErr)
+			}
+			// run、getErr 是处理后的运行状态。
+			run, getErr := fixture.store.Automation.GetRun(ctx, runID)
+			if getErr != nil || run.Status != "needs_review" || run.SentCount != 1 {
+				t.Fatalf("已有进度的运行应转人工核对并保留发送计数: run=%+v err=%v", run, getErr)
+			}
+			if len(fixture.sender.texts) != 0 {
+				t.Fatalf("人工核对的运行不应继续发送内容: %v", fixture.sender.texts)
+			}
+		})
+	}
+}

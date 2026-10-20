@@ -89,6 +89,28 @@ describe('useDashboard', /* 当前回调处理仪表盘并行请求和派生数�
     );
   });
 
+  test('切换范围后请求失败时标记展示数据属于旧范围', /* 当前回调验证范围切换失败后旧数据不会被当作新范围数据。 */ async () => {
+    // initialProps 是 Hook 当前选择的时间范围，随 rerender 切换。
+    const hook = renderHook(
+      // renderWithOptions 按传入范围渲染仪表盘 Hook。
+      (options: UseDashboardOptions) => useDashboard(options),
+      { initialProps: dashboardOptions },
+    );
+    await waitFor(
+      // firstRangeAssertion 等待首个范围加载成功。
+      () => expect(hook.result.current.status.range).toBe('success'),
+    );
+    expect(hook.result.current.rangeStale).toBe(false);
+    getAnalyticsMock.mockRejectedValue(new Error('切换范围失败'));
+    hook.rerender({ range: '7days', customStartDate: '', customEndDate: '' });
+    await waitFor(
+      // failedRangeAssertion 等待新范围请求失败。
+      () => expect(hook.result.current.status.range).toBe('error'),
+    );
+    expect(hook.result.current.data).not.toBeNull();
+    expect(hook.result.current.rangeStale).toBe(true);
+  });
+
   test('自定义日期倒置时阻断范围请求并提示错误', /* 当前回调验证日期范围校验错误分支。 */ async () => {
     // invalidOptions 是开始日期晚于结束日期的非法范围参数。
     const invalidOptions: UseDashboardOptions = { range: 'custom', customStartDate: '2026-08-20', customEndDate: '2026-08-01' };

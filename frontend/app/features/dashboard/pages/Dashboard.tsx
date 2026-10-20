@@ -81,7 +81,7 @@ const Dashboard: React.FC = () => {
   // dashboard 仪表盘数据。
   const dashboard = useDashboard({ range: appliedRange.range, customStartDate: appliedRange.startDate, customEndDate: appliedRange.endDate });
   // { 解构得到当前 Hook 返回的状态和操作函数。
-  const { data, status, chartData, productSalesData, sourceData: sourceDataData, categoryData: categoryDataData, maxProductSales, trendPercent, selectedRangeLabel, refresh } = dashboard;
+  const { data, status, chartData, productSalesData, sourceData: sourceDataData, categoryData: categoryDataData, maxProductSales, trendPercent, selectedRangeLabel, rangeStale, refresh } = dashboard;
   // selectRange 处理范围标签点击：预设范围立即生效，自定义标签只切换输入区。
   const selectRange = (/* key 是被点击的范围标签。 */ key: TimeRange) => {
     setTimeRange(key);
@@ -169,6 +169,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fade-in">
+      {rangeStale && !ordersLoading && (
+        <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          当前页面展示的是先前所选范围的数据，「{selectedRangeLabel}」尚未加载成功。
+        </div>
+      )}
       {loadError && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{loadError}</span>

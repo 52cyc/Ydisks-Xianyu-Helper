@@ -18,8 +18,12 @@ export type UseDashboardResult = {
   /** maxProductSales 表示最大商品销量。 */ maxProductSales: number;
   /** trendPercent 表示趋势Percent。 */ trendPercent: string | null;
   /** selectedRangeLabel 表示选中范围Label。 */ selectedRangeLabel: string;
+  /** rangeStale 表示当前展示的经营数据属于先前选择的范围，新范围尚未加载成功（加载中或失败）。 */ rangeStale: boolean;
   /** refresh 表示刷新函数。 */ refresh: () => void;
 };
+
+/** 生成时间范围选择的稳定键，用于判断已加载的经营数据是否仍属于当前选择。 */
+const selectionKey = (selection: DashboardRangeSelection): string => `${selection.range}|${selection.customStartDate}|${selection.customEndDate}`;
 
 /** 判断请求错误是否来自用户主动取消。 */
 const isAbortError = (error: unknown): boolean => error instanceof Error && error.message === '请求已取消';
@@ -34,7 +38,8 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
   // [overview, 解构得到当前 Hook 返回的状态和操作函数。
   const [overview, setOverview] = useState<Pick<DashboardData, 'stats' | 'items' | 'itemNames'> | null>(null);
   // [rangeData, 解构得到当前 Hook 返回的状态和操作函数。
-  const [rangeData, setRangeData] = useState<Pick<DashboardData, 'analytics' | 'previousAnalytics' | 'validOrders' | 'dateRange'> | null>(null);
+  // rangeData 同时记录这批数据对应的范围选择键 key，范围切换后据此识别旧数据。
+  const [rangeData, setRangeData] = useState<(Pick<DashboardData, 'analytics' | 'previousAnalytics' | 'validOrders' | 'dateRange'> & { /** key 是该批数据对应的范围选择键。 */ key: string }) | null>(null);
   // [status, 解构得到当前 Hook 返回的状态和操作函数。
   const [status, setStatus] = useState<DashboardStatus>({ overview: 'idle', range: 'idle', error: '' });
   // [refreshKey, 解构得到当前 Hook 返回的状态和操作函数。
@@ -101,7 +106,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
       getValidOrders({ start_date: dateRange.startDate, end_date: dateRange.endDate }, { signal: controller.signal }),
     ]).then(/* 当前回调处理用户交互或异步状态变化。 */ ([analytics, previousAnalytics, validOrders]) => {
       if (!isCurrentDashboardRequest(requestSequence.current, sequence, controller.signal)) return;
-      setRangeData({ analytics, previousAnalytics, validOrders, dateRange });
+      setRangeData({ analytics, previousAnalytics, validOrders, dateRange, key: selectionKey({ range, customStartDate, customEndDate }) });
       setStatus(/* 当前回调处理用户交互或异步状态变化。 */ current => ({ ...current, range: 'success' }));
     }).catch(/* 当前回调处理用户交互或异步状态变化。 */ error => {
       if (!isCurrentDashboardRequest(requestSequence.current, sequence, controller.signal) || isAbortError(error)) return;
@@ -113,7 +118,12 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
   // data 数据。
   const data = useMemo<DashboardData | null>(
     // dashboardData 只有在概览和时间范围请求都成功后才对页面可见。
-    () => overview && rangeData ? { ...overview, ...rangeData } : null,
+    () => {
+      if (!overview || !rangeData) return null;
+      // key 仅用于范围归属判断，不进入页面数据模型。
+      const { key: _key, ...visibleRange } = rangeData;
+      return { ...overview, ...visibleRange };
+    },
     [overview, rangeData],
   );
   // itemNames 商品Names，负责当前功能中的对应处理。
@@ -147,6 +157,7 @@ export const useDashboard = (options: UseDashboardOptions): UseDashboardResult =
     maxProductSales,
     trendPercent: getTrendPercent(analytics, data?.previousAnalytics || null),
     selectedRangeLabel: getRangeLabel(rangeSelection),
+    rangeStale: rangeData !== null && rangeData.key !== selectionKey(rangeSelection),
     refresh,
   };
 };

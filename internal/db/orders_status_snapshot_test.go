@@ -86,3 +86,19 @@ func TestOrderUpsertRefundWithdrawnRestoresPendingShipOnlyFromSnapshot(t *testin
 		t.Fatalf("迟到事件不应改写已取消订单，got %q", got)
 	}
 }
+
+// TestShouldUpdateOrderStatusKeepsPartialDeliveryStates 验证部分发货状态不会被迟到的待发货类事件回退，但仍可推进到已发货。
+func TestShouldUpdateOrderStatusKeepsPartialDeliveryStates(t *testing.T) {
+	// current 依次覆盖两个部分发货状态。
+	for _, current := range []string{"partial_success", "partial_pending_finalize"} {
+		// incoming 是迟到的早期阶段事件，不得覆盖当前状态。
+		for _, incoming := range []string{"processing", "paid", "pending_ship"} {
+			if shouldUpdateOrderStatus(current, incoming, false) || shouldUpdateOrderStatus(current, incoming, true) {
+				t.Fatalf("%s 不应被 %s 回退", current, incoming)
+			}
+		}
+		if !shouldUpdateOrderStatus(current, "shipped", false) {
+			t.Fatalf("%s 应允许推进到 shipped", current)
+		}
+	}
+}

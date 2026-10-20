@@ -430,7 +430,9 @@ func shouldUpdateOrderStatus(current, incoming string, platformSnapshot bool) bo
 	// early 用于本次流程后续判断的early
 	early := incoming == "processing" || incoming == "paid" || incoming == "pending_ship"
 	// advanced 用于本次流程后续判断的advanced
-	advanced := current == "shipped" || current == "completed" || current == "refunding" || current == "cancelled"
+	// 部分发货状态与付款门禁（paidDeliveryBlockedReason）语义一致：已有发货副作用，迟到的待发货事件不得回退并再次触发发卡。
+	advanced := current == "shipped" || current == "completed" || current == "refunding" || current == "cancelled" ||
+		current == "partial_success" || current == "partial_pending_finalize"
 	if early && advanced {
 		return false
 	}

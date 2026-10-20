@@ -240,6 +240,27 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 			r.logger.Info("订单已不再待发货，取消尚未执行动作的付款运行", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
 			return preparedTask, nil, true, nil
 		}
+		if blockedReason == "order_cancelled" || blockedReason == "order_refunding" {
+			// 已有发货进度的运行遇到订单取消或退款时，剩余的发卡、模板与确认发货都不应再执行；
+			// 已发出的内容需要人工核对，因此停止自动重放并发送独立的人工处理通知。
+			reason := "订单状态为 " + blockedReason + "，付款发货已有进度，已停止自动重放，请人工核对"
+			// quarantineCtx 保证人工核对状态在请求取消后仍能落库。
+			quarantineCtx, quarantineCancel := newAutomationRunCompensationContext(ctx)
+			// quarantineErr 保存人工核对状态写入错误；失败时延期重试，不放行外部动作。
+			quarantineErr := r.store.Automation.QuarantineRunResult(quarantineCtx, existingRun.ID, existingRun.AttemptCount, existingRun.SentCount, reason)
+			quarantineCancel()
+			if quarantineErr != nil {
+				return Task{}, nil, false, &preparationError{err: fmt.Errorf("订单已结束且付款运行已有进度，保存人工核对状态失败: %w", quarantineErr)}
+			}
+			r.logger.Warn("订单已结束但付款运行已有进度，转人工核对", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
+			if r.hasNotifier() {
+				// notifyCtx 保证人工核对通知在请求取消后仍能进入通知链路。
+				notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+				r.notifyResult(notifyCtx, preparedTask, existingRun.ID, "needs_review", existingRun.SentCount, reason)
+				notifyCancel()
+			}
+			return preparedTask, nil, true, nil
+		}
 		// 恢复快照不能借用其他账号或订单的运行检查点；外部动作前还会按数据库中的运行归属再次防御。
 		if existingRun.CookieID != preparedTask.AccountID || existingRun.OrderID != preparedTask.OrderID {
 			return Task{}, nil, false, db.ErrForbidden
