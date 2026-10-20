@@ -211,7 +211,7 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 			ItemSinglePublish: ports.ItemSinglePublish, ItemBatchPreview: ports.ItemBatchPreview,
 			ItemBatchManagement: ports.ItemBatchManagement, ItemCategoryRecommendation: ports.ItemCategoryRecommendation,
 			ItemBatchPreviewPersistence: ports.ItemBatchPreviewPersistence, ItemBatchLocalPublish: ports.ItemBatchLocalPublish,
-			ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation, ItemLinkImport: ports.ItemLinkImport,
+			ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation, ItemLinkImport: ports.ItemLinkImport, ItemAISettings: ports.ItemAISettings,
 			AccountLogin:        accountLoginTransport{service: ports.AccountLogin},
 			QRLogin:             qrLoginTransport{service: ports.QRLogin},
 			SessionRecovery:     sessionRecoveryTransport{handler: sessionRecovery},
@@ -222,7 +222,7 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 			UncertainNotifications: ports.UncertainNotifications, NotificationChannels: ports.NotificationChannels,
 			Analytics: ports.Analytics, AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, DeliveryTemplates: ports.DeliveryTemplates,
 			Cards: ports.Cards, Fulfillment: ports.Fulfillment, APIRequestTester: ports.APICardTester, PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies,
-			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin, DataBackup: base.DataBackup,
+			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs, DataBackup: base.DataBackup,
 		}),
 	}, nil
 }

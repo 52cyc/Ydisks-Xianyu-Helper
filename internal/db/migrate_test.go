@@ -41,6 +41,8 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"cards", "image_url"},
 		{"cards", "delay_seconds"},
 		{"keywords", "item_id"},
+		{"keywords", "keyword_expressions"},
+		{"keywords", "match_type"},
 		{"item_info", "multi_quantity_delivery"},
 		{"item_info", "deleted_at"},
 		{"automation_rules", "deleted_at"},
@@ -76,6 +78,7 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"order_reconciliations", "idempotency_key"},
 		{"security_audit_logs", "keys_json"},
 		{"security_audit_logs", "outcome"},
+		{"ai_reply_settings", "ai_mode"},
 	}
 	// c 表示当前遍历过程中的c
 	for _, c := range checks {
@@ -200,9 +203,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if enabledAutoConsign != 1 || disabledAutoConsign != 0 {
 		t.Fatalf("迁移回填 auto_consign 错误: enabled=%d disabled=%d", enabledAutoConsign, disabledAutoConsign)
 	}
-	// finalVersion、versionErr 验证升级包含 fork 既有迁移及顺延后的自动免拼与砍价阶段迁移。
+	// finalVersion、versionErr 验证升级已包含当前全部迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 56 {
+	if versionErr != nil || finalVersion != 59 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
@@ -218,7 +221,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 }
 
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到包含 fork 迁移 00038-00054 与顺延后上游砍价迁移 00055-00056 的最终版本。
+// 聊天迁移可以原样升级到保留 fork 00038–00056 和新增上游 00057–00059 的最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -262,7 +265,7 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续至合并后 00056 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至合并后 00059 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
@@ -288,13 +291,16 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到顺延后砍价阶段语义的 00056，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到顺延后的关键词多表达式迁移 00059，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 56 {
-		t.Fatalf("final migration version=%d, want 56", finalVersion)
+	if finalVersion != 59 {
+		t.Fatalf("final migration version=%d, want 59", finalVersion)
+	}
+	if !columnExists(t, rawDB, "keywords", "keyword_expressions") || !columnExists(t, rawDB, "keywords", "match_type") {
+		t.Fatal("keywords should include expression collection and match type columns")
 	}
 	if !columnExists(t, rawDB, "account_task_runs", "attempt_count") {
 		t.Fatal("account_task_runs should include the retry attempt counter")
@@ -437,10 +443,17 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 		{"chat_messages", "media_duration"},
 		{"notification_outbox", "uncertain_at"},
 		{"automation_runs", "delivery_proof"},
+		{"keywords", "keyword_expressions"},
+		{"keywords", "match_type"},
 	} {
 		if !columnExists(t, d, c.table, c.col) {
 			t.Fatalf("column missing after re-up: %s.%s", c.table, c.col)
 		}
+	}
+	// finalVersion、versionErr 验证完整回滚后重新升级仍到达最新迁移 00059。
+	finalVersion, versionErr := goose.GetDBVersion(d)
+	if versionErr != nil || finalVersion != 59 {
+		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	// val 用于本次流程后续判断的val
 	var val string

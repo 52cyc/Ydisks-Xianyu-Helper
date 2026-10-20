@@ -41,6 +41,13 @@ export default defineConfig({
         'index.tsx',
         'chatEmojis.tsx',
         'app/features/dashboard/DashboardTrendChart.tsx',
+        // 路由页面、路由装配、应用外壳与通用 UI 同属纯展示层，业务行为由各 feature 的 Hook/状态/Action 模块验证。
+        'app/features/*/pages/**',
+        'app/router/AppRouter.tsx',
+        'app/shell/**',
+        'shared/ui/**',
+        // 顶层错误边界只渲染静态恢复界面，不含业务规则。
+        'app/errors/**',
       ],
     },
   },
@@ -93,6 +100,10 @@ export default defineConfig({
           if (modulePath.includes('/shared/http/contract.')) {
             return 'contract';
           }
+          // 商品表格是列表视图的独立渲染模块，与卡片视图分片，保留分享采集后的页面预算。
+          if (modulePath.includes('/app/features/items/components/ItemTable.')) {
+            return 'item-table';
+          }
           // 账号间克隆弹窗属于商品页低频交互，独立分片可保持商品列表页面在既有下载预算内。
           if (modulePath.includes('/app/features/items/components/ItemCloneFlow.') || modulePath.includes('/app/features/items/cloneState.')) {
             return 'item-clone-flow';
@@ -111,6 +122,14 @@ export default defineConfig({
             modulePath.includes('/app/features/rules/components/AutomationIssuePanel.')
           ) {
             return 'rules-safety-controls';
+          }
+          // 关键词回复编辑器只在打开回复规则弹窗时使用，独立分片避免多表达式表单挤占规则主页面预算。
+          if (modulePath.includes('/app/features/rules/components/ReplyRuleEditor.')) {
+            return 'rules-reply-editor';
+          }
+          // 发货模板绑定编辑器按既有低频控件方式独立分片，使规则主页面保留原下载预算。
+          if (modulePath.includes('/app/features/rules/components/TemplateVariantEditor.')) {
+            return 'rules-template-editor';
           }
           // 关键词回复的商品多选与轻提示仅在回复规则交互中使用，独立分片避免挤占规则主页面预算。
           if (

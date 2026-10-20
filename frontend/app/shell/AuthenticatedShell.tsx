@@ -43,6 +43,8 @@ const Dashboard = lazy(/* Dashboard 页面按路由激活时加载。 */ () => i
 const AccountList = lazy(/* AccountList 页面按路由激活时加载。 */ () => import('../features/accounts/pages/AccountList'));
 // OrderList 是按需加载的订单页面，避免首屏载入订单导入与刷新代码。
 const OrderList = lazy(/* OrderList 页面按路由激活时加载。 */ () => import('../features/orders/pages/OrderList'));
+// SalesStats 是按需加载的销售统计页面，避免首屏载入图表代码。
+const SalesStats = lazy(/* SalesStats 页面按路由激活时加载。 */ () => import('../features/sales/pages/SalesStats'));
 // CardList 是按需加载的卡密页面，避免首屏载入卡密批量处理代码。
 const CardList = lazy(/* CardList 页面按路由激活时加载。 */ () => import('../features/cards/pages/CardList'));
 // Fulfillment 是按需加载的多实例卡速售货源管理页。
@@ -53,6 +55,8 @@ const ItemList = lazy(/* ItemList 页面按路由激活时加载。 */ () => imp
 const PublishSpecsEditor = lazy(/* 规格编辑器随商品页面路由加载。 */ () => import('../features/items/components/PublishSpecsEditor').then(/* module 提供规格编辑器的具名导出。 */ module => ({ default: module.PublishSpecsEditor })));
 // PublishImagesEditor 在商品页面中按需加载，避免图片编辑交互增大商品主分片。
 const PublishImagesEditor = lazy(/* 图片编辑器随商品页面路由加载。 */ () => import('../features/items/components/PublishImagesEditor').then(/* module 提供图片编辑器的具名导出。 */ module => ({ default: module.PublishImagesEditor })));
+// ItemAISettingsModal 在商品页面中按需加载，保持商品主分片在预算内。
+const ItemAISettingsModal = lazy(/* 商品 AI 弹窗随商品页面路由加载。 */ () => import('../features/items/components/ItemAISettingsModal').then(/* module 提供商品 AI 弹窗的具名导出。 */ module => ({ default: module.ItemAISettingsModal })));
 // Settings 是按需加载的系统设置页面，仅在管理员访问时加载。
 const Settings = lazy(/* Settings 页面按路由激活时加载。 */ () => import('../features/settings/pages/Settings'));
 // Rules 是按需加载的自动化规则页面，避免首屏载入规则编辑器代码。
@@ -67,6 +71,8 @@ const DataBackup = lazy(/* DataBackup 页面按路由激活时加载。 */ () =>
 const LiveLogs = lazy(/* LiveLogs 页面按路由激活时加载，避免普通页面初始化轮询。 */ () => import('../features/logs/pages/LiveLogs'));
 // Chat 是按需加载的聊天页面，避免未访问时载入聊天历史和 WebSocket 视图。
 const Chat = lazy(/* Chat 页面按路由激活时加载。 */ () => import('../features/chat/pages/Chat'));
+// RuntimeLogs 是按需加载的运行日志页面，仅在管理员访问时加载，避免普通用户下载诊断代码。
+const RuntimeLogs = lazy(/* RuntimeLogs 页面按路由激活时加载。 */ () => import('../features/logs/pages/RuntimeLogs'));
 
 // PageLoading 展示路由页面代码加载期间的统一占位状态。
 const PageLoading: React.FC = () => (
@@ -113,9 +119,10 @@ export const AppContent: React.FC<AppContentProps> = ({
       case 'accounts': return <AccountList />;
       case 'chat': return <Chat />;
       case 'orders': return <OrderList />;
+      case 'sales': return <SalesStats />;
       case 'cards': return <CardList />;
       case 'fulfillment': return <Fulfillment />;
-      case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} publishSpecsEditor={PublishSpecsEditor} publishImagesEditor={PublishImagesEditor} />;
+      case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} publishSpecsEditor={PublishSpecsEditor} publishImagesEditor={PublishImagesEditor} itemAISettingsModal={ItemAISettingsModal} />;
       case 'rules': return <Rules
         initialDeliveryTarget={deliveryRuleTarget}
         onDeliveryTargetHandled={onDeliveryTargetHandled}
@@ -124,6 +131,7 @@ export const AppContent: React.FC<AppContentProps> = ({
       case 'notifications': return <Notifications isAdmin={isAdmin} />;
       case 'logs': return isAdmin ? <LiveLogs /> : <Dashboard />;
       case 'data-backup': return isAdmin ? <DataBackup /> : <Dashboard />;
+      case 'runtime-logs': return isAdmin ? <RuntimeLogs /> : <Dashboard />;
       case 'settings': return isAdmin ? <Settings /> : <Dashboard />;
       default: return <Dashboard />;
     }

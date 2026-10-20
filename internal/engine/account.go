@@ -375,7 +375,7 @@ func New(cfg Config) *Account {
 			},
 			pendingRenewal: pendingRenewalCoordinator{},
 		},
-		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger)),
+		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID, "subsys", "engine"), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger.With("account", cfg.CookieID, "subsys", "ws"))),
 	}
 	// echoTracker 保存当前账号自动化出站消息的回显等待项；其生命周期与账号 facade 一致。
 	echoTracker := newOutgoingEchoTracker()
@@ -427,6 +427,7 @@ func (a *Account) handleWSConnectFailure(ctx context.Context, err error) error {
 	a.clearConnectionToken(ctx)
 	// reason 用于本次流程后续判断的原因
 	reason := "消息凭证被拒绝，请重新登录"
+	// 仅处理服务端 /reg 鉴权拒绝；网络类失败由 handleWSOpenFailure 退避重试。
 	if ws.IsConnectLimitError(err) {
 		reason = "消息会话已被服务端移除"
 	} else if !ws.IsInvalidTokenError(err) && !ws.IsAuthenticationError(err) {
@@ -566,6 +567,16 @@ func (a *Account) notifyOffline(ctx context.Context, reason string) {
 	}
 	a.alertEvent(ctx, EventAccountOffline, AlertLevelWarn, "账号已掉线，需要重新登录",
 		fmt.Sprintf("账号 %s 的闲鱼消息连接已进入不可自动重连状态。原因：%s。请更新登录信息或重新登录后再启动账号。", a.CookieID, reason))
+}
+
+// notifyDialRetrying 在连续拨号失败达到阈值时发送一次离线通知；reason 是最近一次网络错误文本。
+// 与 notifyOffline 不同，账号仍会自动重试，文案不要求用户重新登录；连接恢复后沿用既有恢复通知。
+func (a *Account) notifyDialRetrying(ctx context.Context, reason string) {
+	if !a.markOfflineNotified(reason) {
+		return
+	}
+	a.alertEvent(ctx, EventAccountOffline, AlertLevelWarn, "账号消息连接中断，正在自动重试",
+		fmt.Sprintf("账号 %s 连续多次无法连接闲鱼消息服务，疑似网络故障。原因：%s。系统会持续退避重试，网络恢复后自动重新上线。", a.CookieID, reason))
 }
 
 // notifyRecoveringOffline 封装notifyRecoveringOffline业务协调。

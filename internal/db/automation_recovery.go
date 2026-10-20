@@ -99,6 +99,11 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 		)
 		runs = append(runs, issue)
 	}
+	// iterErr 是逐行读取中途的数据库错误；必须在关闭前检查，否则会把截断的问题列表当作完整结果。
+	if iterErr := runRows.Err(); iterErr != nil {
+		_ = runRows.Close()
+		return nil, nil, iterErr
+	}
 	if // err 用于本次流程后续判断的err
 	err := runRows.Close(); err != nil {
 		return nil, nil, err
@@ -351,6 +356,11 @@ func (a *AutomationRules) ClaimDueDeferredTasks(ctx context.Context, limit int) 
 			return nil, err
 		}
 		candidates = append(candidates, task)
+	}
+	// iterErr 是逐行读取中途的数据库错误；截断的候选集不能被当作本轮完整的到期任务。
+	if iterErr := rows.Err(); iterErr != nil {
+		_ = rows.Close()
+		return nil, iterErr
 	}
 	if // err 用于本次流程后续判断的err
 	err := rows.Close(); err != nil {

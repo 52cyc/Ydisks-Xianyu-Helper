@@ -13,7 +13,8 @@ const PAGE_CHUNK_BUDGETS: Record<string, number> = {
   OrderList: 45 * 1024,
   // cURL 请求解析与安全导入能力随卡密页按路由加载，52 KiB 覆盖该完整交互而仍限制页面总下载量。
   CardList: 52 * 1024,
-  ItemList: 65 * 1024,
+  // ItemList 页面新增列表视图与规则筛选，实际约 65.05 KiB，66 KiB 预算容纳该功能并保留少量余量。
+  ItemList: 66 * 1024,
   Settings: 30 * 1024,
   // Rules 同时包含外部货源跟价和模板发货配置，按合并后的实际职责保留预算。
   Rules: 90 * 1024,
@@ -23,6 +24,12 @@ const PAGE_CHUNK_BUDGETS: Record<string, number> = {
   Chat: 50 * 1024,
   Fulfillment: 20 * 1024,
   DataBackup: 15 * 1024,
+  // RuntimeLogs 页面承载运行日志过滤与日志流展示。
+  RuntimeLogs: 20 * 1024,
+  // LiveLogs 保留 fork 原始进程日志展示，与结构化运行日志分别按需加载。
+  LiveLogs: 10 * 1024,
+  // SalesStats 单独按路由加载销售图表，图表库继续保持独立公共分片。
+  SalesStats: 20 * 1024,
 };
 
 describe('frontend production bundle boundary', /* 当前回调验证生产入口包体和页面分片。 */ () => {
@@ -39,10 +46,10 @@ describe('frontend production bundle boundary', /* 当前回调验证生产入�
     expect(preloadedAssets.some(/* 当前回调判断图表依赖是否被首屏预加载。 */ asset => asset.startsWith('charts-vendor-'))).toBe(false);
   });
 
-  test('十二个业务页面都生成独立页面 chunk', /* 当前回调验证各页面可按路由延迟下载。 */ () => {
+  test('十五个业务页面都生成独立页面 chunk', /* 当前回调验证各页面可按路由延迟下载。 */ () => {
     // pageChunkNames 保存 Vite 输出的业务页面 chunk 文件名。
-    const pageChunkNames = readdirSync(resolve(staticRoot, 'assets')).filter(/* 当前回调筛选业务页面分片文件。 */ fileName => /^(Dashboard|AccountList|OrderList|CardList|ItemList|Settings|Rules|Notifications|Chat|DeliveryTemplates|Fulfillment|DataBackup)-.+\.js$/.test(fileName));
-    expect(pageChunkNames).toHaveLength(12);
+    const pageChunkNames = readdirSync(resolve(staticRoot, 'assets')).filter(/* 当前回调筛选业务页面分片文件。 */ fileName => /^(Dashboard|AccountList|OrderList|CardList|ItemList|Settings|Rules|Notifications|Chat|DeliveryTemplates|Fulfillment|DataBackup|RuntimeLogs|LiveLogs|SalesStats)-.+\.js$/.test(fileName));
+    expect(pageChunkNames).toHaveLength(15);
   });
 
   test('每个业务页面 chunk 都保持在独立预算内', /* 当前回调验证单个页面不会重新膨胀首屏后的按需下载。 */ () => {

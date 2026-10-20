@@ -1,13 +1,10 @@
-import { Loader2, Play, Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, Play, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { CardAPITestResult } from '../models';
 import { CurlImportError, parseCurlCommand } from '../curlImport';
 
 // APIRequestMethod 是 API 发货请求支持的 HTTP 方法。
 export type APIRequestMethod = 'GET' | 'POST';
-
-// APISecretAction 描述编辑敏感模板时对服务端已保存值的处理方式。
-export type APISecretAction = 'retain' | 'replace' | 'clear';
 
 // APIKeyValueRow 是 Postman 风格键值编辑器中的一行表单数据。
 export interface APIKeyValueRow {
@@ -37,14 +34,10 @@ export interface APIRequestBuilderProps {
   responsePath: string;
   // retryEnabled 表示是否启用带幂等键的重试。
   retryEnabled: boolean;
-  // headersAction 是编辑时请求头敏感模板的三态处理方式。
-  headersAction?: APISecretAction;
-  // paramsAction 是编辑时查询参数敏感模板的三态处理方式。
-  paramsAction?: APISecretAction;
   // onChange 更新指定 API 配置字段。
 	onChange: (field: APIRequestField, value: string | number | boolean) => void;
 	// onTest 使用当前配置执行临时测试请求。
-	onTest?: () => Promise<CardAPITestResult>;
+	onTest?: (signal: AbortSignal) => Promise<CardAPITestResult>;
 }
 
 // APIRequestField 是 APIRequestBuilder 可更新字段的联合类型。
@@ -57,9 +50,7 @@ export type APIRequestField =
   | 'contentType'
   | 'body'
   | 'responsePath'
-  | 'retryEnabled'
-  | 'headersAction'
-  | 'paramsAction';
+  | 'retryEnabled';
 
 // APITestState 保存 API 测试请求的加载状态、非敏感诊断结果与请求错误。
 interface APITestState {
@@ -134,6 +125,38 @@ interface KeyValueEditorProps {
   onChange: (value: string) => void;
 }
 
+// SensitiveValueProps 描述键值编辑器中支持遮罩的单个字段。
+interface SensitiveValueProps {
+  // label 为输入框提供稳定的可访问名称。
+  label: string;
+  // fieldName 决定是否对凭证字段默认遮罩。
+  fieldName: string;
+  // value 保存当前字段的完整模板值。
+  value: string;
+  // onChange 更新父级草稿中的字段值。
+  onChange: (value: string) => void;
+}
+
+// SensitiveValue 默认隐藏凭证值；只有主动点击才展示，普通动态参数保持可读。
+const SensitiveValue = ({ label, fieldName, value, onChange }: SensitiveValueProps) => {
+  // revealed 仅在当前字段组件存活期间保留展开状态。
+  const [revealed, setRevealed] = useState(false);
+  // sensitive 匹配常见认证字段，不把幂等键误判为密钥。
+  const sensitive = /authorization|cookie|token|secret|password|passwd|credential|signature|api[-_]?key|access[-_]?key|private[-_]?key/i.test(fieldName);
+  return <div className="flex min-w-0 items-center gap-1">
+    <input aria-label={label} type={sensitive && !revealed ? 'password' : 'text'} value={value}
+      autoComplete="off" spellCheck={false}
+      onChange={/* updateSecret 将修改后的字段值交回父级草稿。 */ event => onChange(event.target.value)}
+      placeholder="值或 {order_id}"
+      className="min-w-0 w-full border-0 bg-transparent px-1 py-2 font-mono text-sm text-gray-800 outline-none ring-0 placeholder:text-gray-300" />
+    {sensitive && <button type="button" aria-label={`${revealed ? '隐藏' : '显示'}${fieldName}`} aria-pressed={revealed}
+      onClick={/* toggleSecret 切换当前凭证值的可见状态。 */ () => setRevealed(!revealed)}
+      className="shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100">
+      {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+    </button>}
+  </div>;
+};
+
 // KeyValueEditor 渲染可增删的键值对输入行。
 const KeyValueEditor = ({ label, value, placeholder, onChange }: KeyValueEditorProps) => {
   // rows 保存当前键值编辑行；空行也必须保留在本地状态中，才能支持连续添加。
@@ -201,13 +224,8 @@ const KeyValueEditor = ({ label, value, placeholder, onChange }: KeyValueEditorP
                 placeholder={index === 0 ? placeholder : '键名'}
                 className="min-w-0 border-0 bg-transparent px-1 py-2 font-mono text-sm text-gray-800 outline-none ring-0 placeholder:text-gray-300"
               />
-              <input
-                aria-label={`${label}第${index + 1}行值`}
-                value={row.value}
-                onChange={/* 当前回调更新键值行的字段值。 */ (event: ChangeEvent<HTMLInputElement>) => updateRow(index, 'value', event.target.value)}
-                placeholder={index === 0 ? '输入值或动态变量，例如 {order_id}' : '值'}
-                className="min-w-0 border-0 bg-transparent px-1 py-2 font-mono text-sm text-gray-800 outline-none ring-0 placeholder:text-gray-300"
-              />
+              <SensitiveValue key={row.key} label={`${label}第${index + 1}行值`} fieldName={row.key} value={row.value}
+                onChange={/* updateValue 将字段值更新回对应的键值行。 */ nextValue => updateRow(index, 'value', nextValue)} />
               <button
                 type="button"
                 onClick={/* 当前回调删除指定键值编辑行。 */ () => removeRow(index)}
@@ -236,8 +254,6 @@ export const APIRequestBuilder = ({
   body,
   responsePath,
   retryEnabled,
-  headersAction,
-  paramsAction,
 	onChange,
 	onTest,
 }: APIRequestBuilderProps) => {
@@ -247,16 +263,33 @@ export const APIRequestBuilder = ({
 		const [testState, setTestState] = useState<APITestState>({ loading: false });
 	// curlImport 保存当前弹窗的 cURL 粘贴草稿与本地解析结果，不会持久化未确认命令。
 	const [curlImport, setCurlImport] = useState<CurlImportState>({ command: '' });
-	// runTest 触发临时请求并保留结果在当前弹窗中。
-	const runTest = async () => {
-		if (!onTest) return;
-		setTestState({ loading: true });
-		try {
-			setTestState({ loading: false, result: await onTest() });
-		} catch (/* error 表示测试请求的本地错误或共享 HTTP 客户端返回的异常。 */ error) {
-			setTestState({ loading: false, error: error instanceof Error ? error.message : 'API 测试请求失败' });
-		}
-	};
+  // bodyRevealed 仅在当前编辑会话保存正文显式展开状态；切换卡密或关闭弹窗由父级卸载清除。
+  const [bodyRevealed, setBodyRevealed] = useState(false);
+  // testRequest 标识当前测试，配置变更或关闭弹窗时取消旧结果。
+  const testRequest = useRef<AbortController | null>(null);
+  // resetTest 在配置变化时撤销旧请求，避免展示不对应当前草稿的结果。
+  useEffect(/* testLifecycle 绑定测试结果和当前配置。 */ () => {
+    testRequest.current?.abort();
+    testRequest.current = null;
+    setTestState({ loading: false });
+    return /* abortTest 取消配置变化或组件卸载后的请求。 */ () => testRequest.current?.abort();
+  }, [url, method, timeout, headers, params, contentType, body, responsePath, retryEnabled]);
+  // runTest 仅展示本次请求的结果，不接受关闭或修改表单后的迟到响应。
+  const runTest = async () => {
+    if (!onTest) return;
+    testRequest.current?.abort();
+    // request 区分当前测试与已经失效的旧测试。
+    const request = new AbortController();
+    testRequest.current = request;
+    setTestState({ loading: true });
+    try {
+      // result 是当前草稿的测试诊断结果。
+      const result = await onTest(request.signal);
+      if (!request.signal.aborted) setTestState({ loading: false, result });
+    } catch (/* error 表示当前测试的非敏感失败提示。 */ error) {
+      if (!request.signal.aborted) setTestState({ loading: false, error: error instanceof Error ? error.message : 'API 测试请求失败' });
+    }
+  };
 
 	// importCurl 由用户点击导入触发，只在全部字段成功解析后才批量覆盖当前 API 草稿。
 	const importCurl = () => {
@@ -267,10 +300,9 @@ export const APIRequestBuilder = ({
 			onChange('method', config.method);
 			onChange('headers', config.headers);
 			onChange('params', config.params);
-			onChange('headersAction', 'replace');
-			onChange('paramsAction', 'replace');
 			onChange('contentType', config.contentType);
 			onChange('body', config.body);
+			setBodyRevealed(false);
 			setCurlImport({ command: '' });
 		} catch (/* error 保存 cURL 解析失败原因；命令只继续保留在当前本地草稿中。 */ error: unknown) {
 			setCurlImport(/* previous 保留用户粘贴文本以便修正后再次导入。 */ previous => ({
@@ -285,7 +317,7 @@ export const APIRequestBuilder = ({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-bold text-gray-900">API 请求配置</h3>
-          <p className="mt-1 text-xs text-gray-500">按 Postman 的请求结构填写，敏感模板只会加密保存在服务端。</p>
+          <p className="mt-1 text-xs text-gray-500">密钥加密保存，默认隐藏，可点击查看。</p>
         </div>
 		<span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-blue-600 shadow-sm">API</span>
 	      </div>
@@ -353,22 +385,10 @@ export const APIRequestBuilder = ({
 
       <div className="space-y-5 border-t border-blue-100 pt-5">
         <KeyValueEditor label="Headers / 请求头" value={headers} onChange={/* 当前回调保存请求头键值对象。 */ nextValue => onChange('headers', nextValue)} placeholder="Authorization" />
-        {headersAction && (
-          <select aria-label="请求头处理方式" value={headersAction} onChange={/* 当前回调选择请求头敏感模板处理方式。 */ (event: ChangeEvent<HTMLSelectElement>) => onChange('headersAction', event.target.value)} className="w-full ios-input rounded-xl px-3 py-2 text-sm sm:w-auto">
-            <option value="retain">保留已保存请求头</option>
-            <option value="replace">替换为上方字段</option>
-            <option value="clear">清除已保存请求头</option>
-          </select>
-        )}
+
 
         <KeyValueEditor label="Params / 查询参数" value={params} onChange={/* 当前回调保存查询参数键值对象。 */ nextValue => onChange('params', nextValue)} placeholder="order_id" />
-        {paramsAction && (
-          <select aria-label="查询参数处理方式" value={paramsAction} onChange={/* 当前回调选择查询参数敏感模板处理方式。 */ (event: ChangeEvent<HTMLSelectElement>) => onChange('paramsAction', event.target.value)} className="w-full ios-input rounded-xl px-3 py-2 text-sm sm:w-auto">
-            <option value="retain">保留已保存查询参数</option>
-            <option value="replace">替换为上方字段</option>
-            <option value="clear">清除已保存查询参数</option>
-          </select>
-        )}
+
 
         <div className="space-y-2">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -377,14 +397,29 @@ export const APIRequestBuilder = ({
               {contentTypes.map(/* 当前回调渲染一个常用 Content-Type 选项。 */ contentTypeOption => <option key={contentTypeOption.value} value={contentTypeOption.value}>{contentTypeOption.label}</option>)}
             </select>
           </div>
-          {jsonBody ? (
+          {jsonBody && body !== '' && !bodyRevealed ? (
+            <div className="flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm">
+              <span>请求正文已隐藏，可能包含接口密钥</span>
+              <button type="button" aria-label="显示JSON请求正文" aria-pressed={false}
+                onClick={/* revealBody 只在用户明确操作后展示当前 JSON 草稿。 */ () => setBodyRevealed(true)}
+                className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"><Eye className="h-4 w-4" /></button>
+            </div>
+          ) : jsonBody ? (
+            <>
+            {bodyRevealed && <button type="button" aria-label="隐藏JSON请求正文" aria-pressed
+              onClick={/* hideBody 隐藏正文而不改变即将测试或保存的草稿。 */ () => setBodyRevealed(false)}
+              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"><EyeOff className="h-4 w-4" /></button>}
             <textarea
               aria-label="JSON 请求正文"
               value={body}
-              onChange={/* 当前回调更新 JSON 请求正文。 */ (event: ChangeEvent<HTMLTextAreaElement>) => onChange('body', event.target.value)}
+              onChange={/* event 是用户手工编辑 JSON 正文的输入，首次从空白输入时继续保持可编辑。 */ (event: ChangeEvent<HTMLTextAreaElement>) => {
+                setBodyRevealed(true);
+                onChange('body', event.target.value);
+              }}
               className="h-36 w-full resize-y ios-input rounded-xl px-4 py-3 font-mono text-sm"
               placeholder={'{\n  "order_id": "{order_id}"\n}'}
             />
+            </>
           ) : (
             <KeyValueEditor label="Body 字段" value={body} onChange={/* 当前回调保存非 JSON 正文键值对象。 */ nextValue => onChange('body', nextValue)} placeholder="field" />
           )}

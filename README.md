@@ -82,6 +82,8 @@ Ydisks 支持管理渠道、推广账号、原始链接、推广短链与域名�
 | 安全能力 | 管理端会话、敏感字段 AES-256-GCM 加密、日志脱敏和出站地址校验 |
 | 容器部署 | PostgreSQL 17、健康检查、持久化卷、GHCR amd64/arm64 多架构镜像 |
 
+新增能力：关键词多表达式/正则、商品独立 AI 配置、运行日志与销售统计。
+
 ## 系统架构
 
 ```mermaid
@@ -658,6 +660,7 @@ make lint      # golangci-lint
 make test      # 全部 Go 单元测试
 make cover     # 覆盖率报告
 make check     # fmt + architecture + API contract + vet + lint + test + comments
+
 
 npm --prefix frontend run typecheck
 npm --prefix frontend test

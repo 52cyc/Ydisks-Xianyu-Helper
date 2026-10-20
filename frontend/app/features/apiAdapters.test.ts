@@ -25,7 +25,7 @@ updateAccountSettings,
 updateAccountStatus,
 updateAccountTaskSettings,
 } from './accounts/api';
-import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,updateCard } from './cards/api';
+import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
 import { getChatMessagePage,getChatMessages,getChatSessionPage,getChatSessions,markChatRead,sendChatImage,sendChatMessage } from './chat/api';
 import { getDashboardStats,getOrderAnalytics,getValidOrders } from './dashboard/api';
 import { cancelItemPublishBatch,createItem,deleteItem,deleteItemPublishBatch,getItemDetail,getItemPublishBatch,getItemPublishBatches,getItems,previewItemPublishBatch,publishItem,recommendPublishCategory,retryFailedItemPublishBatch,startItemPublishBatch,syncItemsFromAccount,updateItem } from './items/api';
@@ -800,6 +800,23 @@ test('账号编辑子模块请求支持取消过期响应', async () => {
   expect(fetchMock.mock.calls[2][1].signal).toBeInstanceOf(AbortSignal);
 } /* 测试回调验证：账号编辑子模块请求支持取消过期响应。 */);
 
+test('updateAccountAISettings 提交 AI 工作模式并在缺省时回退为仅砍价', /* 当前回调验证账号 AI 设置请求载荷的模式字段与默认值。 */ async () => {
+  // fetchMock 是账号 AI 设置保存接口的网络替身；每次调用返回新的响应对象，避免正文被重复读取。
+  const fetchMock = vi.fn().mockImplementation(/* 当前回调为每次请求生成独立的成功响应。 */ () => Promise.resolve(jsonResponse({ success: true })));
+  stubContractFetch(fetchMock);
+
+  await updateAccountAISettings('acc1', { ai_enabled: true, max_discount_percent: 15, ai_mode: 'full_service' });
+  await updateAccountAISettings('acc1', {});
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/settings/ai-reply/acc1', expect.objectContaining({ method: 'PUT' }));
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    ai_enabled: true, auto_adjust_price_enabled: false, max_discount_percent: 15, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'full_service',
+  });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    ai_enabled: false, auto_adjust_price_enabled: false, max_discount_percent: 10, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'bargain_only',
+  });
+});
+
 test('getShippingRules exposes buyer reviewed gift rules as automation rules', async () => {
   stubContractFetch(vi.fn().mockResolvedValue(jsonResponse([{
     id: 12,
@@ -882,27 +899,52 @@ test('getShippingRules restores external pending price configuration', async () 
   });
 } /* 测试回调验证外部货源跟价配置可以从规则动作恢复到编辑器。 */);
 
-test('getReplyRules labels keyword matching according to engine contains behavior', async () => {
+test('getReplyRules labels keyword matching according to engine contains behavior', /* 当前回调验证历史单关键词响应回退为 contains 和单表达式。 */ async () => {
+  // fetchMock 是关键词规则接口的历史响应网络替身。
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{
     id: 42,
     keyword: '发货',
     reply: '马上安排',
     type: 'image',
     image_url: 'https://img.example/reply.png',
-  }])); /* fetchMock 表示fetchMock。 */
+  }]));
   stubContractFetch(fetchMock);
 
-  const rules = await getReplyRules('acc1'); /* rules 表示规则集合。 */
-	expect(fetchMock).toHaveBeenCalledWith('/api/v1/reply-rules/acc1/typed', expect.objectContaining({ method: 'GET' }));
+  // rules 是 adapter 根据历史单关键词响应生成的 UI 规则集合。
+  const rules = await getReplyRules('acc1');
+  expect(fetchMock).toHaveBeenCalledWith('/api/v1/reply-rules/acc1/typed', expect.objectContaining({ method: 'GET' }));
   expect(rules[0]).toMatchObject({
     id: '42',
     keyword: '发货',
+    expressions: ['发货'],
     reply_content: '马上安排',
-    match_type: 'fuzzy',
+    match_type: 'contains',
     type: 'image',
     image_url: 'https://img.example/reply.png',
   });
-} /* 测试回调验证：getReplyRules labels keyword matching according to engine contains behavior。 */);
+});
+
+test('getReplyRules 保留服务端多表达式正则配置', /* 当前回调验证新多表达式正则响应的 adapter 保留语义。 */ async () => {
+  // fetchMock 是返回新字段的关键词规则接口网络替身。
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{
+    id: 43,
+    keyword: '^你好',
+    expressions: ['^你好', '价格[0-9]+'],
+    match_type: 'regexp',
+    reply: '已命中',
+    type: 'text',
+    item_ids: [],
+  }]));
+  stubContractFetch(fetchMock);
+
+  // rules 是 adapter 保留正则模式和多表达式后的 UI 规则集合。
+  const rules = await getReplyRules('acc1');
+  expect(rules[0]).toMatchObject({
+    keyword: '^你好',
+    expressions: ['^你好', '价格[0-9]+'],
+    match_type: 'regexp',
+  });
+});
 
 test('getReplyRules 没有账号时直接返回空列表', /* 当前回调验证关键词规则的账号守卫。 */ async () => {
   await expect(getReplyRules()).resolves.toEqual([]);
@@ -965,24 +1007,25 @@ test('updateReplyRule preserves keyword image metadata when saving text edits', 
     credentials: 'include',
   }));
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1'], type: 'text', image_url: '',
   });
+
 } /* 测试回调验证：updateReplyRule preserves keyword image metadata when saving text edits。 */);
 
 test('updateReplyRule sends every selected item id for multi-select rules', async () => {
-  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true })); /* fetchMock 表示fetchMock。 */
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true })); /* fetchMock 表示关键词规则保存接口的网络替身。 */
   stubContractFetch(fetchMock);
 
   await updateReplyRule({ id: '42', keyword: '发货', reply_content: '稍后安排', item_ids: ['item-1', 'item-2', 'item-1'] }, 'acc1');
 
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
   });
 } /* 测试回调验证：多选规则保存为一条规则并提交全部关联商品。 */);
 
 test('createReplyRule keeps multi-select items in one rule request', async () => {
-  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 7 })); /* fetchMock 表示fetchMock。 */
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, id: 7 })); /* fetchMock 表示关键词规则创建接口的网络替身。 */
   stubContractFetch(fetchMock);
 
   await updateReplyRule({ keyword: '发货', reply_content: '稍后安排', item_ids: ['item-1', 'item-2'] }, 'acc1');
@@ -992,7 +1035,7 @@ test('createReplyRule keeps multi-select items in one rule request', async () =>
     credentials: 'include',
   }));
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
   });
 } /* 测试回调验证：新建多选规则只提交一次请求。 */);
 
@@ -1002,7 +1045,7 @@ test('updateReplyRule clears stale content when switching reply type', async () 
 
   await updateReplyRule({ id: '42', keyword: '发货', type: 'image', image_url: 'https://img.example/new.png' }, 'acc1');
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', reply: '', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/new.png',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/new.png',
   });
 } /* 测试回调验证：updateReplyRule clears stale content when switching reply type。 */);
 
@@ -1842,4 +1885,20 @@ test('通知编辑可单独更新收件地址', /* recipientPatchAdapterTest 检
   // body 是已经发送的请求体，用于证明没有 config 字段。
   const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
   expect(body).toEqual({ name: 'renamed', email_recipient: 'new@example.com' });
+});
+
+
+test('API 卡密编辑走专用接口，测试携带卡密标识及保留模板语义', /* cardEditorTransport 验证真实请求序列化不丢失草稿控制字段。 */ async () => {
+  // editor 是完整编辑接口的确定性响应，仅包含测试凭证。
+  const editor = { url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10, content_type: 'application/json', headers: '{"Authorization":"Bearer fixture"}', params: '{}', body: '{}', response_path: 'data.content', retry_enabled: true };
+  // fetchMock 捕获完整编辑与临时测试的真实请求形状。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(editor)).mockResolvedValueOnce(jsonResponse({ status: 'success', status_code: 200, response_content_type: 'application/json', response_fields: ['data'] }));
+  stubContractFetch(fetchMock);
+  // controller 绑定当前编辑会话的取消信号。
+  const controller = new AbortController();
+  await expect(getCardAPIEditor(3, { signal: controller.signal })).resolves.toEqual(editor);
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/cards/3/api-editor', expect.objectContaining({ method: 'GET', credentials: 'include' }));
+  await testCardAPI({ url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: '{"order_id":"{order_id}"}', body: '{}', retry_enabled: true }, 3, { signal: controller.signal });
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/cards/test-api', expect.objectContaining({ method: 'POST' }));
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ card_id: 3, api_config: { url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: { order_id: '{order_id}' }, body: {}, retry_enabled: true, content_type: 'application/json' } });
 });

@@ -39,6 +39,17 @@ const pendingShipCatchupEnv = "XIANYU_PENDING_SHIP_CATCHUP"
 // 付款事件在准备阶段失败时可能不会留下任何运行记录，若不设冷却会每分钟重试并放大上游压力。
 const defaultPendingShipCooldown = 10 * time.Minute
 
+// pendingShipObservationGap 是候选订单连续缺席超过多久后重新按新进入待发货计时（远大于分钟级扫描周期）。
+const pendingShipObservationGap = 10 * time.Minute
+
+// pendingShipObservation 保存一笔待发货候选订单被兜底扫描观测到的时间事实。
+type pendingShipObservation struct {
+	// first 是本次连续出现的首次观测时间，等待窗口据此计算。
+	first time.Time
+	// last 是最近一次观测时间，用于判断订单是否曾离开候选集合并清理过期条目。
+	last time.Time
+}
+
 // defaultPendingShipSettleWindow 是新进入待发货状态的订单在通用兜底触发前必须经历的观察窗口。
 // 该窗口让实时付款系统卡片优先到达并建立运行记录，避免调度器把尚在结算中的订单误判为事件丢失。
 const defaultPendingShipSettleWindow = 2 * time.Minute
@@ -78,12 +89,17 @@ type Scheduler struct {
 	lastExternalListingPriceSync time.Time
 	// externalListingQuoteInterval 是单轮后台同步中相邻货源报价的最小起始间隔；仅测试可缩短。
 	externalListingQuoteInterval time.Duration
-	// pendingShipMu 保护 pendingShipCooldown。
+	// pendingShipMu 保护 pendingShipCooldown 与 pendingShipObserved。
 	pendingShipMu sync.Mutex
+	// pendingShipObserved 记录兜底扫描对待发货候选订单的首次与最近观测时间，窗口只取决于首次观测，不受订单反复写入影响；
+	// 仅在持有 pendingShipMu 时读写，延迟初始化。
+	pendingShipObserved map[string]pendingShipObservation
 	// pendingShipCooldown 记录兜底扫描最近尝试过的订单时间，避免同一订单反复重试。
 	pendingShipCooldown map[string]time.Time
 	// pendingShipScanBudget 限制付款兜底和续跑扫描共享的单轮执行时间；零值使用生产默认值。
 	pendingShipScanBudget time.Duration
+	// pendingShipSettleWindow 是候选订单等待实时付款卡片的窗口；零值使用生产默认值，负值表示不等待（仅测试使用）。
+	pendingShipSettleWindow time.Duration
 	// pendingShipScanMaxTasks 限制每条待发货扫描单轮实际触发的任务数；零值使用生产默认值。
 	pendingShipScanMaxTasks int
 }
@@ -345,10 +361,10 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			}
 			// paid、paidErr 保存付款自动发货的账号级开关检查结果，必须在重开运行之前检查：
 			// 开关关闭时 HandleTask 会直接返回而不收口运行，被重开的运行会留在 running 并继续持有租约，
-			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号开关与自动确认设置。
-			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, candidate.Order.CookieID)
+			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号自动发货总开关。
+			paid, paidErr := s.center.autoDeliveryEnabled(ctx, candidate.Order.CookieID)
 			if paidErr != nil {
-				s.center.logger.Warn("检查待发货续跑自动确认发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
+				s.center.logger.Warn("检查待发货续跑自动发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
 				continue
 			}
 			if !paid {

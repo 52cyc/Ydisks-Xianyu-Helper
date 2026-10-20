@@ -111,7 +111,7 @@ func TestAdjustOrderPriceNaturallyClosedUsesInfoLog(t *testing.T) {
 		fmt.Fprint(w, `{"ret":["FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价||当前订单状态不支持改价"],"data":{}}`)
 	}))
 	defer server.Close()
-	// logs 收集本次 MTOP 分类日志，供断言日志等级。
+	// logs 收集 MTOP 分类日志，验证自然收口等级与新增运行日志来源过滤字段同时保留。
 	var logs bytes.Buffer
 	// client 使用本地端点和可观察文本日志器。
 	client := &ClientImpl{HTTPClient: server.Client(), AdjustPriceURL: server.URL + "/", Logger: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -120,7 +120,7 @@ func TestAdjustOrderPriceNaturallyClosedUsesInfoLog(t *testing.T) {
 	if ok || !IsAdjustPriceNaturallyClosed(adjustErr) {
 		t.Fatalf("ok=%v err=%v", ok, adjustErr)
 	}
-	if !strings.Contains(logs.String(), "level=INFO") || strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "改价流程自然收口") {
+	if !strings.Contains(logs.String(), "level=INFO") || strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "改价流程自然收口") || !strings.Contains(logs.String(), "log_source=mtop") {
 		t.Fatalf("unexpected logs: %s", logs.String())
 	}
 }

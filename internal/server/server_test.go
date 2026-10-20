@@ -88,6 +88,7 @@ func newTestServer(t *testing.T) (*Server, *db.Store, func()) { // newTestServer
 		AdminSettingsDependencies: adminSettingsDependencies,
 		AccountTaskRunner:         adapter.NewAccountTaskRunner(nil),
 		ModelClient:               adapter.NewAIModelClient(),
+		RuntimeLogSource:          adapter.NewRuntimeLogSource(logging.CurrentRuntimeBuffer()),
 	})
 	if transportApplicationsErr != nil {
 		t.Fatalf("NewTransportApplicationServices: %v", transportApplicationsErr)
@@ -195,6 +196,7 @@ func newUninitializedTestServer(t *testing.T) (*Server, *db.Store, func()) {
 		AdminSettingsDependencies: adminSettingsDependencies,
 		AccountTaskRunner:         adapter.NewAccountTaskRunner(nil),
 		ModelClient:               adapter.NewAIModelClient(),
+		RuntimeLogSource:          adapter.NewRuntimeLogSource(logging.CurrentRuntimeBuffer()),
 	})
 	if transportApplicationsErr != nil {
 		t.Fatalf("NewTransportApplicationServices: %v", transportApplicationsErr)
@@ -377,7 +379,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		Orders: testOrdersTransport{services: ports.Orders}, OrderRefreshJobs: testOrderRefreshJobsTransport{service: ports.OrderRefreshJobs}, ItemSinglePublish: ports.ItemSinglePublish,
 		ItemBatchPreview: ports.ItemBatchPreview, ItemBatchManagement: ports.ItemBatchManagement, ItemCategoryRecommendation: ports.ItemCategoryRecommendation,
 		ItemBatchPreviewPersistence: ports.ItemBatchPreviewPersistence, ItemBatchLocalPublish: ports.ItemBatchLocalPublish,
-		ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation, ItemLinkImport: ports.ItemLinkImport,
+		ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation, ItemLinkImport: ports.ItemLinkImport, ItemAISettings: ports.ItemAISettings,
 		AccountLogin: testAccountLoginAdapter{service: ports.AccountLogin}, QRLogin: testQRLoginAdapter{service: ports.QRLogin},
 		SessionRecovery: testSessionRecoveryAdapter{handler: sessionRecovery}, PlatformCredentials: ports.PlatformCredentials,
 		Authentication: ports.Authentication, LoginAudit: ports.LoginAudit, PasswordLogin: ports.PasswordLogin, AccountDelete: ports.AccountDelete,
@@ -387,7 +389,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, Cards: ports.Cards, Fulfillment: ports.Fulfillment,
 		DeliveryTemplates:      ports.DeliveryTemplates,
 		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, Keywords: ports.Keywords,
-		Settings: ports.Settings, Admin: ports.Admin, DataBackup: testDataBackupPort{},
+		Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs, DataBackup: testDataBackupPort{},
 	})}
 }
 

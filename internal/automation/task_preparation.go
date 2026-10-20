@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"xianyu-go/internal/db"
 )
@@ -25,7 +26,12 @@ const (
 	paidTaskOrderNotFound paidTaskOrderResolution = "local_pending_order_not_found"
 	// paidTaskOrderResolved 表示已从本地待发货订单补齐订单号及商品事实。
 	paidTaskOrderResolved paidTaskOrderResolution = "resolved_from_local_pending_order"
+	// paidTaskOrderRecentResolved 表示已关联近期结束的订单，使简化重复事件能安全收口。
+	paidTaskOrderRecentResolved paidTaskOrderResolution = "resolved_from_recent_order"
 )
+
+// simplifiedEventResolveWindow 限制简化交易事件按会话关联近期订单的回溯窗口。
+const simplifiedEventResolveWindow = 30 * time.Minute
 
 // resolvePaidTaskOrder 为交易系统消息补齐本账号已有订单事实，并保留简化付款事件的诊断结果。
 // ctx 控制数据库查询取消，task 是原始事件；返回补齐后任务、可用于定位缺字段的结果码和查询错误。
@@ -35,9 +41,6 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, pai
 	}
 	if c == nil || c.store == nil || c.store.Orders == nil {
 		return task, paidTaskOrderRepositoryUnavailable, nil
-	}
-	if task.TriggerType == TriggerOrderCreated && task.OrderID == "" {
-		return task, paidTaskOrderNotApplicable, nil
 	}
 	if task.OrderID != "" {
 		// order、err 保存本地订单事实及查询结果；缺失时由卖家身份门禁决定是否延期。
@@ -53,18 +56,37 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, pai
 	if task.ChatID == "" {
 		return task, paidTaskOrderMissingChat, nil
 	}
-	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
-	order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	// isCreated 表示拍下事件；拍下事件没有待发货语义，只允许在订单号和商品都缺失时按近期订单识别重复事件。
+	isCreated := task.TriggerType == TriggerOrderCreated
+	if isCreated && task.ItemID != "" {
+		return task, paidTaskOrderNotApplicable, nil
+	}
+	if !isCreated {
+		// order、err 保存按账号、会话以及可选买家和商品条件命中的待发货订单与查询错误。
+		order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+		if err != nil && !errors.Is(err, db.ErrNotFound) {
+			return task, paidTaskOrderNotFound, fmt.Errorf("按会话回填自动发货订单: %w", err)
+		}
+		if order != nil {
+			return mergeOrderIntoTask(task, order), paidTaskOrderResolved, nil
+		}
+	}
+	// recent 保存同会话近期已被完整事件处理的订单（如已发货）；简化事件只含会话标识，
+	// 命中后合并订单事实，使后续角色门禁把“订单已不是待发货”判为不可重试并安全收口，而不是反复延期后误报人工处理。
+	recent, err := c.store.Orders.FindRecentByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID, time.Now().Add(-simplifiedEventResolveWindow))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return task, paidTaskOrderNotFound, nil
 		}
-		return task, paidTaskOrderNotFound, fmt.Errorf("按会话回填自动发货订单: %w", err)
+		return task, paidTaskOrderNotFound, fmt.Errorf("按会话识别近期订单: %w", err)
 	}
-	if order == nil {
+	if recent == nil {
 		return task, paidTaskOrderNotFound, nil
 	}
-	return mergeOrderIntoTask(task, order), paidTaskOrderResolved, nil
+	if c.logger != nil {
+		c.logger.Info("简化交易事件已按会话关联近期订单", "account", task.AccountID, "order_id", recent.OrderID, "trigger", task.TriggerType)
+	}
+	return mergeOrderIntoTask(task, recent), paidTaskOrderRecentResolved, nil
 }
 
 // prepareBuyerNickname 补齐模板渲染所需的买家昵称摘要。

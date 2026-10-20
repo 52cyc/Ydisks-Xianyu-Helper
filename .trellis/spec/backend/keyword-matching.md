@@ -6,15 +6,15 @@
 
 ## Signatures
 
-`keywordMatches(messageLower, rawKeyword string) bool` accepts an already lowercased message and the stored rule string. `isKeywordTermSeparator(separator rune) bool` defines its separators.
+`ReplyService.keywordMatches(kw db.Keyword, text string) bool` matches stored `Expressions` using `MatchType`. `keywordMatches(messageLower, rawKeyword string) bool` retains the fork's contains-mode separators. `keywordmatch.CompileExpression` centralizes Go/RE2 compilation for validation and execution.
 
 ## Contract
 
-Split on `|`, ASCII comma, Chinese comma, ideographic comma, LF and CR. Trim each term and match any nonempty term as a case-insensitive substring. Spaces inside a term do not split it. Item-scoped rules retain priority over account-scoped rules; item scope and keyword alternatives are independent.
+Expressions have OR semantics. In `contains` mode, split each expression on `|`, ASCII comma, Chinese comma, ideographic comma, LF and CR; trim and match nonempty terms as case-insensitive substrings. In `regexp` mode, pass complete expressions to Go/RE2 without splitting punctuation; default matching ignores case, with explicit inline flags supported. Spaces inside a contains term do not split it. Item-scoped rules retain priority over account-scoped rules.
 
 ## Validation
 
-Empty terms and separator-only rules never match. Existing rule text is not migrated: punctuation in old rules acquires separator semantics. The OpenAPI keyword descriptions and rule editor hints must agree with this contract.
+Empty contains terms never match. Invalid legacy regex expressions are logged by index/type without expression contents and skipped; unknown modes fail closed. Migration 59 adds expression storage and contains-mode defaults without deleting old keyword text. The API, UI and matcher must agree; regex punctuation must never pass through the legacy splitter.
 
 ## Cases
 

@@ -26,6 +26,11 @@ func reviewRequestRuleDue(order db.Order, rule db.AutomationRule) bool {
 	}
 	// baseRaw 保存本次计时起点的数据库时间文本。
 	baseRaw := firstNonEmpty(order.ShippedAt, order.UpdatedAt, order.CreatedAt)
+	// shippedAt 固定回溯基点为发货时间，防止停用规则后重新启用时补发积压求评。
+	shippedAt := parseDBTime(baseRaw)
+	if !shippedAt.IsZero() && time.Since(shippedAt) > time.Duration(cfg.effectiveLookbackHours())*time.Hour {
+		return false
+	}
 	// waitHours 表示从计时起点到本次求评的等待小时数。
 	waitHours := cfg.AfterShippedHours
 	if order.ReviewRequestCount > 0 && strings.TrimSpace(order.LastReviewRequestAt) != "" {
@@ -42,9 +47,27 @@ func reviewRequestRuleDue(order db.Order, rule db.AutomationRule) bool {
 
 // reviewRuleConfig 定义首次求评、重复求评与最大尝试次数。
 type reviewRuleConfig struct {
-	AfterShippedHours   int
+	// AfterShippedHours 是首次求评距离发货的等待小时数。
+	AfterShippedHours int
+	// RepeatIntervalHours 是重复求评的间隔小时数。
 	RepeatIntervalHours int
-	MaxAttempts         int
+	// MaxAttempts 限制单笔订单的求评次数。
+	MaxAttempts int
+	// MaxLookbackHours 是发货回溯小时数，零值使用完整求评流程加一天的窗口。
+	MaxLookbackHours int
+}
+
+// effectiveLookbackHours 返回求评配置的有效回溯小时数；显式窗口不得小于首次求评延迟。
+func (c reviewRuleConfig) effectiveLookbackHours() int {
+	// minHours 是走完所有求评次数所需的最短小时数。
+	minHours := c.AfterShippedHours + (c.MaxAttempts-1)*c.RepeatIntervalHours
+	if c.MaxLookbackHours <= 0 {
+		return minHours + 24
+	}
+	if c.MaxLookbackHours < c.AfterShippedHours {
+		return c.AfterShippedHours
+	}
+	return c.MaxLookbackHours
 }
 
 // parseReviewRuleConfig 解析历史规则 JSON，字段缺失或非法时保留安全默认值。
@@ -74,6 +97,10 @@ func parseReviewRuleConfig(raw string) reviewRuleConfig {
 	// value 是同一订单允许执行的最大求评次数。
 	if value := intFromAny(values["max_attempts"]); value > 0 {
 		cfg.MaxAttempts = value
+	}
+	// value 是显式配置的回溯窗口小时数，非正值保留默认策略。
+	if value := intFromAny(values["max_lookback_hours"]); value > 0 {
+		cfg.MaxLookbackHours = value
 	}
 	return cfg
 }

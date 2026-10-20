@@ -367,6 +367,8 @@ func openServerInfrastructure(ctx context.Context, startup serverStartupConfig, 
 	liveLogs := logging.NewLiveBuffer(2000)
 	// combinedLogWriter 同时写入原有日志目标与管理端内存缓冲区。
 	combinedLogWriter := io.MultiWriter(logWriter, liveLogs)
+	// 启用进程内运行时日志缓冲，供管理员在界面上查询最近的运行日志；容量为零时使用默认值。
+	logging.EnableRuntimeBuffer(0)
 	// logger 是当前进程的初始结构化日志器；后续数据库日志格式变更会替换默认 logger。
 	logger := logging.NewLogger(combinedLogWriter, startup.resolvedLogFormat)
 	slog.SetDefault(logger)

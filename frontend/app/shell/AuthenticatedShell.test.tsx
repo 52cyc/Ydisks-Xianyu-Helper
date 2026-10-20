@@ -23,6 +23,12 @@ vi.mock('../features/logs/pages/LiveLogs', /* liveLogsMockFactory 提供实时�
   return { default: LiveLogsMock };
 });
 
+vi.mock('../features/logs/pages/RuntimeLogs', /* runtimeLogsMockFactory 隔离运行日志轮询，只验证页面与权限装配。 */ () => {
+  // RuntimeLogsMock 表示与原始日志并存的结构化运行日志页面。
+  const RuntimeLogsMock: React.FC = () => <div data-testid="runtime-logs-page">运行日志</div>;
+  return { default: RuntimeLogsMock };
+});
+
 vi.mock('../features/items/pages/ItemList', /* itemListMockFactory 提供商品页面的联动替身。 */ () => {
   // MockItemListProps 描述商品页面替身接收的规则配置回调。
   interface MockItemListProps {
@@ -97,22 +103,22 @@ describe('AuthenticatedShell 页面组合行为', /* 当前回调验证权限回
     await waitFor(/* settingsAssertion 等待设置页面懒加载完成。 */ () => expect(screen.getByTestId('settings-page')).toBeTruthy());
   });
 
-  test('实时日志页只对管理员展示', /* liveLogsAuthorizationCase 覆盖日志页的客户端权限回退。 */ async () => {
+  test.each([['logs', 'live-logs-page'], ['runtime-logs', 'runtime-logs-page']])('日志路由 %s 只对管理员展示', /* route 是待访问日志路由，pageID 是对应页面标识，验证两个日志能力同时保留且普通用户回退。 */ async (route, pageID) => {
     // appContentModule 表示动态加载的页面组合模块。
     const appContentModule = await loadAppContent();
     // AppContentComponent 表示按权限切换日志页的组合组件。
     const AppContentComponent = appContentModule.AppContent;
     // adminView 是管理员访问实时日志路由的首次渲染结果。
     const adminView = render(
-      <AppContentComponent activeTab="logs" isAdmin onConfigureDelivery={/* configureTargetAction 接收商品规则目标。 */ () => undefined} onDeliveryTargetHandled={/* handledAction 表示规则目标已消费。 */ () => undefined} />,
+      <AppContentComponent activeTab={route} isAdmin onConfigureDelivery={/* configureTargetAction 接收商品规则目标。 */ () => undefined} onDeliveryTargetHandled={/* handledAction 表示规则目标已消费。 */ () => undefined} />,
     );
-    await waitFor(/* liveLogsAssertion 等待管理员日志页懒加载完成。 */ () => expect(screen.getByTestId('live-logs-page')).toBeTruthy());
+    await waitFor(/* liveLogsAssertion 等待管理员日志页懒加载完成。 */ () => expect(screen.getByTestId(pageID)).toBeTruthy());
     adminView.unmount();
     render(
-      <AppContentComponent activeTab="logs" isAdmin={false} onConfigureDelivery={/* configureTargetAction 接收商品规则目标。 */ () => undefined} onDeliveryTargetHandled={/* handledAction 表示规则目标已消费。 */ () => undefined} />,
+      <AppContentComponent activeTab={route} isAdmin={false} onConfigureDelivery={/* configureTargetAction 接收商品规则目标。 */ () => undefined} onDeliveryTargetHandled={/* handledAction 表示规则目标已消费。 */ () => undefined} />,
     );
     await waitFor(/* fallbackAssertion 等待非管理员回退到仪表盘。 */ () => expect(screen.getByTestId('dashboard-page')).toBeTruthy());
-    expect(screen.queryByTestId('live-logs-page')).toBeNull();
+    expect(screen.queryByTestId(pageID)).toBeNull();
   });
 
   test('商品配置入口把目标传递到规则页面并支持消费确认', /* 当前回调验证商品到规则页面的联动参数和消费确认。 */ async () => {
