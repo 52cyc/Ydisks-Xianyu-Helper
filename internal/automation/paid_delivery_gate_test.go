@@ -96,6 +96,8 @@ func TestPaidDeliveryBlockedReason(t *testing.T) {
 		{name: "已完成拦截", order: &db.Order{OrderStatus: "completed"}, want: "order_completed"},
 		{name: "已取消拦截", order: &db.Order{OrderStatus: "cancelled"}, want: "order_cancelled"},
 		{name: "退款中拦截", order: &db.Order{OrderStatus: "refunding"}, want: "order_refunding"},
+		{name: "部分发货拦截", order: &db.Order{OrderStatus: "partial_success"}, want: "order_partial_success"},
+		{name: "部分发货待收口拦截", order: &db.Order{OrderStatus: "partial_pending_finalize"}, want: "order_partial_pending_finalize"},
 		{name: "系统已发货拦截", order: &db.Order{OrderStatus: "pending_ship", SystemShipped: true}, want: "system_shipped"},
 	}
 	// testCase 是当前待验证的边界。
@@ -117,7 +119,7 @@ func TestPaidEventSkipsEndedOrdersAndDeliversUnknownStatus(t *testing.T) {
 		status string
 		// systemShipped 表示是否系统已发货。
 		systemShipped bool
-	}{{"shipped", false}, {"completed", false}, {"cancelled", false}, {"refunding", false}, {"pending_ship", true}}
+	}{{"shipped", false}, {"completed", false}, {"cancelled", false}, {"refunding", false}, {"partial_success", false}, {"partial_pending_finalize", false}, {"pending_ship", true}}
 	// item 是当前被拦截的订单夹具。
 	for index, item := range blocked {
 		// cleanup、fixture 分别保存：测试数据库的关闭函数；带账号、规则与假发送器的门禁测试夹具。

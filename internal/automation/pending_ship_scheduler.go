@@ -119,6 +119,8 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 	triggeredCount := 0
 	// afterOrderID 保存分页扫描的稳定订单游标。
 	afterOrderID := ""
+	// sweepStartedAt 是本轮完整扫描的起点；只有扫完全部候选页才会据此清除本轮没再出现的订单观测记录。
+	sweepStartedAt := time.Now().UTC()
 	for {
 		if ctx.Err() != nil {
 			s.center.logger.Warn("待发货兜底扫描达到本轮时间预算", "err", ctx.Err())
@@ -131,6 +133,7 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			return
 		}
 		if len(orders) == 0 {
+			s.pruneUnseenPendingShip(sweepStartedAt)
 			return
 		}
 		// order 表示当前待发货候选订单。
@@ -190,6 +193,7 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			cancel()
 		}
 		if len(orders) < pendingShipScanPageSize {
+			s.pruneUnseenPendingShip(sweepStartedAt)
 			return
 		}
 	}
@@ -223,6 +227,23 @@ func (s *Scheduler) pendingShipSettleWindowValue() time.Duration {
 		return 0
 	}
 	return s.pendingShipSettleWindow
+}
+
+// pruneUnseenPendingShip 在一轮完整扫描结束后清除本轮没有再出现的订单观测记录：
+// 订单曾短暂离开候选集合（例如退款后又重新待发货）时，再次出现必须重新获得完整的实时付款事件等待窗口，而不是沿用旧的首次观测时间。
+// 提前结束的扫描（预算或任务上限）不会调用本方法，因此未扫到的订单只会多保留记录，不会被误清。
+func (s *Scheduler) pruneUnseenPendingShip(sweepStartedAt time.Time) {
+	if s == nil {
+		return
+	}
+	s.pendingShipMu.Lock()
+	defer s.pendingShipMu.Unlock()
+	// orderID、item 是观测表中的订单号与记录，最近观测早于本轮起点说明本轮没有再扫到它。
+	for orderID, item := range s.pendingShipObserved {
+		if item.last.Before(sweepStartedAt) {
+			delete(s.pendingShipObserved, orderID)
+		}
+	}
 }
 
 // observePendingShip 记录候选订单在本轮扫描被观测到，并返回其连续出现的首次观测时间。

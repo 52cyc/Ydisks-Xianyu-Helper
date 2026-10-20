@@ -73,6 +73,8 @@ func TestSimplifiedPaidEventStillDeliversPendingShipOrder(t *testing.T) {
 	// store、cleanup 提供隔离数据库及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制本测试的规则创建与事件处理生命周期。
 	ctx := context.Background()
 	seedSimplifiedEventFixture(t, store, "pending_ship")

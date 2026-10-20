@@ -391,6 +391,11 @@ func (r automationRunCoordinator) tryContinueAfterUncertain(
 	if !continueAfterUncertainActionEnabled() || !canContinueAfterUncertainAction(actions[cursor+1:]) {
 		return nil, deliveryProof, nil
 	}
+	// 调用方上下文已取消（例如扫描预算耗尽）时不能再放行后续状态动作：检查点推进与确认发货都会因取消失败，
+	// 运行会停留在 running。此时直接沿用整链熔断，由调用方用独立补偿上下文收口为人工核对。
+	if ctx.Err() != nil {
+		return nil, deliveryProof, nil
+	}
 	// 放行前必须排除「确定未执行」这一类失败：发送前就被拒绝、或本地补取与库存恢复失败时，
 	// 买家并没有收到任何内容（例如库存在恢复失败后仍处于占用状态），此时把订单改判为已发货
 	// 只会掩盖本地不一致，必须维持整链熔断。判据与 executeRule 对确定未执行的处理保持一致。
@@ -494,7 +499,9 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 			if err == nil {
 				err = errors.New("自动化动作已被其他 worker 领取")
 			}
-			return sent, false, err
+			// settledErr、settledSent 分别保存：必要时已收口为人工核对的错误；必要时已收口为人工核对后的已确认数量。
+			settledSent, settledErr := r.settlePendingUncertainty(ctx, run, pendingUncertainty, sent, err)
+			return settledSent, false, settledErr
 		}
 		// n 保存外部动作明确成功产生的结果数量。
 		actionResult, actionErr := r.executeLeasedAction(ctx, task, action, deliveryProof, run)
@@ -568,7 +575,9 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 				}
 				return sent, false, fmt.Errorf("%w: %s", errAutomationNeedsReview, reason)
 			}
-			return sent, false, actionErr
+			// settledErr、settledSent 分别保存：必要时已收口为人工核对的错误；必要时已收口为人工核对后的已确认数量。
+			settledSent, settledErr := r.settlePendingUncertainty(ctx, run, pendingUncertainty, sent, actionErr)
+			return settledSent, false, settledErr
 		}
 		// nextProof 是本动作成功后应持久化的完整凭证，避免延迟或重启后丢失已发送内容。
 		nextProof := deliveryProof
@@ -614,20 +623,28 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 			delete(task.Raw, "automation_delay_cursor")
 		}
 	}
-	if pendingUncertainty != nil {
-		// 放行过幂等状态动作的运行同样必须收口为人工核对：消息动作的送达结果仍未被确认。
-		// quarantineCtx 保证延迟收尾恢复出的人工核对状态在调用方取消后仍能落库。
-		quarantineCtx, quarantineCancel := newAutomationRunCompensationContext(ctx)
-		// quarantineErr 保存延迟收尾人工核对状态的持久化错误。
-		quarantineErr := r.store.Automation.QuarantineRunResultWithProof(quarantineCtx, run.ID, run.AttemptCount, pendingUncertainty.sent, pendingUncertainty.reason, pendingUncertainty.proof)
-		quarantineCancel()
-		if quarantineErr != nil {
-			r.logger.Error("保存不确定动作人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
-			return pendingUncertainty.sent, false, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, pendingUncertainty.err, quarantineErr)
-		}
-		return pendingUncertainty.sent, false, fmt.Errorf("%w: %v", errAutomationNeedsReview, pendingUncertainty.err)
+	// 放行过幂等状态动作的运行同样必须收口为人工核对：消息动作的送达结果仍未被确认；没有待收口状态时原样返回。
+	finalSent, finalErr := r.settlePendingUncertainty(ctx, run, pendingUncertainty, sent, nil)
+	return finalSent, false, finalErr
+}
+
+// settlePendingUncertainty 把放行后的待收口状态落库为人工核对，并返回应对外报告的数量与错误。
+// pending 为 nil 表示没有待收口的不确定结果，原样返回 sent 与 cause；cause 非空时与人工核对错误合并，使调用方既能识别人工核对，也能看到后续动作的失败原因。
+// 放行后的幂等状态动作因取消、占用冲突或明确未执行而提前退出时也必须经过这里，否则前序消息动作的不确定结果会被丢弃，运行可能被当作普通失败而重放发卡。
+func (r automationRunCoordinator) settlePendingUncertainty(ctx context.Context, run *db.AutomationRun, pending *uncertainActionState, sent int, cause error) (int, error) {
+	if pending == nil {
+		return sent, cause
 	}
-	return sent, false, nil
+	// quarantineCtx 保证调用方已取消时人工核对状态仍能落库。
+	quarantineCtx, quarantineCancel := newAutomationRunCompensationContext(ctx)
+	// quarantineErr 保存人工核对状态的写入错误。
+	quarantineErr := r.store.Automation.QuarantineRunResultWithProof(quarantineCtx, run.ID, run.AttemptCount, pending.sent, pending.reason, pending.proof)
+	quarantineCancel()
+	if quarantineErr != nil {
+		r.logger.Error("保存不确定动作人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
+		return pending.sent, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, pending.err, cause, quarantineErr)
+	}
+	return pending.sent, errors.Join(fmt.Errorf("%w: %v", errAutomationNeedsReview, pending.err), cause)
 }
 
 // executeActionNow 在动作真正触达外部系统前执行账号门禁，并把前序发卡动作的凭证传给当前动作。

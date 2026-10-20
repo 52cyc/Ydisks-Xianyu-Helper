@@ -134,7 +134,7 @@ func isPendingShipOrder(order *db.Order) bool {
 
 // paidDeliveryBlockedReason 判断订单是否已被证明不应再执行付款发货，返回空字符串表示可以继续。
 // 付款 WebSocket 事件本身不写入 pending_ship，订单状态可能仍是 unknown 或 processing，因此这里只拦截已发货、已完成、
-// 已取消、退款中和系统已发货的订单，不要求状态必须等于待发货；订单为 nil（本地尚无记录）时放行，由后续规则与幂等键兜底。
+// 已取消、退款中、部分发货（partial_success、partial_pending_finalize，再发卡会重复交付）和系统已发货的订单，不要求状态必须等于待发货；订单为 nil（本地尚无记录）时放行，由后续规则与幂等键兜底。
 func paidDeliveryBlockedReason(order *db.Order) string {
 	if order == nil {
 		return ""
@@ -145,7 +145,7 @@ func paidDeliveryBlockedReason(order *db.Order) string {
 	// status 是归一后的订单状态，用于判断是否已越过待发货阶段。
 	status := db.NormalizeOrderStatus(strings.TrimSpace(order.OrderStatus))
 	switch status {
-	case "shipped", "completed", "cancelled", "refunding":
+	case "shipped", "completed", "cancelled", "refunding", "partial_success", "partial_pending_finalize":
 		return "order_" + status
 	default:
 		return ""

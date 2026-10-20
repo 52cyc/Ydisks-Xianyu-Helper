@@ -152,7 +152,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
           <div className="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl">
             <div className="min-w-0">
               <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动发货</div>
-              <div className="text-xs text-gray-500">买家付款后自动发送卡密/模板消息（自动化总开关）</div>
+              <div className="text-xs text-gray-500">买家付款后自动发送卡密/模板消息（自动化总开关）；只负责发货内容，不会改变闲鱼订单状态</div>
             </div>
             <button
               type="button"
@@ -168,7 +168,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
           <div className="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl">
             <div className="min-w-0">
               <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动确认发货</div>
-              <div className="text-xs text-gray-500">发完卡密后自动调闲鱼"已发货"接口；慢充业务建议关闭，避免触发买家自动收货倒计时</div>
+              <div className="text-xs text-gray-500">发完卡密后自动调闲鱼"已发货"接口，订单才会变为已发货（需同时开启上方「自动发货」）；慢充业务建议关闭，避免触发买家自动收货倒计时</div>
             </div>
             <button
               type="button"
