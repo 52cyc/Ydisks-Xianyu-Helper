@@ -401,3 +401,32 @@ func (s *Scheduler) releasePendingShipAttempt(orderID string) {
 	defer s.pendingShipMu.Unlock()
 	delete(s.pendingShipCooldown, orderID)
 }
+
+// quarantineMissingProofResume 把凭证缺失的退款撤回续跑候选转入人工核对并通知。
+// 通知 outbox 记录与状态更新在同一数据库事务内写入：只有运行确实被隔离才会产生通知，隔离失败或并发竞争时不会发出
+// 与状态不一致的通知；渠道查询失败则放弃本轮、运行保持原状，下一轮重试。通知器不支持事务内入队时回退为隔离后尽力通知。
+func (s *Scheduler) quarantineMissingProofResume(ctx context.Context, candidate db.PendingShipResume) {
+	// reason 说明停止自动确认发货的原因，不含任何凭证内容。
+	reason := "退款撤回后续跑缺少已发送的发货凭证，已停止自动确认发货，请人工核对"
+	// run 由扫描候选直接构造通知上下文，不依赖回读数据库。
+	run := db.AutomationRun{
+		ID: candidate.RunID, RuleID: candidate.RuleID, CookieID: candidate.Order.CookieID, ItemID: candidate.Order.ItemID,
+		OrderID: candidate.Order.OrderID, BuyerID: candidate.Order.BuyerID, ChatID: candidate.Order.ChatID,
+		TriggerType: TriggerOrderPaid, Status: "needs_review", AttemptCount: candidate.Attempt, ActionCursor: candidate.ActionCursor,
+	}
+	// outbox、transactional、prepareErr 保存待事务写入的通知记录、是否支持事务内入队及渠道查询错误。
+	outbox, transactional, prepareErr := s.center.notifications.prepareRunNeedsReviewOutbox(ctx, run, reason)
+	if prepareErr != nil {
+		s.center.logger.Error("准备缺失凭证续跑的人工处理通知失败，保留运行等待下一轮重试", "run_id", candidate.RunID, "err", prepareErr)
+		return
+	}
+	// quarantined、err 保存条件隔离（含通知入队）结果；陈旧扫描零行更新属于正常竞争。
+	quarantined, err := s.center.store.Automation.QuarantineCanceledRunMissingProof(ctx, candidate.RunID, candidate.Attempt, reason, outbox)
+	if err != nil {
+		s.center.logger.Error("保存缺失凭证续跑运行人工核对状态失败，下一轮重试", "run_id", candidate.RunID, "err", err)
+		return
+	}
+	if quarantined && !transactional {
+		s.center.notifyRunNeedsReview(ctx, run, reason)
+	}
+}

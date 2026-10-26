@@ -590,7 +590,8 @@ func (a *AutomationRules) reclaimRun(ctx context.Context, execer sqlQueryExecer,
 	   AND ((status='running' AND action_started=0 AND (lease_expires_at=0 OR lease_expires_at<?))
 	        OR (status='failed' AND action_started=0 AND next_retry_at<=?
 	            AND ((attempt_count<3 AND ((sent_count=0 AND error_message NOT LIKE '[no_retry]%') OR error_message LIKE '[safe_retry]%'))
-	                 OR (attempt_count<? AND error_message LIKE '[external_wait]%'))))`,
+	                 OR (attempt_count<? AND error_message LIKE '[external_wait]%')))
+	        OR (`+reclaimableObsoleteRunSQL+`))`,
 		leaseExpiresAt, run.RuleID, run.TriggerKey, run.CookieID, run.OrderID, now, now, externalWaitMaxAttempts)
 	if err != nil {
 		return 0, false, err

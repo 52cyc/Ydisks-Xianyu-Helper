@@ -20,6 +20,8 @@ const (
 	paidTaskOrderAlreadyKnown paidTaskOrderResolution = "order_id_already_present"
 	// paidTaskOrderMissingChat 表示付款事件同时缺少订单号和会话标识，无法执行安全回填。
 	paidTaskOrderMissingChat paidTaskOrderResolution = "missing_chat_id"
+	// paidTaskOrderMissingOrderID 表示付款或砍价缺少订单号，禁止按会话猜单，等待同步后安全兜底。
+	paidTaskOrderMissingOrderID paidTaskOrderResolution = "missing_order_id_no_chat_inference"
 	// paidTaskOrderRepositoryUnavailable 表示自动化中心未配置订单仓储，因此未执行本地回填。
 	paidTaskOrderRepositoryUnavailable paidTaskOrderResolution = "order_repository_unavailable"
 	// paidTaskOrderNotFound 表示按账号和会话未找到可用的本地待发货订单。
@@ -56,23 +58,17 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, pai
 	if task.ChatID == "" {
 		return task, paidTaskOrderMissingChat, nil
 	}
-	// isCreated 表示拍下事件；拍下事件没有待发货语义，只允许在订单号和商品都缺失时按近期订单识别重复事件。
-	isCreated := task.TriggerType == TriggerOrderCreated
-	if isCreated && task.ItemID != "" {
+	if task.TriggerType != TriggerOrderCreated {
+		// 付款与砍价阶段事件缺少订单号时不按会话猜测订单：买家加商品也不能唯一确定一笔交易，
+		// 同一买家再次购买同一商品而新订单尚未同步时，旧的待发货订单会被误发卡，已发货旧订单会把新消息误当重复消息收口。
+		// 事件保持订单号缺失；付款事件由角色门禁安全收口，订单同步后的丢消息兜底由待发货扫描负责。
+		return task, paidTaskOrderMissingOrderID, nil
+	}
+	if task.ItemID != "" {
+		// 拍下事件已带商品，说明不是只含会话标识的简化事件，不改写。
 		return task, paidTaskOrderNotApplicable, nil
 	}
-	if !isCreated {
-		// order、err 保存按账号、会话以及可选买家和商品条件命中的待发货订单与查询错误。
-		order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
-		if err != nil && !errors.Is(err, db.ErrNotFound) {
-			return task, paidTaskOrderNotFound, fmt.Errorf("按会话回填自动发货订单: %w", err)
-		}
-		if order != nil {
-			return mergeOrderIntoTask(task, order), paidTaskOrderResolved, nil
-		}
-	}
-	// recent 保存同会话近期已被完整事件处理的订单（如已发货）；简化事件只含会话标识，
-	// 命中后合并订单事实，使后续角色门禁把“订单已不是待发货”判为不可重试并安全收口，而不是反复延期后误报人工处理。
+	// recent、err 保存仅拍下事件按会话命中的近期订单与查询错误；付款和砍价事件绝不进入此查询。
 	recent, err := c.store.Orders.FindRecentByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID, time.Now().Add(-simplifiedEventResolveWindow))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
@@ -205,7 +201,7 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 		return task, detailErr
 	}
 	if detail == nil {
-		return task, nil
+		return task, requireReliablePaidQuantity(task)
 	}
 	if detail.Quantity != "" {
 		task.Quantity = detail.Quantity
@@ -255,5 +251,17 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 	}); err != nil {
 		return task, fmt.Errorf("保存订单详情事实: %w", err)
 	}
-	return task, nil
+	return task, requireReliablePaidQuantity(task)
+}
+
+// requireReliablePaidQuantity 要求付款发货在执行外部动作前已可靠取得正整数购买数量。
+// 订单详情成功但缺少或无法识别 buyAmount 时，数量不得退化为 1 而少发卡密；返回错误使准备阶段延期重试。
+func requireReliablePaidQuantity(task Task) error {
+	if task.TriggerType != TriggerOrderPaid {
+		return nil
+	}
+	if parsePositiveInt(task.Quantity) <= 0 {
+		return fmt.Errorf("订单 %s 的购买数量缺失或无法识别，暂不自动发货", task.OrderID)
+	}
+	return nil
 }

@@ -180,7 +180,7 @@ func TestResolvePaidTaskOrderFailures(t *testing.T) {
 		t.Fatalf("缺订单应原样返回: %+v %v", got, err)
 	}
 	// byChat 是只有会话号的付款任务。
-	byChat := Task{TriggerType: TriggerOrderPaid, AccountID: "cid", ChatID: "chat-none"}
+	byChat := Task{TriggerType: TriggerOrderPaid, AccountID: "cid", ChatID: "chat-none", BuyerID: "b", ItemID: "i"}
 	got, _, err = center.resolvePaidTaskOrder(ctx, byChat)
 	if err != nil || got.OrderID != "" {
 		t.Fatalf("无待发货订单应原样返回: %+v %v", got, err)
@@ -189,7 +189,16 @@ func TestResolvePaidTaskOrderFailures(t *testing.T) {
 	if _, _, err = center.resolvePaidTaskOrder(ctx, byOrder); err == nil || !strings.Contains(err.Error(), "按订单回填") {
 		t.Fatalf("应返回订单读取错误: %v", err)
 	}
-	if _, _, err = center.resolvePaidTaskOrder(ctx, byChat); err == nil || !strings.Contains(err.Error(), "按会话回填") {
-		t.Fatalf("应返回会话读取错误: %v", err)
+	if got, _, err = center.resolvePaidTaskOrder(ctx, byChat); err != nil || got.OrderID != "" {
+		t.Fatalf("缺订单号的付款事件不应读取会话订单: %+v %v", got, err)
+	}
+	// trigger 覆盖付款和砍价阶段；订单表不可读时也必须直接保留缺订单号事实，不访问会话旧单。
+	for _, trigger := range []string{TriggerOrderPaid, TriggerBargainPending} {
+		byChat.TriggerType = trigger
+		// unchanged、resolution、resolveErr 验证订单未被猜测且诊断码可用于定位缺字段原因。
+		unchanged, resolution, resolveErr := center.resolvePaidTaskOrder(ctx, byChat)
+		if resolveErr != nil || unchanged.OrderID != "" || resolution != paidTaskOrderMissingOrderID {
+			t.Fatalf("%s 缺订单号时不应按会话猜单: order=%s resolution=%s err=%v", trigger, unchanged.OrderID, resolution, resolveErr)
+		}
 	}
 }

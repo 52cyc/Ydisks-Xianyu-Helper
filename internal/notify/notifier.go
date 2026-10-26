@@ -182,14 +182,44 @@ func (n *Notifier) NotifyAutomationRunForTrigger(ctx context.Context, triggerTyp
 
 // notifyAutomationRun 统一处理自动化终态通知的输入校验、格式化和幂等入队。
 func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) {
+	// event、idempotencyKey、ok 保存构造出的通知事件、稳定幂等键及入参是否有效。
+	event, idempotencyKey, ok := n.automationRunEvent(eventType, runID, accountID, buyerID, itemID, status, message, chatID)
+	if !ok {
+		return
+	}
+	n.notifyEvent(ctx, event, idempotencyKey)
+}
+
+// PrepareAutomationRunOutbox 只计算自动化运行终态通知应写入的 outbox 记录，不执行任何写入。
+// 调用方（数据库仓储）必须在推进业务状态的同一事务内写入这些记录，使「状态变化」与「通知」要么同时生效、要么同时不生效。
+// 没有启用渠道、订阅不匹配或入参无效时返回空切片；渠道查询失败返回错误，调用方应放弃本轮并稍后重试。
+func (n *Notifier) PrepareAutomationRunOutbox(ctx context.Context, triggerType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) ([]db.NotificationOutboxInput, error) {
+	// event、idempotencyKey、ok 保存构造出的通知事件、稳定幂等键及入参是否有效。
+	event, idempotencyKey, ok := n.automationRunEvent(automationEventType(triggerType), runID, accountID, buyerID, itemID, status, message, chatID)
+	if !ok || n.repository == nil || ctx == nil {
+		return nil, nil
+	}
+	if event.Time.IsZero() {
+		event.Time = time.Now()
+	}
+	// eligible、err 保存订阅匹配的渠道及渠道查询错误。
+	eligible, err := n.eligibleChannels(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	return buildOutboxMessages(eligible, event, idempotencyKey), nil
+}
+
+// automationRunEvent 校验输入并构造自动化终态通知事件及其稳定幂等键；ok 为 false 表示输入无效应被忽略。
+func (n *Notifier) automationRunEvent(eventType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) (event NotificationEvent, idempotencyKey string, ok bool) {
 	if n == nil || runID <= 0 || strings.TrimSpace(status) == "" {
 		if n != nil && n.logger != nil {
 			n.logger.Warn("忽略无效的自动化终态通知", "run_id", runID, "account_id", accountID, "status", status)
 		}
-		return
+		return NotificationEvent{}, "", false
 	}
 	// idempotencyKey 绑定自动化运行主键与终态，避免恢复扫描或状态收口重试创建新 outbox 消息。
-	idempotencyKey := fmt.Sprintf("automation-run:%d:%s", runID, strings.TrimSpace(status))
+	idempotencyKey = fmt.Sprintf("automation-run:%d:%s", runID, strings.TrimSpace(status))
 	// notificationType、notificationLevel、notificationTitle 和 fallbackTypes 共同区分普通终态与必须人工介入的终态。
 	notificationType, notificationLevel, notificationTitle := eventType, "info", "自动化运行通知"
 	// fallbackTypes 保存人工处理终态原本所属的自动化类别，兼容现有渠道订阅。
@@ -198,7 +228,7 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 		notificationType, notificationLevel, notificationTitle = EventManualInterventionRequired, "critical", "自动化需要人工处理"
 		fallbackTypes = []string{eventType}
 	}
-	n.notifyEvent(ctx, NotificationEvent{
+	return NotificationEvent{
 		AccountID: accountID,
 		Type:      notificationType,
 		Level:     notificationLevel,
@@ -211,7 +241,7 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 			"结果":   message,
 		},
 		SubscriptionFallbackTypes: fallbackTypes,
-	}, idempotencyKey)
+	}, idempotencyKey, true
 }
 
 // NotifyManualIntervention 将没有 automation_run 主键的自动化异常按稳定业务键写入人工处理通知。
@@ -299,46 +329,18 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	// channels、err 用于本次流程后续判断的channels、err
-	channels, err := n.repository.AccountChannels(ctx, ev.AccountID)
-	if err != nil {
-		n.logger.Error("查询通知渠道失败", "event_type", ev.Type, "account_id", ev.AccountID, "err", logsafe.Error(err))
-		return
-	}
-	if len(channels) == 0 {
-		n.logger.Info("通知事件未找到已启用渠道", "event_type", ev.Type, "account_id", ev.AccountID)
-		return
-	}
 	// full 用于本次流程后续判断的full
 	full := formatEvent(ev)
-	// eligible 用于本次流程后续判断的eligible
-	eligible := make([]db.NotificationChannel, 0, len(channels))
-	// ch 表示当前遍历过程中的ch
-	for _, ch := range channels {
-		// allowed、err 用于本次流程后续判断的allowed、err
-		allowed, err := eventAllowedWithFallbacks(ch.EventTypes, ev.Type, ev.SubscriptionFallbackTypes)
-		if err != nil {
-			n.logger.Warn("通知事件订阅配置无效，跳过渠道", "channel", ch.ID, "event_types", ch.EventTypes, "err", err)
-			continue
-		}
-		if !allowed {
-			continue
-		}
-		eligible = append(eligible, ch)
-	}
-	if len(eligible) == 0 {
-		n.logger.Info("通知事件没有匹配的订阅渠道", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(channels))
+	// eligible、err 保存订阅匹配的渠道及渠道查询错误。
+	eligible, err := n.eligibleChannels(ctx, ev)
+	if err != nil || len(eligible) == 0 {
 		return
 	}
 	// 自动化运行终态必须先进入 outbox：即使 worker 尚未随应用生命周期启动，也不能回退到
 	// 同步网络发送，否则会绕过业务幂等键和发送成功后的 uncertain 隔离。
 	if n.started.Load() || strings.TrimSpace(idempotencyKey) != "" {
 		// messages 保存本事件每个允许渠道的一条 outbox 记录，并共享同一个业务投递键。
-		messages := make([]db.NotificationOutboxInput, 0, len(eligible))
-		// ch 表示当前遍历过程中的ch
-		for _, ch := range eligible {
-			messages = append(messages, db.NotificationOutboxInput{ChannelID: ch.ID, EventType: ev.Type, Body: full, IdempotencyKey: idempotencyKey})
-		}
+		messages := buildOutboxMessages(eligible, ev, idempotencyKey)
 		if // err 用于本次流程后续判断的err
 		err := n.repository.EnqueueOutbox(ctx, messages); err != nil {
 			n.logger.Error("持久化通知失败", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(eligible), "err", logsafe.Error(err))
@@ -356,6 +358,53 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 			n.logger.Info("通知已发送", "channel", ch.Type, "channel_id", ch.ID, "event_type", ev.Type)
 		}
 	}
+}
+
+// eligibleChannels 查询账号已启用渠道并按事件订阅过滤；无渠道或无匹配订阅返回空切片，仅渠道查询失败返回错误。
+func (n *Notifier) eligibleChannels(ctx context.Context, ev NotificationEvent) ([]db.NotificationChannel, error) {
+	// channels、err 保存账号渠道查询结果
+	channels, err := n.repository.AccountChannels(ctx, ev.AccountID)
+	if err != nil {
+		n.logger.Error("查询通知渠道失败", "event_type", ev.Type, "account_id", ev.AccountID, "err", logsafe.Error(err))
+		return nil, err
+	}
+	if len(channels) == 0 {
+		n.logger.Info("通知事件未找到已启用渠道", "event_type", ev.Type, "account_id", ev.AccountID)
+		return nil, nil
+	}
+	// eligible 用于本次流程后续判断的eligible
+	eligible := make([]db.NotificationChannel, 0, len(channels))
+	// ch 表示当前遍历过程中的ch
+	for _, ch := range channels {
+		// allowed、err 用于本次流程后续判断的allowed、err
+		allowed, err := eventAllowedWithFallbacks(ch.EventTypes, ev.Type, ev.SubscriptionFallbackTypes)
+		if err != nil {
+			n.logger.Warn("通知事件订阅配置无效，跳过渠道", "channel", ch.ID, "event_types", ch.EventTypes, "err", err)
+			continue
+		}
+		if !allowed {
+			continue
+		}
+		eligible = append(eligible, ch)
+	}
+	if len(eligible) == 0 {
+		n.logger.Info("通知事件没有匹配的订阅渠道", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(channels))
+		return nil, nil
+	}
+	return eligible, nil
+}
+
+// buildOutboxMessages 为每个允许渠道生成一条共享业务投递键的 outbox 记录。
+func buildOutboxMessages(eligible []db.NotificationChannel, ev NotificationEvent, idempotencyKey string) []db.NotificationOutboxInput {
+	// full 是格式化后的通知正文
+	full := formatEvent(ev)
+	// messages 保存每个渠道的一条待写入记录
+	messages := make([]db.NotificationOutboxInput, 0, len(eligible))
+	// ch 是一个允许接收该事件的渠道。
+	for _, ch := range eligible {
+		messages = append(messages, db.NotificationOutboxInput{ChannelID: ch.ID, EventType: ev.Type, Body: full, IdempotencyKey: idempotencyKey})
+	}
+	return messages
 }
 
 // runOutbox 封装运行Outbox业务协调。

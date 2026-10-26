@@ -135,8 +135,8 @@ func (c *ClientImpl) fetchOrderDetailOnce(ctx context.Context, cookiesStr, order
 // 平台会在不同账号、订单状态和页面版本下改变 components 的容器类型或嵌套层级，
 // 因此这里不能只断言固定的 []any + orderInfoVO 结构。
 func parseOrderDetailData(data map[string]any) *OrderDetailResult {
-	// result 保存递归扫描得到的订单详情字段；数量默认 1 与历史兼容行为保持一致。
-	result := &OrderDetailResult{Quantity: "1", OrderFields: map[string]string{}}
+	// result 保存递归扫描的订单与收货字段；平台缺少购买数量时保持为空，禁止自动发货猜测为一份。
+	result := &OrderDetailResult{OrderFields: map[string]string{}}
 	collectOrderDetailData(data, result, 0)
 	return result
 }
@@ -214,7 +214,7 @@ func mergeOrderDetailItem(node any, result *OrderDetailResult) {
 	if !ok || result == nil {
 		return
 	}
-	// quantity 保存当前商品节点中的购买数量；非空值覆盖默认数量或较早的缺省值。
+	// quantity 保存当前商品节点中的购买数量；非空值覆盖较早的缺省值。
 	if quantity := mtopString(itemInfo["buyAmount"]); quantity != "" {
 		result.Quantity = quantity
 	}

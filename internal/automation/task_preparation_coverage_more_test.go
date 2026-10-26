@@ -55,7 +55,7 @@ func TestPrepareBuyerNicknameBoundaries(t *testing.T) {
 	closedCleanup()
 }
 
-// TestResolvePaidTaskOrderFromSimplifiedContext 验证简化付款事件可从本账号会话订单补齐自动发货所需事实。
+// TestResolvePaidTaskOrderFromSimplifiedContext 验证缺订单号的简化付款事件不会按会话猜测订单，原有事实原样保留。
 func TestResolvePaidTaskOrderFromSimplifiedContext(t *testing.T) {
 	// store、cleanup 提供自动化中心所需的隔离数据库。
 	store, cleanup := newAutomationTestStore(t)
@@ -72,10 +72,10 @@ func TestResolvePaidTaskOrderFromSimplifiedContext(t *testing.T) {
 	center := New(store, nil, nil)
 	// task 保存只有会话、买家和商品事实的简化付款任务。
 	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "simple-chat", BuyerID: "buyer-1", ItemID: "item-1"}
-	// resolved、resolution 和 resolveErr 保存回填后的付款任务、结果码及错误。
+	// resolved、resolveErr 保存回填后的付款任务及错误。
 	resolved, resolution, resolveErr := center.resolvePaidTaskOrder(ctx, task)
-	if resolveErr != nil || resolved.OrderID != "simple-order" || resolution != paidTaskOrderResolved {
-		t.Fatalf("简化付款订单回填异常: task=%+v resolution=%s err=%v", resolved, resolution, resolveErr)
+	if resolveErr != nil || resolved.OrderID != "" || resolved.ItemID != "item-1" || resolution != paidTaskOrderMissingOrderID {
+		t.Fatalf("缺订单号的付款事件不应按会话猜测订单: task=%+v err=%v", resolved, resolveErr)
 	}
 	// untouched、untouchedResolution 和 untouchedErr 验证普通评价任务不会触发付款订单回填。
 	untouched, untouchedResolution, untouchedErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerBuyerReviewed, ChatID: "simple-chat"})
@@ -87,9 +87,9 @@ func TestResolvePaidTaskOrderFromSimplifiedContext(t *testing.T) {
 	if missingChatErr != nil || missingChatResolution != paidTaskOrderMissingChat {
 		t.Fatalf("缺少会话的付款事件诊断错误: resolution=%s err=%v", missingChatResolution, missingChatErr)
 	}
-	// notFoundResolution 验证会话存在但本地无待发货订单时会输出未命中结果。
+	// notFoundResolution 验证会话存在但缺少订单号时直接记录禁止猜单诊断。
 	_, notFoundResolution, notFoundErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "unknown-chat"})
-	if notFoundErr != nil || notFoundResolution != paidTaskOrderNotFound {
+	if notFoundErr != nil || notFoundResolution != paidTaskOrderMissingOrderID {
 		t.Fatalf("本地待发货订单未命中诊断错误: resolution=%s err=%v", notFoundResolution, notFoundErr)
 	}
 }

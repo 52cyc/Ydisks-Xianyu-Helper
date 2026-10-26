@@ -783,3 +783,12 @@ go run ./cmd/server -init-admin -db data/xianyu_data.db -admin-password '新密�
 本项目受到 LINUX DO 社区的交流与反馈支持：
 
 [访问 LINUX DO 社区](https://linux.do/)
+### 赞助项目
+
+如果项目对你有帮助，可通过 BNB Smart Chain（BSC，BEP-20）上的 USDT 或 USDC 支持原项目持续开发：
+
+`0xc7b77931af39e292bfcadef6228a067ad5a69e3a`
+
+![USDT and USDC sponsor QR code on BNB Smart Chain (BEP-20)](docs/img/sponsor-bsc.png)
+
+请只使用 BNB Smart Chain（BEP-20）网络转账，使用其他网络可能造成资产损失。
