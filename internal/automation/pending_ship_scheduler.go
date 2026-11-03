@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/logging"
 )
 
 // paidRecoveryReady 重新核对付款运行的来源、最新订单状态和自动发货总开关。
@@ -168,12 +170,24 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 	if strings.TrimSpace(os.Getenv(pendingShipCatchupEnv)) == "0" || s == nil || s.center == nil || s.center.store == nil || s.center.store.Automation == nil || leftTasks <= 0 {
 		return
 	}
+	// 本轮扫描的 job/tick_id 挂到 ctx，单个订单的补触发、发卡与 MTOP 日志都能按 tick_id 归到同一轮。
+	ctx = logging.With(ctx, slog.String("job", "pending_ship_catchup"), slog.String("tick_id", logging.NewTickID()))
+	// scanStarted 是本轮扫描起点，用于输出汇总耗时。
+	scanStarted := time.Now()
 	// triggeredCount 统计本轮实际领取的订单数。
 	triggeredCount := 0
+	// 只有本轮真正补触发了订单才输出一行汇总；空转扫描不产生 Info，避免每分钟刷屏。
+	defer func() {
+		if triggeredCount > 0 {
+			s.center.logger.InfoContext(ctx, "待发货兜底扫描完成", "triggered", triggeredCount, "duration", time.Since(scanStarted).Round(time.Millisecond))
+		}
+	}()
 	// afterOrderID 保存分页扫描的稳定订单游标。
 	afterOrderID := ""
 	// sweepStartedAt 是本轮完整扫描的起点；只有扫完全部候选页才会据此清除本轮没再出现的订单观测记录。
 	sweepStartedAt := time.Now().UTC()
+	// blockedAccounts 记录本轮已遇到风控、会话失效或 Token 耗尽的账号，其余订单留待下一轮，不再请求平台。
+	blockedAccounts := map[string]struct{}{}
 	for {
 		if ctx.Err() != nil {
 			s.center.logger.Warn("待发货兜底扫描达到本轮时间预算", "err", ctx.Err())
@@ -200,10 +214,14 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 				return
 			}
 			afterOrderID = order.OrderID
+			// blocked 表示该订单所属账号本轮已被平台阻断，其订单不再发起请求。
+			if _, blocked := blockedAccounts[order.CookieID]; blocked {
+				continue
+			}
 			// catchupReady、waitReason 保存当前订单是否已越过实时事件优先窗口及未放行原因。
 			catchupReady, waitReason := pendingShipCatchupReady(order, s.observePendingShip(order.OrderID, time.Now().UTC()), time.Now().UTC(), s.pendingShipSettleWindowValue())
 			if !catchupReady {
-				s.center.logger.Info("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
+				s.center.logger.Debug("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
 				continue
 			}
 			// allowed、allowErr 保存账号自动化门禁结果。
@@ -225,7 +243,7 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 				continue
 			}
 			if !s.center.accountSenderReady(order.CookieID) {
-				s.center.logger.Info("账号 WebSocket 尚未就绪，待发货兜底任务等待下次扫描", "account", order.CookieID, "order_id", order.OrderID)
+				s.center.logger.Debug("账号 WebSocket 尚未就绪，待发货兜底任务等待下次扫描", "account", order.CookieID, "order_id", order.OrderID)
 				continue
 			}
 			if !s.claimPendingShipAttempt(order.OrderID) {
@@ -242,6 +260,9 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			// err 保存兜底任务执行错误；失败只影响当前订单。
 			if err := s.center.HandleTask(taskCtx, task); err != nil {
 				s.center.logger.Warn("待发货兜底任务执行失败", "account", order.CookieID, "order_id", order.OrderID, "err", err)
+				if isPlatformBlockErr(err) {
+					blockedAccounts[order.CookieID] = struct{}{}
+				}
 			}
 			cancel()
 		}

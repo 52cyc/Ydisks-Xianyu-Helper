@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"xianyu-go/internal/db"
@@ -57,6 +58,23 @@ func (e *automationActionExecutor) sendCardWithProof(ctx context.Context, task T
 		// executionErr 阻止失权运行继续取下一份卡密，已发送的 proof 必须随错误返回。
 		if executionErr := checkRunExecution(ctx); executionErr != nil {
 			return actionExecutionResult{sent: sent, proof: proof}, executionErr
+		}
+
+		// 图片库图片卡密：与 URL 图片卡密相同的“发送成功才计数”语义，但来源是图片库，消息凭证记录图片令牌而不是地址。
+		if card.Type == "image" && card.LibraryImageID > 0 {
+			// libraryMessage 保存该图片库图片在发货凭证中的消息记录，补发时据此重新读取图片库。
+			libraryMessage := db.AutomationDeliveryMessage{Kind: "library_image", Content: strconv.FormatInt(card.LibraryImageID, 10)}
+			// sendErr 保存发送图片库图片的失败原因，用于判定是否确定未发送。
+			if sendErr := e.sendLibraryImage(ctx, task, card.LibraryImageID, card.ID); sendErr != nil {
+				if errors.Is(sendErr, ErrMessageNotSent) {
+					return actionExecutionResult{sent: sent, proof: proof}, classifyMessageSendError(sendErr)
+				}
+				return actionExecutionResult{sent: sent, proof: proof, reviewProof: shipmentDeliveryProof{unknownUnits: 1, messages: []db.AutomationDeliveryMessage{libraryMessage}}}, classifyMessageSendError(sendErr)
+			}
+			proof.messages = append(proof.messages, libraryMessage)
+			sent++
+			proof.preparedUnits++
+			continue
 		}
 
 		// content、imageURL、readErr 分别是当前卡密组可发送的文本、图片地址和读取配置失败原因。
@@ -139,7 +157,14 @@ func (e *automationActionExecutor) sendAPICardWithProof(ctx context.Context, tas
 			return actionExecutionResult{sent: sent, proof: proof}, uncertainAction(errors.New("API 卡发货响应没有可发送内容"))
 		}
 		// sendErr 保存已取得卡密后向买家发送消息的结果；此时失败不能安全重放 API 请求。
-		if sendErr := e.sendText(ctx, task, result.Content); sendErr != nil {
+		sendErr := e.sendText(ctx, task, result.Content)
+		// saleStatus 是该 API 卡密的台账状态：发送成功即已售，否则保持待核对。
+		saleStatus := db.SaleStatusSold
+		if sendErr != nil {
+			saleStatus = db.SaleStatusReserved
+		}
+		e.recordAPISale(ctx, task, card.ID, result.Content, saleStatus)
+		if sendErr != nil {
 			// reviewProof 保存 API 已返回的唯一内容；即使发送结果未知也只能重发该快照，不能再次调用 API。
 			reviewProof := shipmentDeliveryProof{unknownUnits: 1, tradeText: result.Content, messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: result.Content}}}
 			return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, uncertainAction(sendErr)
@@ -167,8 +192,8 @@ func (e *automationActionExecutor) sendDataCardWithProof(ctx context.Context, ta
 
 		// unlock 释放当前卡密组的并发消费锁；锁只覆盖本地库存操作。
 		unlock := e.lockCard(card.ID)
-		// content 是从库存中原子消费出的数据卡密。
-		content, err := e.store.Cards.ConsumeBatchData(ctx, card.ID)
+		// content、recordID、err 保存扣出的卡密、对应的 reserved 售出台账标识及扣减错误。
+		content, recordID, err := e.store.Cards.ReserveBatchData(ctx, card.ID, e.saleMeta(ctx, task))
 		unlock()
 		if err != nil {
 			return actionExecutionResult{sent: sent, proof: proof}, err
@@ -182,7 +207,7 @@ func (e *automationActionExecutor) sendDataCardWithProof(ctx context.Context, ta
 					// restoreUnlock 释放恢复库存所需的卡密组锁。
 					restoreUnlock := e.lockCard(card.ID)
 					// restoreErr 保存确定未发送时恢复库存的错误。
-					restoreErr := e.store.Cards.RestoreBatchData(ctx, card.ID, content)
+					restoreErr := e.store.Cards.ReleaseBatchData(ctx, card.ID, recordID, content)
 					restoreUnlock()
 					if restoreErr != nil {
 						// proof.refillPending 锁定本次已消费但恢复失败的库存，防止人工补发再次取卡造成重复扣减。
@@ -196,6 +221,7 @@ func (e *automationActionExecutor) sendDataCardWithProof(ctx context.Context, ta
 				reviewProof := shipmentDeliveryProof{unknownUnits: 1, tradeText: renderedContent, messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: renderedContent}}}
 				return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, uncertainAction(sendErr)
 			}
+			e.markSold(ctx, recordID)
 			proof.tradeText = appendTradeText(proof.tradeText, renderedContent)
 			proof.messages = append(proof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: renderedContent})
 			proof.preparedUnits++
@@ -203,4 +229,34 @@ func (e *automationActionExecutor) sendDataCardWithProof(ctx context.Context, ta
 		sent++
 	}
 	return actionExecutionResult{sent: sent, proof: proof}, nil
+}
+
+// saleMeta 把任务订单上下文和当前运行标识整理成售出台账元数据。
+func (e *automationActionExecutor) saleMeta(ctx context.Context, task Task) db.CardSaleMeta {
+	return db.CardSaleMeta{RunID: runIDFromContext(ctx), CookieID: task.AccountID, OrderID: task.OrderID, ItemID: task.ItemID, BuyerID: task.BuyerID}
+}
+
+// markSold 在卡密确认发送给买家后把对应 reserved 台账改为已售。
+// 台账是核对用的旁路记录：写入失败只记警告，不能回滚或否定已经完成的发货；运行成功收口时会再次兜底确认。
+func (e *automationActionExecutor) markSold(ctx context.Context, recordIDs ...int64) {
+	if e.store == nil || e.store.Cards == nil {
+		return
+	}
+	// markErr 保存确认售出台账失败的数据库错误。
+	if markErr := e.store.Cards.MarkSaleRecordsSold(context.WithoutCancel(ctx), recordIDs...); markErr != nil && e.logger != nil {
+		e.logger.Warn("确认卡密售出台账失败，运行成功收口时会再次确认", "error", markErr)
+	}
+}
+
+// recordAPISale 为已取回的 API 卡密写入售出台账，status 取 db.SaleStatusSold 或 db.SaleStatusReserved。
+// 写入失败只记警告且不包含卡密内容；API 请求已经产生外部副作用，不能因台账失败而重放或判失败。
+func (e *automationActionExecutor) recordAPISale(ctx context.Context, task Task, cardID int64, content, status string) {
+	// 仅注入取卡与发送依赖的独立动作测试没有持久化仓储，此时没有台账可写。
+	if e.store == nil || e.store.Cards == nil {
+		return
+	}
+	// recordErr 保存写入 API 卡台账失败的数据库错误。
+	if _, recordErr := e.store.Cards.RecordAPISale(context.WithoutCancel(ctx), cardID, e.saleMeta(ctx, task), content, status); recordErr != nil && e.logger != nil {
+		e.logger.Warn("写入 API 卡密售出台账失败", "card_id", cardID, "order_id", task.OrderID, "error", recordErr)
+	}
 }

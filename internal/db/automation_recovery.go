@@ -749,3 +749,14 @@ func validJSON(s string) string {
 	}
 	return s
 }
+
+// RenewRunLease 封装Renew运行Lease业务协调。
+func (a *AutomationRules) RenewRunLease(ctx context.Context, runID int64, attempt int, leaseExpiresAt int64) error {
+	// res、err 用于本次流程后续判断的res、err
+	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs SET lease_expires_at=?,updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND attempt_count=? AND status='running'`, leaseExpiresAt, runID, attempt)
+	if err != nil {
+		return err
+	}
+	return requireAutomationRunOwner(res)
+}

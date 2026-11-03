@@ -12,6 +12,17 @@ import (
 // TestMigrate_UpgradesReleasedFork56 验证持有 fork 已发布账本与业务数据的旧库可接续三项上游迁移。
 // t 提供隔离目录及失败报告；测试仅操作临时 SQLite，不访问用户数据库或真实凭证。
 func TestMigrate_UpgradesReleasedFork56(t *testing.T) {
+	exerciseReleasedForkUpgrade(t, 56)
+}
+
+// TestMigrate_UpgradesReleasedFork59 验证上次已发布 fork59 的真实旧 schema、账本和数据可升级到64。
+func TestMigrate_UpgradesReleasedFork59(t *testing.T) {
+	exerciseReleasedForkUpgrade(t, 59)
+}
+
+// exerciseReleasedForkUpgrade 以 t 管理临时库，legacyVersion 指定升级前已发布账本；保留真实数据并验证新版结构。
+func exerciseReleasedForkUpgrade(t *testing.T, legacyVersion int64) {
+	t.Helper()
 	// database、openErr 保存只执行到旧 fork 版本的临时数据库及打开错误。
 	database, openErr := sql.Open("sqlite", sqliteDSN(filepath.Join(t.TempDir(), "fork56.db")))
 	if openErr != nil {
@@ -24,16 +35,19 @@ func TestMigrate_UpgradesReleasedFork56(t *testing.T) {
 	}
 	goose.SetBaseFS(migrationsFS)
 	// upErr 保存旧 fork 全量 schema 及真实 Goose 账本初始化错误。
-	if upErr := goose.UpTo(database, "migrations/sqlite", 56); upErr != nil {
+	if upErr := goose.UpTo(database, "migrations/sqlite", legacyVersion); upErr != nil {
 		t.Fatal(upErr)
 	}
 	// initialVersion、versionErr 确保准备的是已发布的 56，而非空库或包含新字段的最新库。
 	initialVersion, versionErr := goose.GetDBVersion(database)
-	if versionErr != nil || initialVersion != 56 {
+	if versionErr != nil || initialVersion != legacyVersion {
 		t.Fatalf("legacy migration version=%d err=%v", initialVersion, versionErr)
 	}
-	if columnExists(t, database, "ai_reply_settings", "ai_mode") || tableExists(t, database, "item_ai_settings") || columnExists(t, database, "keywords", "keyword_expressions") {
+	if legacyVersion == 56 && (columnExists(t, database, "ai_reply_settings", "ai_mode") || tableExists(t, database, "item_ai_settings") || columnExists(t, database, "keywords", "keyword_expressions")) {
 		t.Fatal("fork 56 must not already contain incoming upstream schema")
+	}
+	if tableExists(t, database, "card_sale_records") || tableExists(t, database, "library_images") || columnExists(t, database, "cards", "library_image_id") {
+		t.Fatal("旧 fork schema 不应预先含有本轮新增能力")
 	}
 	// seedStatements 构造升级前已有的账号开关、履约订单、跟价报价、消息去重及免拼阶段，不含真实秘密。
 	seedStatements := []string{
@@ -55,9 +69,34 @@ func TestMigrate_UpgradesReleasedFork56(t *testing.T) {
 			t.Fatal(seedErr)
 		}
 	}
+	if legacyVersion == 59 {
+		// seedErr 写入上次 fork59 已支持的商品 AI 覆盖，确认本轮升级不重建或清空旧表。
+		if _, seedErr := database.Exec(`INSERT INTO item_ai_settings (cookie_id,item_id,ai_override,item_context) VALUES ('fork-account','legacy-ai-item','disabled','保留旧商品资料')`); seedErr != nil {
+			t.Fatal(seedErr)
+		}
+	}
 	// migrateErr 保存正式迁移入口从已有 fork56 升级到最新版本的错误。
 	if migrateErr := Migrate(context.Background(), database, DialectSQLite); migrateErr != nil {
 		t.Fatal(migrateErr)
+	}
+	// newTables 覆盖五项顺延迁移新增的表；table 验证每项能力并非仅有账本号。
+	newTables := []string{"card_sale_records", "item_greeting_rules", "item_greeting_rule_items", "item_greeting_records", "library_images", "product_templates", "automation_audit_events"}
+	// table 是当前应在升级后出现的业务表。
+	for _, table := range newTables {
+		if !tableExists(t, database, table) {
+			t.Fatalf("升级后业务表缺失: %s", table)
+		}
+	}
+	// imageTables 覆盖图片库引用迁移的全部五处旧业务表。
+	imageTables := []string{"keywords", "default_replies", "item_greeting_rules", "cards", "chat_quick_replies"}
+	// table 是当前应增加图片引用列的业务表。
+	for _, table := range imageTables {
+		if !columnExists(t, database, table, "library_image_id") {
+			t.Fatalf("图片库引用列缺失: %s", table)
+		}
+	}
+	if !columnExists(t, database, "item_publish_batch_rows", "specs_json") {
+		t.Fatal("资源库迁移必须包含铺货多规格快照列")
 	}
 	// assertions 同时验证新 schema 默认值、三项账本和所有旧业务事实仍可读。
 	assertions := []struct {
@@ -65,8 +104,9 @@ func TestMigrate_UpgradesReleasedFork56(t *testing.T) {
 		query string
 		want  int
 	}{
-		{`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`, 59},
+		{`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`, 64},
 		{`SELECT COUNT(*) FROM goose_db_version WHERE version_id BETWEEN 57 AND 59 AND is_applied=1`, 3},
+		{`SELECT COUNT(*) FROM goose_db_version WHERE version_id BETWEEN 60 AND 64 AND is_applied=1`, 5},
 		{`SELECT COUNT(*) FROM ai_reply_settings WHERE cookie_id='fork-account' AND ai_mode='bargain_only'`, 1},
 		{`SELECT COUNT(*) FROM keywords WHERE cookie_id='fork-account' AND keyword='历史关键词' AND reply='历史回复' AND match_type='contains' AND keyword_expressions IS NULL`, 1},
 		{`SELECT COUNT(*) FROM cookies WHERE id='fork-account' AND auto_consign=1 AND auto_bargain=1`, 1},
@@ -83,6 +123,14 @@ func TestMigrate_UpgradesReleasedFork56(t *testing.T) {
 		// scanErr 保存升级后验证查询错误，包含字段缺失或旧数据不可读。
 		if scanErr := database.QueryRow(assertion.query).Scan(&actual); scanErr != nil || actual != assertion.want {
 			t.Fatalf("upgrade assertion %q: got=%d want=%d err=%v", assertion.query, actual, assertion.want, scanErr)
+		}
+	}
+	if legacyVersion == 59 {
+		// preserved 保存 fork59 商品 AI 旧记录在本轮升级后的精确匹配行数。
+		var preserved int
+		// readErr 验证旧覆盖状态和专属资料均未变化。
+		if readErr := database.QueryRow(`SELECT COUNT(*) FROM item_ai_settings WHERE cookie_id='fork-account' AND item_id='legacy-ai-item' AND ai_override='disabled' AND item_context='保留旧商品资料'`).Scan(&preserved); readErr != nil || preserved != 1 {
+			t.Fatalf("旧商品AI数据丢失: count=%d err=%v", preserved, readErr)
 		}
 	}
 	// itemInsertErr 验证商品 AI 新表真实可写，不能只验证迁移版本号。

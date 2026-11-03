@@ -254,7 +254,7 @@ func TestMultiDBKeywordExpressionsCRUD(t *testing.T) {
 	}
 }
 
-// TestMultiDBKeywordExpressionsMigration 验证三方言 00059 迁移可回退到 00058 后重新升级到最新版本。
+// TestMultiDBKeywordExpressionsMigration 验证从最新库回退到 00058 后可重新应用关键词表达式迁移 00059。
 func TestMultiDBKeywordExpressionsMigration(t *testing.T) {
 	// target 表示当前可用的数据库方言迁移目标。
 	for _, target := range allTestTargets(t) {
@@ -272,7 +272,7 @@ func TestMultiDBKeywordExpressionsMigration(t *testing.T) {
 			goose.SetBaseFS(migrationsFS)
 			// version、versionErr 保存回退前的迁移版本及读取错误。
 			version, versionErr := goose.GetDBVersion(target.store.DB)
-			if versionErr != nil || version != 59 {
+			if versionErr != nil || version != 64 {
 				t.Fatalf("initial migration version=%d err=%v", version, versionErr)
 			}
 			// downErr 保存回退关键词表达式迁移的错误。

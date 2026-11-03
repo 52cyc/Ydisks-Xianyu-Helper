@@ -9,6 +9,7 @@ Card,
 DefaultReply,
 DefaultReplyResponse,
 Item,
+ItemGreetingRule,
 DeliveryTemplate,
 DeliveryTemplateBinding,
 KeywordTypedResponse,
@@ -20,6 +21,7 @@ ShippingRule
 } from './models';
 import { type RequestControlOptions } from '../../../shared/http/client';
 import { contractClient, runContractRequest } from '../../../shared/api-contract/client';
+import type { AutomationAuditEventListTransport,AutomationAuditEventTransport } from '../../../shared/api-contract/automation';
 import { collectionFrom,objectFrom } from '../../../shared/http/contract';
 import {
   getFulfillmentProduct as readFulfillmentProduct,
@@ -33,8 +35,10 @@ export type { FulfillmentInstance };
 export const listFulfillmentInstances = (): Promise<FulfillmentInstance[]> =>
   readFulfillmentInstances();
 
+/** getFulfillmentProduct 按当前用户的货源实例与商品编号读取详情，不跨用户共享结果。 */
 export const getFulfillmentProduct = (instanceID: number, goodsID: number) =>
   readFulfillmentProduct(instanceID, goodsID);
+import type { AuditDeliveredCard,AutomationAuditEvent,AutomationAuditPage,AutomationAuditQuery } from './auditModels';
 
 /** 发货模板创建和更新请求体。 */
 interface DeliveryTemplateWritePayload {
@@ -487,6 +491,8 @@ type KeywordRowPayload = {
     type: 'text' | 'image';
     /** 图片回复地址。 */
     image_url: string;
+    /** 图片库图片主键；0 表示未使用。 */
+    library_image_id: number;
 };
 
 // normalizeKeywordExpressions 归一化服务端关键词表达式，并为历史单关键词响应提供回退值。
@@ -544,6 +550,7 @@ const normalizeKeywordRow = (item: any): KeywordRowPayload => {
         item_ids: itemIDs,
         type: item?.type === 'image' ? 'image' : 'text',
         image_url: typeof item?.image_url === 'string' ? item.image_url : '',
+        library_image_id: typeof item?.library_image_id === 'number' ? item.library_image_id : 0,
     };
 };
 
@@ -570,6 +577,7 @@ export const getReplyRules = async (cookieId?: string): Promise<ReplyRule[]> => 
         item_ids: Array.isArray(item.item_ids) ? item.item_ids : [],
         type: item.type === 'image' ? 'image' : 'text',
         image_url: item.image_url || '',
+        library_image_id: item.library_image_id || 0,
     }));
 };
 
@@ -625,7 +633,8 @@ export const updateReplyRule = async (rule: Partial<ReplyRule>, cookieId: string
         item_id: itemIDs[0] || '',
         item_ids: itemIDs,
         type,
-        image_url: type === 'image' ? (rule.image_url || '') : '',
+        image_url: type === 'image' && !rule.library_image_id ? (rule.image_url || '') : '',
+        library_image_id: type === 'image' ? (rule.library_image_id || 0) : 0,
     };
     return rule.id
         ? runContractRequest(/* signal 控制关键词规则更新请求的取消和超时。 */ signal => contractClient.PUT('/api/v1/reply-rules/{cid}/typed/{id}', { params: { path: { cid: cookieId, id: String(rule.id) } }, body: payload as never, signal }))
@@ -657,7 +666,8 @@ export const getDefaultReply = async (cookieId: string): Promise<DefaultReply> =
     enabled: result.enabled || false,
     reply_content: result.reply_content || '',
     reply_once: result.reply_once || false,
-    reply_image_url: result.reply_image_url || ''
+    reply_image_url: result.reply_image_url || '',
+    reply_library_image_id: result.reply_library_image_id || 0
   };
 };
 
@@ -667,7 +677,8 @@ export const updateDefaultReply = async (cookieId: string, data: Partial<Default
     enabled: data.enabled ?? false,
     reply_content: data.reply_content || '',
     reply_once: data.reply_once ?? false,
-    reply_image_url: data.reply_image_url || ''
+    reply_image_url: data.reply_library_image_id ? '' : (data.reply_image_url || ''),
+    reply_library_image_id: data.reply_library_image_id || 0
   } as never, signal }));
 };
 
@@ -679,4 +690,100 @@ export const deleteDefaultReply = async (cookieId: string): Promise<OperationRes
 // clearDefaultReplyRecords 清理默认回复记录。
 export const clearDefaultReplyRecords = async (cookieId: string): Promise<OperationResponse> => {
 	return runContractRequest(/* signal 控制默认回复记录清理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/default-replies/{cid}/clear-records', { params: { path: { cid: cookieId } }, body: {} as never, signal }));
+};
+
+// Item Greeting
+// normalizeItemGreeting 把服务端规则 DTO 归一为 UI 模型，缺失字段使用安全默认值。
+const normalizeItemGreeting = (raw: unknown): ItemGreetingRule => {
+  // dto 是待归一的原始规则对象。
+  const dto = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    id: typeof dto.id === 'number' ? dto.id : 0,
+    cookie_id: typeof dto.cookie_id === 'string' ? dto.cookie_id : '',
+    name: typeof dto.name === 'string' ? dto.name : '',
+    enabled: dto.enabled === true,
+    reply_content: typeof dto.reply_content === 'string' ? dto.reply_content : '',
+    reply_image_url: typeof dto.reply_image_url === 'string' ? dto.reply_image_url : '',
+    reply_library_image_id: typeof dto.reply_library_image_id === 'number' ? dto.reply_library_image_id : 0,
+    item_ids: Array.isArray(dto.item_ids) ? dto.item_ids.filter(/* itemID 是服务端返回的商品标识。 */ (itemID): itemID is string => typeof itemID === 'string') : [],
+  };
+};
+
+// getItemGreetings 读取商品首次回复规则；accountID 为空时返回当前用户全部账号的规则。
+export const getItemGreetings = async (accountID?: string, options?: RequestControlOptions): Promise<ItemGreetingRule[]> => {
+  // response 保存规则列表接口的成功响应。
+  const response = await runContractRequest(/* signal 控制首次回复规则读取的取消和超时。 */ signal => contractClient.GET('/api/v1/reply-rules/greetings', { params: { query: { cookie_id: accountID || undefined } }, signal }), options) as unknown;
+  return collectionFrom<unknown>(response, ['data', 'items', 'rules']).map(normalizeItemGreeting);
+};
+
+// saveItemGreeting 创建（id 为 0）或更新商品首次回复规则，返回服务端确认的规则。
+export const saveItemGreeting = async (rule: ItemGreetingRule): Promise<ItemGreetingRule> => {
+  // body 是创建和更新共用的请求载荷。
+  const body = { cookie_id: rule.cookie_id, name: rule.name, enabled: rule.enabled, reply_content: rule.reply_content, reply_image_url: rule.reply_library_image_id ? '' : rule.reply_image_url, reply_library_image_id: rule.reply_library_image_id, item_ids: rule.item_ids };
+  // response 保存写入接口返回的规则。
+  const response = rule.id
+    ? await runContractRequest(/* signal 控制首次回复规则更新请求的取消和超时。 */ signal => contractClient.PUT('/api/v1/reply-rules/greetings/{id}', { params: { path: { id: rule.id } }, body, signal }))
+    : await runContractRequest(/* signal 控制首次回复规则创建请求的取消和超时。 */ signal => contractClient.POST('/api/v1/reply-rules/greetings', { body, signal }));
+  return normalizeItemGreeting(response);
+};
+
+// deleteItemGreeting 删除商品首次回复规则。
+export const deleteItemGreeting = async (id: number): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制首次回复规则删除请求的取消和超时。 */ signal => contractClient.DELETE('/api/v1/reply-rules/greetings/{id}', { params: { path: { id } }, signal }));
+
+// clearItemGreetingRecords 清空账号的首次回复发送记录，使买家下次咨询时重新触发。
+export const clearItemGreetingRecords = async (cookieID: string): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制首次回复记录清理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/reply-rules/greetings/clear-records/{cookie_id}', { params: { path: { cookie_id: cookieID } }, body: {} as never, signal }));
+
+// normalizeAuditEvent 把传输层事件转换为 UI 模型；秒级时间换算为毫秒。
+const normalizeAuditEvent = (item: AutomationAuditEventTransport): AutomationAuditEvent => ({
+  id: item.id,
+  cookieId: item.cookie_id,
+  orderId: item.order_id,
+  itemId: item.item_id,
+  ruleId: item.rule_id,
+  runId: item.run_id,
+  triggerType: item.trigger_type,
+  source: item.source,
+  eventType: item.event_type,
+  status: item.status,
+  actionType: item.action_type,
+  summary: item.summary,
+  reason: item.reason,
+  createdAtMs: item.created_at * 1000,
+});
+
+// getAutomationAuditEvents 分页读取规则日志；调用方通过 signal 在筛选变化或卸载时取消旧请求。
+export const getAutomationAuditEvents = async (query: AutomationAuditQuery, options?: RequestControlOptions): Promise<AutomationAuditPage> => {
+  // response 是通过契约客户端读取的分页响应，空筛选项省略。
+  const response: AutomationAuditEventListTransport = await runContractRequest(/* signal 绑定当前规则日志请求的生命周期。 */ signal => contractClient.GET('/api/v1/automation-audit-events', {
+    params: {
+      query: {
+        cookie_id: query.cookieId || undefined,
+        status: query.status || undefined,
+        trigger_type: query.triggerType || undefined,
+        search: query.search.trim() || undefined,
+        run_id: query.runId > 0 ? query.runId : undefined,
+        page: query.page,
+        page_size: query.pageSize,
+      },
+    },
+    signal,
+  }), options);
+  return { events: response.data.map(normalizeAuditEvent), total: response.total, totalPages: Math.max(1, response.total_pages) };
+};
+
+// getAuditOrderDeliveredCards 按需读取订单已发出的卡密正文；只在用户主动点击查看时调用，升级前的订单返回空数组。
+export const getAuditOrderDeliveredCards = async (orderId: string, options?: RequestControlOptions): Promise<AuditDeliveredCard[]> => {
+  // result 是订单已发卡密响应，明文只存在于本次请求结果中。
+  const result = await runContractRequest(/* signal 绑定当前查看操作的生命周期。 */ signal => contractClient.GET('/api/v1/orders/{order_id}/delivered-cards', {
+    params: { path: { order_id: orderId } },
+    signal,
+  }), options);
+  return result.data.map(/* item 是一条传输层售出记录。 */ item => ({
+    id: item.id,
+    cardName: item.card_name,
+    content: item.content,
+    deliveredAtMs: (item.sold_at || item.created_at) * 1000,
+  }));
 };

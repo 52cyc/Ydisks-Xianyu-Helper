@@ -70,6 +70,7 @@ const canonicalPageEntrypoints = [
   'app/features/delivery-templates/pages/DeliveryTemplates.tsx',
   'app/features/items/pages/ItemList.tsx',
   'app/features/logs/pages/LiveLogs.tsx',
+  'app/features/library/pages/ResourceLibrary.tsx',
   'app/features/logs/pages/RuntimeLogs.tsx',
   'app/features/notifications/pages/Notifications.tsx',
   'app/features/orders/pages/OrderList.tsx',

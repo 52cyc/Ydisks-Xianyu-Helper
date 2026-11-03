@@ -7,6 +7,8 @@ import {
   CircleDollarSign,
   Clock3,
   Edit,
+  Gift,
+  ScrollText,
   Layers3,
   MessageCircle,
   Plus,
@@ -18,8 +20,11 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import ItemGreetingPanel from '../components/ItemGreetingPanel';
+import { ImageSourceField } from '../../../../shared/ui/ImageSourceField';
+import { PageHeader } from '../../../../shared/ui/PageHeader';
 import Toast from "../components/Toast";
 import ReplyRuleEditor from "../components/ReplyRuleEditor";
 import SearchableSelect from "../../../../shared/ui/SearchableSelect";
@@ -71,6 +76,8 @@ const attachSourceOptions = [
 const Rules: React.FC<RulesProps> = ({
   initialDeliveryTarget,
   onDeliveryTargetHandled,
+  auditPanel: AuditPanel,
+  libraryImageChooser,
 }) => {
   // [activeTab, 解构得到当前 Hook 返回的状态和操作函数。
   const [activeTab, setActiveTab] = useState<RulesTab>("automation");
@@ -426,6 +433,13 @@ const Rules: React.FC<RulesProps> = ({
     return itemIDs.map(/* 当前回调把商品标识还原为可读标题。 */ (itemID: string) => itemTitleIndex.get(itemID) || itemID);
   };
 
+  // auditAccountLabel 把规则日志中的账号标识转换为账号展示名，未知账号回退为原标识。
+  const auditAccountLabel = (cookieId: string): string => {
+    // account 是与日志账号标识匹配的账号摘要。
+    const account = accounts.find(/* candidate 是当前比较的账号摘要。 */ candidate => candidate.id === cookieId);
+    return account ? accountLabel(account) : cookieId;
+  };
+
   // primaryActionLabel 主操作按钮文案。
   const primaryActionLabel =
     activeTab === "automation"
@@ -437,15 +451,7 @@ const Rules: React.FC<RulesProps> = ({
 
   return (
     <div className="min-w-0 space-y-8 animate-fade-in">
-      <div className="flex flex-col xl:flex-row justify-between xl:items-end gap-4">
-        <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">
-            自动化规则
-          </h2>
-          <p className="text-gray-500 mt-2 font-medium">
-            系统通知卡片只进入自动化判断；买家消息进入关键词、默认或 AI 回复。
-          </p>
-        </div>
+      <PageHeader title="自动化规则" description="系统通知卡片只进入自动化判断；买家消息进入关键词、默认或 AI 回复。">
         <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3">
           <select
             value={selectedAccountId}
@@ -473,6 +479,7 @@ const Rules: React.FC<RulesProps> = ({
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             刷新
           </button>
+          {activeTab !== 'greeting' && activeTab !== 'logs' && (
           <button
             onClick={
               activeTab === "automation"
@@ -489,37 +496,35 @@ const Rules: React.FC<RulesProps> = ({
             <Plus className="w-4 h-4" />
             {primaryActionLabel}
           </button>
+          )}
         </div>
-      </div>
+      </PageHeader>
 
       <div className="flex flex-wrap gap-2 p-2 bg-gray-100/50 rounded-2xl">
         {[
-          { id: "automation" as const, label: "交易自动化", icon: Zap },
-          { id: "reply" as const, label: "关键词回复", icon: MessageCircle },
-          { id: "default" as const, label: "账号默认回复", icon: Bot },
-        ].map(
-          /* 当前回调处理用户交互或异步状态变化。 */ (tab) => {
-            // Icon 渲染Icon React 组件。
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                onClick={
-                  /* 当前回调处理用户交互或异步状态变化。 */ () =>
-                    setActiveTab(tab.id)
-                }
-                className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
-                  activeTab === tab.id
-                    ? "bg-brand text-white shadow-md"
-                    : "bg-white text-gray-600 hover:text-black hover:bg-gray-50"
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {tab.label}
-              </button>
-            );
-          },
-        )}
+          { id: 'automation' as const, label: '交易自动化', icon: Zap },
+          { id: 'reply' as const, label: '关键词回复', icon: MessageCircle },
+          { id: 'default' as const, label: '账号默认回复', icon: Bot },
+          { id: 'greeting' as const, label: '商品首次回复', icon: Gift },
+          { id: 'logs' as const, label: '规则日志', icon: ScrollText },
+        ].map(/* 当前回调处理用户交互或异步状态变化。 */ tab => {
+          // Icon 渲染Icon React 组件。
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setActiveTab(tab.id)}
+              className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                activeTab === tab.id
+                  ? 'bg-brand text-white shadow-md'
+                  : 'bg-white text-gray-600 hover:text-black hover:bg-gray-50'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === "automation" &&
@@ -935,7 +940,7 @@ const Rules: React.FC<RulesProps> = ({
                     )}
                   </div>
                   <div className="bg-white p-3 rounded-xl border border-gray-100 text-sm text-gray-600 leading-relaxed">
-                    {rule.type === 'image' && rule.image_url ? rule.image_url : rule.reply_content}
+                    {rule.type === 'image' ? (rule.image_url || (rule.library_image_id ? `图片库图片 #${rule.library_image_id}` : '')) : rule.reply_content}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 border-t md:border-t-0 md:border-l border-gray-200 pt-4 md:pt-0 md:pl-6">
@@ -1009,7 +1014,7 @@ const Rules: React.FC<RulesProps> = ({
                           {enabled
                             ? defaultReply.reply_content ||
                               defaultReply.reply_image_url ||
-                              "已配置默认回复"
+                              (defaultReply.reply_library_image_id ? `图片库图片 #${defaultReply.reply_library_image_id}` : "已配置默认回复")
                             : "未配置默认回复"}
                         </div>
                       </div>
@@ -1058,6 +1063,18 @@ const Rules: React.FC<RulesProps> = ({
             )}
           </div>
         </section>
+      )}
+
+      {activeTab === 'greeting' && <ItemGreetingPanel accountID={selectedAccountId} libraryImageChooser={libraryImageChooser} />}
+
+      {activeTab === 'logs' && (
+        AuditPanel ? (
+          <Suspense fallback={<div className="text-center py-20 text-gray-400">加载中…</div>}>
+            <AuditPanel key={selectedAccountId} accountId={selectedAccountId} accountLabel={auditAccountLabel} />
+          </Suspense>
+        ) : (
+          <div className="text-center py-20 text-gray-400">规则日志暂不可用</div>
+        )
       )}
 
       {showAutomationModal &&
@@ -2123,6 +2140,7 @@ const Rules: React.FC<RulesProps> = ({
           items={replyModalItems}
           onClose={/* 当前回调关闭关键词回复编辑器。 */ () => setShowReplyModal(false)}
           onSave={/* 当前回调提交关键词回复规则。 */ handleSaveReplyRule}
+          libraryImageChooser={libraryImageChooser}
         />
       )}
 
@@ -2224,20 +2242,12 @@ const Rules: React.FC<RulesProps> = ({
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">
-                    回复图片 URL（可选）
+                    回复图片（可选）
                   </label>
-                  <input
-                    type="text"
-                    value={defaultForm.reply_image_url}
-                    onChange={
-                      /* 当前回调处理用户交互或异步状态变化。 */ (event) =>
-                        setDefaultForm({
-                          ...defaultForm,
-                          reply_image_url: event.target.value,
-                        })
-                    }
-                    placeholder="https://example.com/image.jpg"
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                  <ImageSourceField
+                    value={{ url: defaultForm.reply_image_url, libraryImageId: defaultForm.reply_library_image_id }}
+                    onChange={/* source 是用户选择的互斥图片来源，保持图片库标识与外链同步。 */ source => setDefaultForm({ ...defaultForm, reply_image_url: source.url, reply_library_image_id: source.libraryImageId })}
+                    chooser={libraryImageChooser}
                   />
                 </div>
 

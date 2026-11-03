@@ -21,13 +21,36 @@ import (
 
 // ReplyResult 回复结果。
 type ReplyResult struct {
-	Text      string // 文本回复（可空）
-	ImageURL  string // 图片回复（可空）
-	Source    string // 回复来源：API/关键词/AI/默认
-	Skip      bool   // true 表示匹配到空回复，不发送任何内容
-	ReplyOnce bool   // 仅默认回复使用，发送状态由 Handle 持久化
+	Text     string // 文本回复（可空）
+	ImageURL string // 图片回复（可空）
+	// LibraryImageID 是图片库图片主键（0 表示未使用）；与 ImageURL 互斥，发送时由聊天应用读取字节并走统一上传链路。
+	LibraryImageID int64
+	Source         string // 回复来源：API/关键词/AI/默认
+	Skip           bool   // true 表示匹配到空回复，不发送任何内容
+	ReplyOnce      bool   // 默认回复与商品首次回复使用，发送状态由 Handle 持久化
+	// onceRecords 是 ReplyOnce 回复使用的投递记录仓储；为空时使用账号默认回复记录。
+	onceRecords onceRecordStore
 	// AutoPriceQuote 是 AI 已明确承诺且通过价格边界校验的可执行报价。
 	AutoPriceQuote *AIPriceQuoteProposal
+}
+
+// hasImage 判断回复是否携带图片（URL 或图片库图片），用于一次性投递记录的分段领取。
+func (r *ReplyResult) hasImage() bool {
+	return r.ImageURL != "" || r.LibraryImageID > 0
+}
+
+// onceRecordStore 是“每个会话只投递一次”回复的持久化端口，由账号默认回复和商品首次回复各自实现。
+type onceRecordStore interface {
+	// ClaimRecord 原子领取投递权；返回的记录携带已成功的分段。
+	ClaimRecord(ctx context.Context, cookieID, chatID string, needsText, needsImage bool) (db.DefaultReplyRecord, bool, error)
+	// MarkPartSent 标记 text 或 image 分段已被平台确认。
+	MarkPartSent(ctx context.Context, cookieID, chatID, part string) error
+	// MarkRecordSent 标记完整回复投递完成。
+	MarkRecordSent(ctx context.Context, cookieID, chatID string) error
+	// MarkRecordFailed 标记确定未送达，允许后续重试。
+	MarkRecordFailed(ctx context.Context, cookieID, chatID, message string) error
+	// MarkRecordUncertain 隔离结果不确定的投递，禁止自动重发。
+	MarkRecordUncertain(ctx context.Context, cookieID, chatID, message string) error
 }
 
 // AIPriceQuoteProposal 是等待回复发送成功后绑定到会话的 AI 报价。
@@ -64,6 +87,8 @@ type ReplyMessage struct {
 	Text string
 	// ImageURL 是可选的来源图片地址；上传和尺寸处理由聊天应用完成。
 	ImageURL string
+	// LibraryImageID 是可选的图片库图片主键；与 ImageURL 互斥，读取、上传和尺寸处理由聊天应用完成。
+	LibraryImageID int64
 }
 
 // ReplySendResult 是聊天应用投递完整回复后的分段确认结果。
@@ -116,17 +141,67 @@ func newReplyService(cookieID string, store *db.Store, delivery ReplyDelivery, a
 	return service
 }
 
-// Handle 收到一条聊天消息，按四级优先级回复。
+// Handle 收到一条聊天消息：先尝试商品首次回复，再按四级优先级回复。
 // 由 Account 在防抖后调用。返回是否产生了回复。
-// Handle 处理当前值。
 func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
+	// 商品首次回复失败只记录日志，不得阻断买家本条消息的正常回复链路。
+	r.handleItemGreeting(ctx, m)
 	// res 用于本次流程后续判断的响应
 	res := r.resolve(ctx, m)
-	if res == nil || res.Skip {
+	if res == nil {
+		r.logger.DebugContext(ctx, "自动回复未命中任何规则，不回复")
 		return nil
 	}
-	// 发送：图片优先，文本随后。reply_once 使用持久化分段状态，失败时只重试
-	// 尚未成功的部分。
+	if res.Skip {
+		r.logger.DebugContext(ctx, "自动回复命中空回复规则，不发送", "reply_source", res.Source)
+		return nil
+	}
+	// started 是投递开始时刻，用于输出一条消息一行的回复决策摘要耗时。
+	started := time.Now()
+	// err 是本次回复投递失败的原因，非空时不输出成功摘要。
+	if err := r.deliver(ctx, m, res); err != nil {
+		return err
+	}
+	r.logger.InfoContext(ctx, "自动回复已发送", "reply_source", res.Source, "duration", time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+// handleItemGreeting 在会话首条命中商品规则的消息上发送一次商品首次回复。
+// 规则、记录读取或发送失败都只记录日志；一次性记录保证每个会话最多触发一次。
+func (r *ReplyService) handleItemGreeting(ctx context.Context, m ChatMessage) {
+	if m.ItemID == "" || m.ChatID == "" || r.delivery == nil || r.store == nil || r.store.ItemGreetings == nil {
+		return
+	}
+	// rule、err 保存覆盖当前商品的已启用规则；未配置时直接返回。
+	rule, err := r.store.ItemGreetings.FindEnabledForItem(ctx, r.cookieID, m.ItemID)
+	if errors.Is(err, db.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		r.logger.ErrorContext(ctx, "读取商品首次回复规则失败", "err", err)
+		return
+	}
+	// res 保存首次回复内容，使用商品首次回复专属的一次性记录。
+	res := &ReplyResult{Source: "商品首次回复", ReplyOnce: true, onceRecords: r.store.ItemGreetings}
+	if strings.TrimSpace(rule.ReplyContent) != "" {
+		res.Text = formatReplyWithItem(rule.ReplyContent, m)
+	}
+	if strings.TrimSpace(rule.ReplyImageURL) != "" {
+		res.ImageURL = rule.ReplyImageURL
+	}
+	res.LibraryImageID = rule.ReplyLibraryImageID
+	if res.Text == "" && res.ImageURL == "" && res.LibraryImageID == 0 {
+		return
+	}
+	// deliverErr 保存首次回复投递错误，仅记录日志不阻断后续回复。
+	if deliverErr := r.deliver(ctx, m, res); deliverErr != nil {
+		r.logger.ErrorContext(ctx, "商品首次回复发送失败", "err", deliverErr)
+	}
+}
+
+// deliver 发送一条已解析的回复：图片优先，文本随后。ReplyOnce 回复使用持久化分段状态，
+// 失败时只重试尚未成功的部分。
+func (r *ReplyService) deliver(ctx context.Context, m ChatMessage, res *ReplyResult) error {
 	if r.delivery == nil {
 		return nil
 	}
@@ -137,9 +212,9 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 		var claimed bool
 		// err 用于本次流程后续判断的err
 		var err error
-		record, claimed, err = r.store.DefaultReps.ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.ImageURL != "")
+		record, claimed, err = r.records(res).ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.hasImage())
 		if err != nil {
-			return fmt.Errorf("领取默认回复发送任务: %w", err)
+			return fmt.Errorf("领取%s回复发送任务: %w", res.Source, err)
 		}
 		if !claimed {
 			return nil
@@ -148,37 +223,46 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 	return r.handleWithDelivery(ctx, m, res, record)
 }
 
+// records 返回回复使用的一次性投递记录仓储；未指定时为账号默认回复记录。
+func (r *ReplyService) records(res *ReplyResult) onceRecordStore {
+	if res.onceRecords != nil {
+		return res.onceRecords
+	}
+	return r.store.DefaultReps
+}
+
 // handleWithDelivery 把完整回复交给聊天应用，并把其分段结果同步到 reply_once 状态。
 func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, res *ReplyResult, record db.DefaultReplyRecord) error {
 	// message 保存本次仍需发送的完整回复；已成功的 reply_once 分段会被剔除。
-	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL}
+	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL, LibraryImageID: res.LibraryImageID}
 	if record.ImageSent {
 		message.ImageURL = ""
+		message.LibraryImageID = 0
 	}
 	if record.TextSent {
 		message.Text = ""
 	}
-	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" {
+	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" && message.LibraryImageID == 0 {
 		return nil
 	}
 	// sent、sendErr 保存消息页面完整发送入口返回的分段确认和错误。
 	sent, sendErr := r.delivery.SendReply(ctx, message)
 	if sent.ImageSent && !record.ImageSent && res.ReplyOnce && m.ChatID != "" {
 		// markErr 保存图片分段状态持久化结果。
-		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); markErr != nil {
+		if markErr := r.records(res).MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); markErr != nil {
 			r.markReplyUncertain(ctx, res, m, markErr)
 			return markErr
 		}
 	}
 	if sent.TextSent && !record.TextSent && res.ReplyOnce && m.ChatID != "" {
 		// markErr 保存文字分段状态持久化结果。
-		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); markErr != nil {
+		if markErr := r.records(res).MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); markErr != nil {
 			r.markReplyUncertain(ctx, res, m, markErr)
 			return markErr
 		}
 	}
 	if sendErr != nil {
-		r.logger.Error("通过聊天应用发送回复失败", "err", sendErr)
+		r.logger.ErrorContext(ctx, "通过聊天应用发送回复失败", "err", sendErr)
 		if sent.Uncertain {
 			r.markReplyUncertain(ctx, res, m, sendErr)
 			return sendErr
@@ -201,7 +285,7 @@ func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, re
 	}
 	if res.ReplyOnce && m.ChatID != "" {
 		// recordErr 保存完整回复记录收口结果。
-		if recordErr := r.store.DefaultReps.MarkRecordSent(ctx, r.cookieID, m.ChatID); recordErr != nil {
+		if recordErr := r.records(res).MarkRecordSent(ctx, r.cookieID, m.ChatID); recordErr != nil {
 			r.markReplyUncertain(ctx, res, m, recordErr)
 			return recordErr
 		}
@@ -222,7 +306,7 @@ func (r *ReplyService) markReplyFailure(ctx context.Context, res *ReplyResult, m
 		persistCtx, cancel := context.WithTimeout(context.Background(), replyRecordPersistTimeout)
 		defer cancel()
 		// persistErr 保存确定未发送状态写入结果。
-		if persistErr := r.store.DefaultReps.MarkRecordFailed(persistCtx, r.cookieID, m.ChatID, sendErr.Error()); persistErr != nil {
+		if persistErr := r.records(res).MarkRecordFailed(persistCtx, r.cookieID, m.ChatID, sendErr.Error()); persistErr != nil {
 			return fmt.Errorf("保存默认回复失败状态: %w", persistErr)
 		}
 	}
@@ -236,8 +320,8 @@ func (r *ReplyService) markReplyUncertain(ctx context.Context, res *ReplyResult,
 		persistCtx, cancel := context.WithTimeout(context.Background(), replyRecordPersistTimeout)
 		defer cancel()
 		// persistErr 保存未知投递结果隔离失败，便于运维发现无法持久化的人工核对状态。
-		if persistErr := r.store.DefaultReps.MarkRecordUncertain(persistCtx, r.cookieID, m.ChatID, cause.Error()); persistErr != nil {
-			r.logger.Error("隔离未知默认回复结果失败", "err", persistErr)
+		if persistErr := r.records(res).MarkRecordUncertain(persistCtx, r.cookieID, m.ChatID, cause.Error()); persistErr != nil {
+			r.logger.ErrorContext(ctx, "隔离未知默认回复结果失败", "err", persistErr)
 		}
 	}
 }
@@ -248,7 +332,7 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 	if r.api != nil {
 		if // res、err 用于本次流程后续判断的res、err
 		res, err := r.api.Reply(ctx, m); err != nil {
-			r.logger.Error("API 回复失败", "err", err)
+			r.logger.ErrorContext(ctx, "API 回复失败", "err", err)
 		} else if res != nil {
 			res.Source = "API"
 			return res
@@ -264,7 +348,7 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 	if r.ai != nil {
 		if // res、err 用于本次流程后续判断的res、err
 		res, err := r.ai.Reply(ctx, m); err != nil {
-			r.logger.Error("AI 回复失败", "err", err)
+			r.logger.ErrorContext(ctx, "AI 回复失败", "err", err)
 		} else if res != nil {
 			res.Source = "AI"
 			return res
@@ -409,8 +493,8 @@ func containsItemID(rawItemIDs string, target string) bool {
 
 // keywordResult 封装关键词结果业务协调。
 func (r *ReplyService) keywordResult(kw db.Keyword, m ChatMessage) *ReplyResult {
-	if kw.Type == "image" && kw.ImageURL != "" {
-		return &ReplyResult{ImageURL: kw.ImageURL, Source: "关键词"}
+	if kw.Type == "image" && (kw.ImageURL != "" || kw.LibraryImageID > 0) {
+		return &ReplyResult{ImageURL: kw.ImageURL, LibraryImageID: kw.LibraryImageID, Source: "关键词"}
 	}
 	if strings.TrimSpace(kw.Reply) == "" {
 		return &ReplyResult{Skip: true, Source: "关键词"} // EMPTY_REPLY
@@ -435,10 +519,15 @@ func (r *ReplyService) defaultReply(ctx context.Context, m ChatMessage) *ReplyRe
 		return nil
 	}
 	// 文字和图片都为空 → 空回复标记。
-	if strings.TrimSpace(dr.ReplyContent) == "" && strings.TrimSpace(dr.ReplyImageURL) == "" {
+	if strings.TrimSpace(dr.ReplyContent) == "" && strings.TrimSpace(dr.ReplyImageURL) == "" && dr.ReplyLibraryImageID == 0 {
 		return &ReplyResult{Skip: true, Source: "默认"}
 	}
 	// res 用于本次流程后续判断的响应
+	// 商品首次回复已触发的会话不再发送账号级“仅回复一次”的默认回复，商品级覆盖账号级。
+	if dr.ReplyOnce && r.itemGreetingTriggered(ctx, m) {
+		return nil
+	}
+	// res 保存账号默认回复的待发送内容及一次性投递标记。
 	res := &ReplyResult{Source: "默认", ReplyOnce: dr.ReplyOnce}
 	if strings.TrimSpace(dr.ReplyContent) != "" {
 		res.Text = formatReply(dr.ReplyContent, m)
@@ -446,7 +535,22 @@ func (r *ReplyService) defaultReply(ctx context.Context, m ChatMessage) *ReplyRe
 	if strings.TrimSpace(dr.ReplyImageURL) != "" {
 		res.ImageURL = dr.ReplyImageURL
 	}
+	res.LibraryImageID = dr.ReplyLibraryImageID
 	return res
+}
+
+// itemGreetingTriggered 判断当前会话是否已有商品首次回复记录；读取失败时按未触发处理，保持默认回复可用。
+func (r *ReplyService) itemGreetingTriggered(ctx context.Context, m ChatMessage) bool {
+	if m.ChatID == "" || r.store.ItemGreetings == nil {
+		return false
+	}
+	// triggered、err 保存会话是否已触发商品首次回复及读取错误。
+	triggered, err := r.store.ItemGreetings.HasRecord(ctx, r.cookieID, m.ChatID)
+	if err != nil {
+		r.logger.ErrorContext(ctx, "读取商品首次回复记录失败", "err", err)
+		return false
+	}
+	return triggered
 }
 
 // formatReply 变量替换：{send_user_name} {send_user_id} {send_message}。

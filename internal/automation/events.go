@@ -9,7 +9,7 @@ package automation
 import (
 	"encoding/json"
 	"net/url"
-	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -381,8 +381,18 @@ func supplementEventFacts(fields *rawFields, value any, depth int) {
 	switch // typedValue 保存当前原始节点按运行时类型断言后的值。
 	typedValue := value.(type) {
 	case map[string]any:
-		// key、nestedValue 分别是当前对象字段名和待继续解析的字段值。
-		for key, nestedValue := range typedValue {
+		// keys 是按字典序排列的字段名。Go 的 map 遍历顺序随机，而各事实都是“先取到者生效”，
+		// 同一报文含多个候选订单号时结果必须可复现，因此固定遍历顺序。
+		keys := make([]string, 0, len(typedValue))
+		// key 是当前对象的字段名。
+		for key := range typedValue {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		// key 是排序后的字段名。
+		for _, key := range keys {
+			// nestedValue 是该字段对应的待继续解析的字段值。
+			nestedValue := typedValue[key]
 			supplementEventFactByKey(fields, key, nestedValue)
 			supplementEventFacts(fields, nestedValue, depth+1)
 		}
@@ -698,13 +708,4 @@ func trimGoofishSID(s string) string {
 		return s[:i]
 	}
 	return s
-}
-
-// orderIDPatterns 用于本次流程后续判断的订单IDPatterns
-var orderIDPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`orderId[=:](\d{10,})`),
-	regexp.MustCompile(`order_detail\?id=(\d{10,})`),
-	regexp.MustCompile(`bizOrderId[=:](\d{10,})`),
-	// 独立 id 参数必须位于查询参数边界，不能把 sid= 中的后缀误判为订单号。
-	regexp.MustCompile(`(?:^|[?&])id=(\d{10,})(?:[&#]|$)`),
 }

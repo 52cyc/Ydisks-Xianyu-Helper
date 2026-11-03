@@ -35,6 +35,40 @@ type cardRepositoryStub struct {
 	guardedCalls    int
 	// guardRejects 模拟数据库库存已与快照不一致而未写入。
 	guardRejects bool
+	// saleCounts 与 saleCountsErr 是售出数量查询的预设结果；salePage、saleRecords 与 saleErr 是售出记录查询的预设结果。
+	saleCounts    map[int64]int64
+	saleCountsErr error
+	salePage      SalePage
+	saleRecords   []SaleRecord
+	saleErr       error
+	// saleQuery 记录最近一次分页查询收到的规范化条件，userID 记录隔离条件。
+	saleQuery  SaleListQuery
+	saleUserID int64
+	// saleOrderCookie 与 saleOrderID 记录按订单查询收到的参数。
+	saleOrderCookie, saleOrderID string
+}
+
+// SaleCounts 返回预设已售数量。
+func (r *cardRepositoryStub) SaleCounts(_ context.Context, userID int64) (map[int64]int64, error) {
+	r.saleUserID = userID
+	return r.saleCounts, r.saleCountsErr
+}
+
+// ListSaleRecords 记录规范化后的分页条件并返回预设页。
+func (r *cardRepositoryStub) ListSaleRecords(_ context.Context, userID int64, query SaleListQuery) (SalePage, error) {
+	r.saleUserID, r.saleQuery = userID, query
+	return r.salePage, r.saleErr
+}
+
+// AllSaleRecords 返回预设的全部售出记录。
+func (r *cardRepositoryStub) AllSaleRecords(context.Context, int64, int64) ([]SaleRecord, error) {
+	return r.saleRecords, r.saleErr
+}
+
+// SaleRecordsByOrder 记录订单查询参数并返回预设记录。
+func (r *cardRepositoryStub) SaleRecordsByOrder(_ context.Context, userID int64, cookieID, orderID string) ([]SaleRecord, error) {
+	r.saleUserID, r.saleOrderCookie, r.saleOrderID = userID, cookieID, orderID
+	return r.saleRecords, r.saleErr
 }
 
 // ListForUser 返回预设列表并记录用户隔离条件。
@@ -162,7 +196,7 @@ func TestServiceCreateValidation(t *testing.T) {
 		{name: "invalid-delay", draft: Draft{Name: "x", Type: "text", TextContent: "x", DelaySeconds: 3601}, want: "延时发货必须在 0 到 3600 秒之间"},
 		{name: "empty-text", draft: Draft{Name: "x", Type: "text", TextContent: "  "}, want: "文本卡密内容不能为空"},
 		{name: "empty-data", draft: Draft{Name: "x", Type: "data", DataContent: "\n"}, want: "数据卡密内容不能为空"},
-		{name: "empty-image", draft: Draft{Name: "x", Type: "image", ImageURL: ""}, want: "图片卡密 URL 不能为空"},
+		{name: "empty-image", draft: Draft{Name: "x", Type: "image", ImageURL: ""}, want: "图片卡密需要选择图片库图片或填写 URL"},
 		{name: "non-http-image", draft: Draft{Name: "x", Type: "image", ImageURL: "file:///tmp/card.png"}, want: "图片卡密 URL 必须是 HTTP(S) 地址"},
 		{name: "credential-image", draft: Draft{Name: "x", Type: "image", ImageURL: "https://user:pass@example.com/card.png"}, want: "图片卡密 URL 必须是 HTTP(S) 地址"},
 	} {
@@ -486,3 +520,30 @@ func TestServiceCoversRemainingCRUDBoundaries(t *testing.T) {
 }
 
 var _ Repository = (*cardRepositoryStub)(nil)
+
+// TestServiceImageCardAcceptsLibraryImageAndRejectsAmbiguousSource 验证图片卡密可用图片库图片，且与 URL 互斥。
+func TestServiceImageCardAcceptsLibraryImageAndRejectsAmbiguousSource(t *testing.T) {
+	// repository、service 是记录创建输入的持久化替身和被测服务。
+	repository := &cardRepositoryStub{createdID: 21}
+	// service 是被测的应用服务，绑定本用例的仓储替身。
+	service := NewService(repository)
+	// err 保存被测调用的失败原因，断言时按预期分支检查。
+	if _, err := service.Create(context.Background(), 7, Draft{Name: "图", Type: "image", LibraryImageID: 4}); err != nil {
+		t.Fatalf("图片库图片卡密应可创建: %v", err)
+	}
+	if repository.createdCard.LibraryImageID != 4 || repository.createdCard.ImageURL != "" {
+		t.Fatalf("图片库图片未写入模型: %+v", repository.createdCard)
+	}
+	// draft 是待校验的一份草稿输入；name 是当前场景的名称，用于失败信息定位。
+	for name, draft := range map[string]Draft{
+		"both":     {Name: "图", Type: "image", ImageURL: "https://a.example/x.png", LibraryImageID: 4},
+		"negative": {Name: "图", Type: "image", LibraryImageID: -1},
+	} {
+		// validationError 保存非法图片来源的校验错误。
+		var validationError *ValidationError
+		// err 保存被测调用的失败原因，断言时按预期分支检查。
+		if _, err := service.Create(context.Background(), 7, draft); !errors.As(err, &validationError) {
+			t.Fatalf("%s 应为校验错误: %v", name, err)
+		}
+	}
+}

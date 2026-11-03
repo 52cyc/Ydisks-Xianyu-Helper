@@ -11,6 +11,7 @@ import (
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
@@ -56,6 +57,8 @@ type TransportApplicationServices struct {
 	Analytics *analyticsapp.Service
 	// AutomationIssues 提供自动化异常查询和人工处理用例。
 	AutomationIssues *automationapp.IssueService
+	// AutomationAudit 提供规则日志（自动化行为审计）分页查询用例。
+	AutomationAudit *automationapp.AuditService
 	// AutomationRules 提供自动化规则校验、分页和持久化用例。
 	AutomationRules *automationapp.RuleService
 	// DeliveryTemplates 提供发货模板 CRUD 用例。
@@ -70,6 +73,8 @@ type TransportApplicationServices struct {
 	PublishAutomationRules *automationapp.PublishRuleService
 	// DefaultReplies 提供默认回复配置与投递记录用例。
 	DefaultReplies *defaultreplyapp.Service
+	// ItemGreetings 提供商品首次回复规则用例。
+	ItemGreetings *itemgreetingapp.Service
 	// Keywords 提供关键词和指定商品回复规则用例。
 	Keywords *keywordsapp.Service
 	// RuntimeLogs 提供管理员运行日志查询用例。
@@ -107,6 +112,7 @@ func NewTransportApplicationServices(options TransportApplicationServiceOptions)
 		NotificationChannels:   notificationsapp.NewChannelService(options.MiscDependencies.NewNotificationChannelRepository(), options.ChannelSender),
 		Analytics:              analyticsapp.NewService(options.MiscDependencies.NewAnalyticsRepository()),
 		AutomationIssues:       automationapp.NewIssueService(automationRepository),
+		AutomationAudit:        automationapp.NewAuditService(automationRepository),
 		AutomationRules:        automationapp.NewRuleService(automationRepository, automationRepository),
 		DeliveryTemplates:      deliveryapp.NewService(options.AutomationDependencies.NewDeliveryTemplateRepository()),
 		Cards:                  cardsapp.NewService(options.MiscDependencies.NewCardsRepository()),
@@ -114,6 +120,7 @@ func NewTransportApplicationServices(options TransportApplicationServiceOptions)
 		APICardTester:          options.MiscDependencies.NewAPICardTester(slog.Default()),
 		PublishAutomationRules: automationapp.NewPublishRuleService(automationRepository),
 		DefaultReplies:         defaultreplyapp.NewService(options.AutomationDependencies.NewDefaultReplyRepository()),
+		ItemGreetings:          itemgreetingapp.NewService(options.AutomationDependencies.NewItemGreetingRepository()),
 		Keywords:               keywordsapp.NewService(options.AutomationDependencies.NewKeywordRepository()),
 		RuntimeLogs:            logsapp.NewService(options.RuntimeLogSource),
 	}
@@ -129,7 +136,7 @@ func (services *TransportApplicationServices) Validate() error {
 	if services == nil {
 		return fmt.Errorf("transport 应用服务集合不能为空")
 	}
-	if services.Settings == nil || services.Admin == nil || services.AccountTasks == nil || services.UncertainNotifications == nil || services.NotificationChannels == nil || services.Analytics == nil || services.AutomationIssues == nil || services.AutomationRules == nil || services.DeliveryTemplates == nil || services.Cards == nil || services.Fulfillment == nil || services.APICardTester == nil || services.PublishAutomationRules == nil || services.DefaultReplies == nil || services.Keywords == nil || services.RuntimeLogs == nil {
+	if services.Settings == nil || services.Admin == nil || services.AccountTasks == nil || services.UncertainNotifications == nil || services.NotificationChannels == nil || services.Analytics == nil || services.AutomationIssues == nil || services.AutomationAudit == nil || services.AutomationRules == nil || services.DeliveryTemplates == nil || services.Cards == nil || services.Fulfillment == nil || services.APICardTester == nil || services.PublishAutomationRules == nil || services.DefaultReplies == nil || services.ItemGreetings == nil || services.Keywords == nil || services.RuntimeLogs == nil {
 		return fmt.Errorf("transport 应用服务集合存在未装配服务")
 	}
 	return nil

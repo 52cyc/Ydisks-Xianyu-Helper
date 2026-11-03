@@ -24,8 +24,10 @@ import (
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	fulfillmentapp "xianyu-go/internal/application/fulfillment"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	libraryapp "xianyu-go/internal/application/library"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
 	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
@@ -117,6 +119,8 @@ type Services struct {
 	analytics *analyticsapp.Service
 	// automationIssues 是自动化异常查询与人工处理应用服务。
 	automationIssues *automationapp.IssueService
+	// automationAudit 是规则日志（自动化行为审计）分页查询应用服务。
+	automationAudit *automationapp.AuditService
 	// automationRules 是自动化规则校验、分页和持久化应用服务。
 	automationRules *automationapp.RuleService
 	// deliveryTemplates 是发货模板 CRUD 应用服务。
@@ -131,6 +135,10 @@ type Services struct {
 	publishAutomationRules *automationapp.PublishRuleService
 	// defaultReplies 是默认回复配置与投递记录应用服务。
 	defaultReplies *defaultreplyapp.Service
+	// itemGreetings 是商品首次回复规则应用服务。
+	itemGreetings *itemgreetingapp.Service
+	// library 是本地资源库（图片库、商品模板、模板发布预检）应用服务。
+	library *libraryapp.Service
 	// keywords 是关键词规则与指定商品回复应用服务。
 	keywords *keywordsapp.Service
 	// settings 是系统、用户和账号 AI 设置应用服务。
@@ -341,6 +349,7 @@ type TransportPorts struct {
 	NotificationChannels        *notificationsapp.ChannelService
 	Analytics                   *analyticsapp.Service
 	AutomationIssues            *automationapp.IssueService
+	AutomationAudit             *automationapp.AuditService
 	AutomationRules             *automationapp.RuleService
 	DeliveryTemplates           *deliveryapp.Service
 	Cards                       *cardsapp.Service
@@ -350,9 +359,12 @@ type TransportPorts struct {
 	APICardTester          cardsapp.APIRequestTester
 	PublishAutomationRules *automationapp.PublishRuleService
 	DefaultReplies         *defaultreplyapp.Service
-	Keywords               *keywordsapp.Service
-	Settings               *settingsapp.Service
-	Admin                  *adminapp.Service
+	ItemGreetings          *itemgreetingapp.Service
+	// Library 是本地资源库应用服务。
+	Library  *libraryapp.Service
+	Keywords *keywordsapp.Service
+	Settings *settingsapp.Service
+	Admin    *adminapp.Service
 	// RuntimeLogs 是管理员运行日志查询用例。
 	RuntimeLogs *logsapp.Service
 }
@@ -373,8 +385,8 @@ func (services *Services) TransportPorts() TransportPorts {
 		AccountLongLogin: services.accountLongLogin, AccountSettings: services.accountSettings, AccountRuntime: services.accountRuntime,
 		AccountSummaries: services.accountSummaries, AccountTasks: services.accountTasks, Chat: services.chat,
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
-		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
-		Cards: services.cards, Fulfillment: services.fulfillment, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
+		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationAudit: services.automationAudit, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
+		Cards: services.cards, Fulfillment: services.fulfillment, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies, ItemGreetings: services.itemGreetings, Library: services.library,
 		Keywords: services.keywords, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
 	}
 }
@@ -482,24 +494,20 @@ func New(dependencies Dependencies) (*Services, error) {
 		return nil, fmt.Errorf("构造账号登录创建服务失败: %w", accountLoginCreateErr)
 	}
 	// accountQRLogin 是扫码成功凭证持久化应用服务的构造结果；零值测试 Server 暂不装配数据库端口。
-	var accountQRLogin *accountapp.QRLoginService
-	if dependencies.AccountDependencies != nil {
-		// accountQRLoginErr 保存扫码应用服务装配失败原因。
-		var accountQRLoginErr error
-		accountQRLogin, accountQRLoginErr = accountapp.NewQRLoginService(dependencies.AccountDependencies.NewQRLoginRepository(), loginLifecycle)
-		if accountQRLoginErr != nil {
-			return nil, fmt.Errorf("构造扫码登录服务失败: %w", accountQRLoginErr)
-		}
+	accountQRLogin, accountQRLoginErr := buildQRLoginApplication(dependencies, loginLifecycle)
+	if accountQRLoginErr != nil {
+		return nil, accountQRLoginErr
 	}
 	// qrSessionRegistry 将扫码会话所有权、过期回收和幂等结果放在应用边界内。
 	qrSessionRegistry := accountapp.NewQRLoginSessionRegistry()
-	// catalogServices、catalogServicesErr 分别是商品目录服务集合及其组合期错误。
-	catalogServices, catalogServicesErr := buildItemCatalogServices(dependencies, sessionRecovery)
-	if catalogServicesErr != nil {
-		return nil, catalogServicesErr
+	// catalogServices、libraryService、catalogErr 分别是商品目录服务集合、本地资源库服务及其组合期错误。
+	catalogServices, libraryService, catalogErr := buildCatalogAndLibrary(dependencies, sessionRecovery, batchServices.preview)
+	if catalogErr != nil {
+		return nil, catalogErr
 	}
 	// services 是完成构造后只读注入 Server 的应用服务集合。
 	services := &Services{
+		library:                     libraryService,
 		lifecycleContext:            dependencies.LifecycleContext,
 		qrLogin:                     dependencies.QRLogin,
 		platformCredentials:         platformCredentials,
@@ -545,7 +553,9 @@ func New(dependencies Dependencies) (*Services, error) {
 		apiCardTester:          dependencies.TransportApplications.APICardTester,
 		publishAutomationRules: dependencies.TransportApplications.PublishAutomationRules,
 		automationIssues:       dependencies.TransportApplications.AutomationIssues,
+		automationAudit:        dependencies.TransportApplications.AutomationAudit,
 		defaultReplies:         dependencies.TransportApplications.DefaultReplies,
+		itemGreetings:          dependencies.TransportApplications.ItemGreetings,
 		keywords:               dependencies.TransportApplications.Keywords,
 		settings:               dependencies.TransportApplications.Settings,
 		admin:                  dependencies.TransportApplications.Admin,
@@ -558,6 +568,19 @@ func New(dependencies Dependencies) (*Services, error) {
 	}
 	services.authentication = authentication
 	return services, nil
+}
+
+// buildQRLoginApplication 按 dependencies 中的可选账号仓储装配扫码服务，沿用 lifecycle 收口登录；未装配时返回空服务，构造失败保留原错误。
+func buildQRLoginApplication(dependencies Dependencies, lifecycle *adapter.AccountLoginLifecycle) (*accountapp.QRLoginService, error) {
+	if dependencies.AccountDependencies == nil {
+		return nil, nil
+	}
+	// service、err 保存扫码服务及构造错误，尚未启动任何外部登录。
+	service, err := accountapp.NewQRLoginService(dependencies.AccountDependencies.NewQRLoginRepository(), lifecycle)
+	if err != nil {
+		return nil, fmt.Errorf("构造扫码登录服务失败: %w", err)
+	}
+	return service, nil
 }
 
 // buildChatApplication 复用运行时组合根预先创建的聊天应用；旧测试构造路径仍按原依赖现场创建。

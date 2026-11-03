@@ -25,14 +25,14 @@ updateAccountSettings,
 updateAccountStatus,
 updateAccountTaskSettings,
 } from './accounts/api';
-import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
+import { appendCardData,batchCreateCards,createCard,deleteCard,exportCard,getCardDetails,getCardSaleRecords,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
 import { getChatMessagePage,getChatMessages,getChatSessionPage,getChatSessions,markChatRead,sendChatImage,sendChatMessage } from './chat/api';
 import { getDashboardStats,getOrderAnalytics,getValidOrders } from './dashboard/api';
 import { cancelItemPublishBatch,createItem,deleteItem,deleteItemPublishBatch,getItemDetail,getItemPublishBatch,getItemPublishBatches,getItems,previewItemPublishBatch,publishItem,recommendPublishCategory,retryFailedItemPublishBatch,startItemPublishBatch,syncItemsFromAccount,updateItem } from './items/api';
 import { createNotificationChannel,deleteAccountNotifications,deleteMessageNotification,deleteNotificationChannel,getAccountBindings,getMessageNotifications,getNotificationChannel,getNotificationChannels,setAccountBindings,setMessageNotification,testNotificationChannel,updateNotificationChannel,updateSystemSettings as updateNotificationSystemSettings } from './notifications/api';
 import { OrderRefreshStillRunningError } from './orders/refreshErrors';
-import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDetail,getOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
-import { clearDefaultReplyRecords,deleteDefaultReply,deleteReplyRule,deleteShippingRule,getAutomationIssues,getDefaultReplies,getDefaultReply,getReplyRules,getShippingRules,getShippingRulesPage,resolveAutomationRun,resolveDeferredAutomationTask,updateDefaultReply,updateReplyRule,updateShippingRule } from './rules/api';
+import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDeliveredCards,getOrderDetail,getOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
+import { clearDefaultReplyRecords,clearItemGreetingRecords,deleteDefaultReply,deleteItemGreeting,getItemGreetings,saveItemGreeting,deleteReplyRule,deleteShippingRule,getAutomationIssues,getDefaultReplies,getDefaultReply,getReplyRules,getShippingRules,getShippingRulesPage,resolveAutomationRun,resolveDeferredAutomationTask,updateDefaultReply,updateReplyRule,updateShippingRule } from './rules/api';
 import { initializeAdmin,login,logout,verifySession } from './session/api';
 import { changePassword,fetchAIModels,getSystemSettings,updateLoginCredentials,updateSystemSettings } from './settings/api';
 import { getHealth } from './system/api';
@@ -1002,9 +1002,39 @@ test('默认回复 API 补齐空字段默认值', /* 当前回调验证默认回
     .mockResolvedValueOnce(jsonResponse({ enabled: false }))
     .mockResolvedValueOnce(jsonResponse({ success: true }));
   stubContractFetch(fetchMock);
-  await expect(getDefaultReply('account-1')).resolves.toEqual({ cookie_id: 'account-1', enabled: false, reply_content: '', reply_once: false, reply_image_url: '' });
+  await expect(getDefaultReply('account-1')).resolves.toEqual({ cookie_id: 'account-1', enabled: false, reply_content: '', reply_once: false, reply_image_url: '', reply_library_image_id: 0 });
   await updateDefaultReply('account-1', {});
-  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ enabled: false, reply_content: '', reply_once: false, reply_image_url: '' });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ enabled: false, reply_content: '', reply_once: false, reply_image_url: '', reply_library_image_id: 0 });
+});
+
+test('商品首次回复 API 归一规则并使用版本化路径', /* 当前回调验证列表归一、创建、更新、删除和清理记录的请求形状。 */ async () => {
+  // fetchMock 依次响应列表、创建、更新、删除和清理请求。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse([{ id: 3, cookie_id: 'a1', enabled: true, item_ids: ['i1', 5, 'i2'] }, null]))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: false, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ success: true }))
+    .mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await expect(getItemGreetings('a1')).resolves.toEqual([
+    { id: 3, cookie_id: 'a1', name: '', enabled: true, reply_content: '', reply_image_url: '', reply_library_image_id: 0, item_ids: ['i1', 'i2'] },
+    { id: 0, cookie_id: '', name: '', enabled: false, reply_content: '', reply_image_url: '', reply_library_image_id: 0, item_ids: [] },
+  ]);
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/reply-rules/greetings?cookie_id=a1');
+  // draft 是创建与更新共用的规则草稿。
+  const draft = { id: 0, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', reply_library_image_id: 0, item_ids: ['i1'] };
+  await expect(saveItemGreeting(draft)).resolves.toMatchObject({ id: 4 });
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/reply-rules/greetings');
+  expect(fetchMock.mock.calls[1][1].method).toBe('POST');
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', reply_library_image_id: 0, item_ids: ['i1'] });
+  await expect(saveItemGreeting({ ...draft, id: 4, enabled: false })).resolves.toMatchObject({ enabled: false });
+  expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/reply-rules/greetings/4');
+  expect(fetchMock.mock.calls[2][1].method).toBe('PUT');
+  await deleteItemGreeting(4);
+  expect(fetchMock.mock.calls[3][0]).toBe('/api/v1/reply-rules/greetings/4');
+  expect(fetchMock.mock.calls[3][1].method).toBe('DELETE');
+  await clearItemGreetingRecords('a1');
+  expect(fetchMock.mock.calls[4][0]).toBe('/api/v1/reply-rules/greetings/clear-records/a1');
 });
 
 test('updateReplyRule preserves keyword image metadata when saving text edits', async () => {
@@ -1019,7 +1049,7 @@ test('updateReplyRule preserves keyword image metadata when saving text edits', 
     credentials: 'include',
   }));
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1'], type: 'text', image_url: '', library_image_id: 0,
   });
 
 } /* 测试回调验证：updateReplyRule preserves keyword image metadata when saving text edits。 */);
@@ -1032,7 +1062,7 @@ test('updateReplyRule sends every selected item id for multi-select rules', asyn
 
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '', library_image_id: 0,
   });
 } /* 测试回调验证：多选规则保存为一条规则并提交全部关联商品。 */);
 
@@ -1047,9 +1077,26 @@ test('createReplyRule keeps multi-select items in one rule request', async () =>
     credentials: 'include',
   }));
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '稍后安排', item_id: 'item-1', item_ids: ['item-1', 'item-2'], type: 'text', image_url: '', library_image_id: 0,
   });
 } /* 测试回调验证：新建多选规则只提交一次请求。 */);
+
+test('图片库图片与外链互斥：关键词、默认回复、首次回复和卡密请求只提交图片库主键', async () => {
+  // fetchMock 记录各适配器发出的请求体。
+  const fetchMock = vi.fn().mockImplementation(/* 每次调用返回新的响应对象，避免响应体被重复读取。 */ async () => jsonResponse({ success: true, id: 1, cookie_id: 'a1', name: 'n', enabled: true, reply_content: '', reply_image_url: '', reply_library_image_id: 4, item_ids: [] }));
+  stubContractFetch(fetchMock);
+
+  await updateReplyRule({ id: '42', keyword: '图', type: 'image', image_url: 'https://stale/x.png', library_image_id: 4 }, 'acc1');
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ type: 'image', image_url: '', library_image_id: 4 });
+  await updateReplyRule({ id: '42', keyword: '文', type: 'text', reply_content: 'hi', library_image_id: 4 }, 'acc1');
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ type: 'text', image_url: '', library_image_id: 0 });
+  await updateDefaultReply('acc1', { enabled: true, reply_image_url: 'https://stale/x.png', reply_library_image_id: 4 });
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({ reply_image_url: '', reply_library_image_id: 4 });
+  await saveItemGreeting({ id: 0, cookie_id: 'a1', name: 'n', enabled: true, reply_content: '', reply_image_url: 'https://stale/x.png', reply_library_image_id: 4, item_ids: ['i1'] });
+  expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toMatchObject({ reply_image_url: '', reply_library_image_id: 4 });
+  await createCard({ name: '图', type: 'image', image_url: 'https://stale/x.png', library_image_id: 4 });
+  expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toMatchObject({ type: 'image', image_url: '', library_image_id: 4 });
+} /* 测试回调验证：图片库图片与外链互斥地提交。 */);
 
 test('updateReplyRule clears stale content when switching reply type', async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true })); /* fetchMock 表示fetchMock。 */
@@ -1057,7 +1104,7 @@ test('updateReplyRule clears stale content when switching reply type', async () 
 
   await updateReplyRule({ id: '42', keyword: '发货', type: 'image', image_url: 'https://img.example/new.png' }, 'acc1');
   expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/new.png',
+    keyword: '发货', expressions: ['发货'], match_type: 'contains', reply: '', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/new.png', library_image_id: 0,
   });
 } /* 测试回调验证：updateReplyRule clears stale content when switching reply type。 */);
 
@@ -1913,4 +1960,71 @@ test('API 卡密编辑走专用接口，测试携带卡密标识及保留模板�
   await testCardAPI({ url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: '{"order_id":"{order_id}"}', body: '{}', retry_enabled: true }, 3, { signal: controller.signal });
   expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/cards/test-api', expect.objectContaining({ method: 'POST' }));
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ card_id: 3, api_config: { url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: { order_id: '{order_id}' }, body: {}, retry_enabled: true, content_type: 'application/json' } });
+});
+
+// 用例：校验售出记录与导出 adapter 的版本化路径、时间归一化与下载文件名解析。
+test('卡密售出记录与导出 adapter 使用版本化路径、归一化时间并解析下载文件名', async () => {
+  // fetchMock 依次返回售出记录分页、未售导出文件和已售导出文件。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({
+      success: true, total: 2, page: 2, page_size: 5, total_pages: 0,
+      data: [
+        { id: 2, card_id: 7, card_name: '组A', card_type: 'data', content: 'K1', status: 'sold', cookie_id: 'acc1', order_id: 'o1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 200 },
+        { id: 1, card_id: 7, card_name: '组A', card_type: 'data', content: 'K2', status: 'reserved', cookie_id: 'acc1', order_id: 'o2', item_id: 'i2', buyer_id: 'b2', created_at: 100, sold_at: 0 },
+      ],
+    }))
+    .mockResolvedValueOnce(new Response('K3\n', { status: 200, headers: { 'Content-Type': 'text/plain', 'Content-Disposition': "attachment; filename*=utf-8''%E7%BB%84A-%E6%9C%AA%E5%94%AE.txt" } }))
+    .mockResolvedValueOnce(new Response('csv', { status: 200, headers: { 'Content-Type': 'text/csv' } }));
+  stubContractFetch(fetchMock);
+
+  // page 是归一后的 UI 分页模型，总页数至少为 1，待核对记录回退使用扣库存时间。
+  const page = await getCardSaleRecords(7, { status: 'sold', search: ' o1 ', page: 2, pageSize: 5 });
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/cards/7/sale-records?status=sold&search=o1&page=2&page_size=5');
+  expect(page.total).toBe(2);
+  expect(page.totalPages).toBe(1);
+  expect(page.records[0]).toMatchObject({ id: 2, content: 'K1', status: 'sold', orderId: 'o1', soldAtMs: 200_000 });
+  expect(page.records[1]).toMatchObject({ status: 'reserved', soldAtMs: 100_000 });
+
+  // unsold 是带中文文件名响应头的未售导出；sold 没有响应头，使用兜底文件名。
+  const unsold = await exportCard(7, 'unsold');
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/cards/7/export?scope=unsold');
+  expect(unsold.filename).toBe('组A-未售.txt');
+  expect(await unsold.blob.text()).toBe('K3\n');
+  // sold 保存已售范围导出的文件结果，用于断言文件名与内容类型。
+  const sold = await exportCard(7, 'sold');
+  expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/cards/7/export?scope=sold');
+  expect(sold.filename).toBe('sold-cards.csv');
+
+  // 空筛选条件不应出现在查询串中。
+  fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, total: 0, page: 1, page_size: 20, total_pages: 0, data: [] }));
+  await getCardSaleRecords(7, { status: '', search: '  ', page: 1, pageSize: 20 });
+  expect(fetchMock.mock.calls[3][0]).toBe('/api/v1/cards/7/sale-records?page=1&page_size=20');
+});
+
+// 用例：导出失败必须抛出统一 ApiError，不能返回空文件。
+test('卡密导出失败时抛出统一 ApiError 而不是返回空文件', async () => {
+  // errorBody 是统一错误 envelope；jsonResponse 固定返回 200，因此这里直接构造 400 响应。
+  const errorBody = JSON.stringify({ success: false, code: 'bad_request', message: '只有 data（批量卡密）类型支持追加卡密' });
+  stubContractFetch(vi.fn().mockResolvedValue(new Response(errorBody, { status: 400, headers: { 'content-type': 'application/json' } })));
+  await expect(exportCard(7, 'unsold')).rejects.toMatchObject({ status: 400 });
+});
+
+// 用例：订单已发卡密 adapter 使用版本化路径并把秒级时间归一为毫秒。
+test('getOrderDeliveredCards 使用版本化路径并把秒级时间归一为毫秒', /* 订单已发卡密 adapter 用例回调。 */ async () => {
+  // fetchMock 返回一条已售和一条待核对的已发卡密。
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+    success: true,
+    data: [
+      { id: 2, card_id: 7, card_name: '组A', card_type: 'data', content: 'K1', status: 'sold', cookie_id: 'acc1', order_id: 'o 1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 200 },
+      { id: 1, card_id: 7, card_name: '接口', card_type: 'api', content: 'K2', status: 'reserved', cookie_id: 'acc1', order_id: 'o 1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 0 },
+    ],
+  }));
+  stubContractFetch(fetchMock);
+  // cards 是归一后的 UI 模型。
+  const cards = await getOrderDeliveredCards('o 1');
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/orders/o%201/delivered-cards');
+  expect(cards).toEqual([
+    { id: 2, content: 'K1', status: 'sold', cardName: '组A', deliveredAtMs: 200_000 },
+    { id: 1, content: 'K2', status: 'reserved', cardName: '接口', deliveredAtMs: 100_000 },
+  ]);
 });

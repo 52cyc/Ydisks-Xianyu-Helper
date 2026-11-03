@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"xianyu-go/internal/db"
@@ -30,6 +31,7 @@ func (r automationRunCoordinator) prepareRunAction(ctx context.Context, task Tas
 			if deferErr := r.deferTask(ctx, task, dueAt.Unix()); deferErr != nil { // deferErr 是延迟任务写入失败原因。
 				return task, false, deferErr
 			}
+			r.audit.queued(ctx, task, run.ID, ruleID, fmt.Sprintf("动作延迟 %d 秒后执行：%s", delaySeconds, summarizeAction(action, actionExecutionResult{})))
 			return task, true, nil
 		}
 	}

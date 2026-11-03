@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 )
 
 // Keyword 对应 keywords 表，并把兼容的首表达式和完整表达式集合一起提供给运行时。
@@ -25,6 +24,8 @@ type Keyword struct {
 	Type string
 	// ImageURL 是图片回复地址。
 	ImageURL string
+	// LibraryImageID 是图片库图片主键；与 ImageURL 互斥，0 表示未使用图片库。
+	LibraryImageID int64
 }
 
 // decodeKeywordExpressions 从 JSON 文本读取表达式集合；非法或空数据回退兼容首表达式。
@@ -122,7 +123,9 @@ type DefaultReply struct {
 	Enabled       bool
 	ReplyContent  string
 	ReplyImageURL string
-	ReplyOnce     bool
+	// ReplyLibraryImageID 是图片库图片主键；与 ReplyImageURL 互斥，0 表示未使用图片库。
+	ReplyLibraryImageID int64
+	ReplyOnce           bool
 }
 
 // DefaultReplySummary 是按账号查询默认回复列表时使用的带账号标识视图。
@@ -135,6 +138,8 @@ type DefaultReplySummary struct {
 	ReplyContent string
 	// ReplyImageURL 是默认回复图片地址。
 	ReplyImageURL string
+	// ReplyLibraryImageID 是图片库图片主键；与 ReplyImageURL 互斥，0 表示未使用图片库。
+	ReplyLibraryImageID int64
 	// ReplyOnce 表示同一聊天是否只发送一次。
 	ReplyOnce bool
 }
@@ -172,7 +177,7 @@ func (k *Keywords) AllWithType(ctx context.Context, cookieID string) ([]Keyword,
 	// rows、err 保存数据库查询结果。
 	rows, err := k.DB.QueryContext(ctx,
 		`SELECT keyword, reply, COALESCE(item_id,''), COALESCE(type,'text'), COALESCE(image_url,''),
-				COALESCE(keyword_expressions,''), COALESCE(match_type,'contains')
+				COALESCE(keyword_expressions,''), COALESCE(match_type,'contains'), library_image_id
 			 FROM keywords WHERE cookie_id=? ORDER BY LENGTH(keyword) DESC,id ASC`, cookieID)
 	if err != nil {
 		return nil, err
@@ -186,7 +191,7 @@ func (k *Keywords) AllWithType(ctx context.Context, cookieID string) ([]Keyword,
 		// rawExpressions 保存数据库中的表达式 JSON 文本。
 		var rawExpressions string
 		if // err 表示当前行扫描错误。
-		err := rows.Scan(&kw.Keyword, &kw.Reply, &kw.ItemID, &kw.Type, &kw.ImageURL, &rawExpressions, &kw.MatchType); err != nil {
+		err := rows.Scan(&kw.Keyword, &kw.Reply, &kw.ItemID, &kw.Type, &kw.ImageURL, &rawExpressions, &kw.MatchType, &kw.LibraryImageID); err != nil {
 			return nil, err
 		}
 		kw.Expressions = decodeKeywordExpressions(rawExpressions, kw.Keyword)
@@ -215,8 +220,8 @@ func (d *DefaultReplies) Get(ctx context.Context, cookieID string) (*DefaultRepl
 	var content, imageURL sql.NullString
 	// err 用于本次流程后续判断的err
 	err := d.DB.QueryRowContext(ctx,
-		`SELECT enabled, reply_content, reply_image_url, reply_once FROM default_replies WHERE cookie_id=?`,
-		cookieID).Scan(&enabled, &content, &imageURL, &replyOnce)
+		`SELECT enabled, reply_content, reply_image_url, reply_once, library_image_id FROM default_replies WHERE cookie_id=?`,
+		cookieID).Scan(&enabled, &content, &imageURL, &replyOnce, &dr.ReplyLibraryImageID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -234,15 +239,16 @@ func (d *DefaultReplies) Get(ctx context.Context, cookieID string) (*DefaultRepl
 func (d *DefaultReplies) Upsert(ctx context.Context, cookieID string, reply DefaultReply) error {
 	// err 用于本次流程后续判断的err
 	_, err := d.DB.ExecContext(ctx,
-		`INSERT INTO default_replies (cookie_id, enabled, reply_content, reply_image_url, reply_once, updated_at)
-		 VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(d.Dialect, []string{"cookie_id"}, map[string]string{
-			"enabled":         "EXCLUDED.enabled",
-			"reply_content":   "EXCLUDED.reply_content",
-			"reply_image_url": "EXCLUDED.reply_image_url",
-			"reply_once":      "EXCLUDED.reply_once",
-			"updated_at":      "CURRENT_TIMESTAMP",
+		`INSERT INTO default_replies (cookie_id, enabled, reply_content, reply_image_url, library_image_id, reply_once, updated_at)
+		 VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(d.Dialect, []string{"cookie_id"}, map[string]string{
+			"enabled":          "EXCLUDED.enabled",
+			"reply_content":    "EXCLUDED.reply_content",
+			"reply_image_url":  "EXCLUDED.reply_image_url",
+			"library_image_id": "EXCLUDED.library_image_id",
+			"reply_once":       "EXCLUDED.reply_once",
+			"updated_at":       "CURRENT_TIMESTAMP",
 		}),
-		cookieID, boolToInt(reply.Enabled), reply.ReplyContent, defaultReplyNullableString(reply.ReplyImageURL), boolToInt(reply.ReplyOnce))
+		cookieID, boolToInt(reply.Enabled), reply.ReplyContent, defaultReplyNullableString(reply.ReplyImageURL), reply.ReplyLibraryImageID, boolToInt(reply.ReplyOnce))
 	return err
 }
 
@@ -258,7 +264,7 @@ func defaultReplyNullableString(value string) any {
 func (d *DefaultReplies) ListForUser(ctx context.Context, userID int64) ([]DefaultReplySummary, error) {
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := d.DB.QueryContext(ctx, `
-		SELECT dr.cookie_id, dr.enabled, COALESCE(dr.reply_content,''), dr.reply_once, COALESCE(dr.reply_image_url,'')
+		SELECT dr.cookie_id, dr.enabled, COALESCE(dr.reply_content,''), dr.reply_once, COALESCE(dr.reply_image_url,''), dr.library_image_id
 		  FROM default_replies dr JOIN cookies c ON c.id=dr.cookie_id WHERE c.user_id=?`, userID)
 	if err != nil {
 		return nil, err
@@ -272,7 +278,7 @@ func (d *DefaultReplies) ListForUser(ctx context.Context, userID int64) ([]Defau
 		// enabled、replyOnce 用于本次流程后续判断的enabled、replyOnce
 		var enabled, replyOnce int
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&item.CookieID, &enabled, &item.ReplyContent, &replyOnce, &item.ReplyImageURL); err != nil {
+		err := rows.Scan(&item.CookieID, &enabled, &item.ReplyContent, &replyOnce, &item.ReplyImageURL, &item.ReplyLibraryImageID); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled != 0
@@ -307,118 +313,39 @@ func (d *DefaultReplies) HasRecord(ctx context.Context, cookieID, chatID string)
 	return err == nil
 }
 
-// ClaimRecord 原子领取一次默认回复投递。新记录初始化为 sending；失败记录允许继续
-// 投递尚未成功的部分；sending/pending/sent 记录会阻止并发重复发送。
-// ClaimRecord 封装ClaimRecord业务协调。
-func (d *DefaultReplies) ClaimRecord(ctx context.Context, cookieID, chatID string, needsText, needsImage bool) (DefaultReplyRecord, bool, error) {
-	// now 用于本次流程后续判断的now
-	now := time.Now().UTC().Unix()
-	// leaseExpiresAt 用于本次流程后续判断的leaseExpiresAt
-	leaseExpiresAt := now + int64((5*time.Minute)/time.Second)
-	// query 用于本次流程后续判断的查询
-	query := dialectInsertIgnorePrefix(d.Dialect) + ` INTO default_reply_records
-		(cookie_id,chat_id,status,text_sent,image_sent,last_error,lease_expires_at,updated_at)
-		VALUES (?,?, 'sending', ?, ?, '', ?, CURRENT_TIMESTAMP)` + dialectInsertIgnore(d.Dialect, []string{"cookie_id", "chat_id"})
-	// res、err 用于本次流程后续判断的res、err
-	res, err := d.DB.ExecContext(ctx, query, cookieID, chatID, boolToInt(!needsText), boolToInt(!needsImage), leaseExpiresAt)
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	if // affected 用于本次流程后续判断的affected
-	affected, _ := res.RowsAffected(); affected > 0 {
-		return DefaultReplyRecord{Status: defaultReplyStatusSending, TextSent: !needsText, ImageSent: !needsImage}, true, nil
-	}
+// onceRecords 返回账号默认回复记录表对应的一次性投递状态机。
+func (d *DefaultReplies) onceRecords() onceReplyRecords {
+	return onceReplyRecords{db: d.DB, dialect: d.Dialect, table: "default_reply_records"}
+}
 
-	// record、err 用于本次流程后续判断的record、err
-	record, err := d.Record(ctx, cookieID, chatID)
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	if record.Status == "sent" {
-		return record, false, nil
-	}
-	// pending 是旧版本发送任务的短租约。进程崩溃或强制退出后，历史 pending
-	// 记录仍可被新实例接管；新建记录使用 sending，避免未知结果自动重发。
-	res, err = d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='pending',last_error='',lease_expires_at=?,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?
-		  AND (status='failed' OR (status='pending' AND lease_expires_at<? AND COALESCE(last_error,'') NOT LIKE ?))`,
-		leaseExpiresAt, cookieID, chatID, now, uncertainReplyErrorPrefix+"%")
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	// affected 用于本次流程后续判断的affected
-	affected, _ := res.RowsAffected()
-	return record, affected > 0, nil
+// ClaimRecord 原子领取一次默认回复投递；语义见 onceReplyRecords.ClaimRecord。
+func (d *DefaultReplies) ClaimRecord(ctx context.Context, cookieID, chatID string, needsText, needsImage bool) (DefaultReplyRecord, bool, error) {
+	return d.onceRecords().ClaimRecord(ctx, cookieID, chatID, needsText, needsImage)
 }
 
 // Record 查询一次默认回复的投递状态。
 func (d *DefaultReplies) Record(ctx context.Context, cookieID, chatID string) (DefaultReplyRecord, error) {
-	// record 用于本次流程后续判断的record
-	var record DefaultReplyRecord
-	// textSent、imageSent 用于本次流程后续判断的文本Sent、imageSent
-	var textSent, imageSent int
-	// err 用于本次流程后续判断的err
-	err := d.DB.QueryRowContext(ctx, `SELECT status,text_sent,image_sent
-		FROM default_reply_records WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).
-		Scan(&record.Status, &textSent, &imageSent)
-	record.TextSent = textSent != 0
-	record.ImageSent = imageSent != 0
-	return record, err
+	return d.onceRecords().Record(ctx, cookieID, chatID)
 }
 
 // MarkPartSent 标记图片或文字已经成功投递。
 func (d *DefaultReplies) MarkPartSent(ctx context.Context, cookieID, chatID, part string) error {
-	// column 用于本次流程后续判断的column
-	column := ""
-	switch part {
-	case "text":
-		column = "text_sent"
-	case "image":
-		column = "image_sent"
-	default:
-		return errors.New("未知默认回复部分")
-	}
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records SET `+column+`=1,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?`, cookieID, chatID)
-	return err
+	return d.onceRecords().MarkPartSent(ctx, cookieID, chatID, part)
 }
 
-// MarkRecordFailed 封装MarkRecord失败业务协调。
+// MarkRecordFailed 标记确定未送达的失败状态，允许后续继续投递。
 func (d *DefaultReplies) MarkRecordFailed(ctx context.Context, cookieID, chatID, message string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='failed',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, message, cookieID, chatID)
-	return err
+	return d.onceRecords().MarkRecordFailed(ctx, cookieID, chatID, message)
 }
 
 // MarkRecordUncertain 隔离可能已经发送但未得到可靠本地确认的默认回复，避免自动重发。
 func (d *DefaultReplies) MarkRecordUncertain(ctx context.Context, cookieID, chatID, message string) error {
-	// err 保存将一次性回复转换为人工核对状态时的数据库错误。
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='uncertain',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, message, cookieID, chatID)
-	if err == nil {
-		return nil
-	}
-	// fallbackMessage 保存无法写入 uncertain 状态时仍可持久化的隔离标记。
-	fallbackMessage := uncertainReplyErrorPrefix + message
-	// fallbackErr 保存降级为 pending 隔离记录时的数据库错误。
-	_, fallbackErr := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='pending',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, fallbackMessage, cookieID, chatID)
-	if fallbackErr == nil {
-		return nil
-	}
-	return errors.Join(err, fallbackErr)
+	return d.onceRecords().MarkRecordUncertain(ctx, cookieID, chatID, message)
 }
 
-// MarkRecordSent 封装MarkRecordSent业务协调。
+// MarkRecordSent 标记完整回复已经投递完成。
 func (d *DefaultReplies) MarkRecordSent(ctx context.Context, cookieID, chatID string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='sent',last_error='',lease_expires_at=0,replied_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?`, cookieID, chatID)
-	return err
+	return d.onceRecords().MarkRecordSent(ctx, cookieID, chatID)
 }
 
 // AddRecord 记录已回复（reply_once 防重复）。

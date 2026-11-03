@@ -63,6 +63,10 @@ export default defineConfig({
       output: {
         // manualChunks 按依赖领域拆分生产构建文件，控制首屏资源体积。
         manualChunks(id) {
+          // 库存台账弹窗与下载交互独立分片，避免增加卡密页已有主分片预算。
+          if (id.includes('/app/features/cards/components/CardStockDialog.') || id.includes('/app/features/cards/saleRecords.')) {
+            return 'card-stock-dialog';
+          }
           // modulePath 是统一分隔符后的模块绝对路径，用于稳定匹配依赖目录。
           const modulePath = id.split(path.sep).join('/');
           // 聊天接口适配器在列表、发送和未知结果收口之间复用。

@@ -166,20 +166,13 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 	}); err != nil {
 		return task, fmt.Errorf("保存自动化准备阶段订单事实: %w", err)
 	}
-	// needsDetail 表示付款发货或显式待付款货源跟价需要读取真实规格、数量和订单金额。
-	needsDetail := task.TriggerType == TriggerOrderPaid || task.RequireOrderDetail
+	// needsDetail 首先保留货源跟价的显式按需查询，再判断付款事实缺失是否需要补全。
+	needsDetail := task.RequireOrderDetail
 	// existing、err 分别保存当前本地订单事实和查询错误；查询不可用时继续按平台详情路径补全。
 	if existing, err := c.store.Orders.Get(ctx, task.OrderID); err == nil && existing != nil {
 		task = mergeOrderIntoTask(task, existing)
-		if needsDetail && (existing.Quantity == "" || existing.Amount == "") {
-			needsDetail = true
-		}
-		// 规则是否多规格由 action.config_json 决定；这里无法提前知道命中的 action，
-		// 因此交易类事件统一补齐规格，确保后续规格映射有事实依据。
-		if needsDetail && (existing.SpecName == "" || existing.SpecValue == "") {
-			needsDetail = true
-		}
 	}
+	needsDetail = needsDetail || task.TriggerType == TriggerOrderPaid && !paidOrderFactsComplete(task)
 	// fetcher 是构造期固定的订单详情查询器；执行过程中不允许替换依赖。
 	fetcher := c.dependencies.fetcher
 	if !needsDetail || fetcher == nil {
@@ -252,6 +245,12 @@ func (c *Center) prepareTask(ctx context.Context, task Task) (Task, error) {
 		return task, fmt.Errorf("保存订单详情事实: %w", err)
 	}
 	return task, requireReliablePaidQuantity(task)
+}
+
+// paidOrderFactsComplete 判断付款发货所需数量、金额和完整规格是否齐全，避免恢复时重复平台查询。
+func paidOrderFactsComplete(task Task) bool {
+	return requireReliablePaidQuantity(task) == nil && strings.TrimSpace(task.Amount) != "" &&
+		strings.TrimSpace(task.SpecName) != "" && strings.TrimSpace(task.SpecValue) != ""
 }
 
 // requireReliablePaidQuantity 要求付款发货在执行外部动作前已可靠取得正整数购买数量。

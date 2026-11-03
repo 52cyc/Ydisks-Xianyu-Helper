@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"strings"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/logging"
 )
 
 // automationRunCompensationTimeout 限制动作取消后的状态补偿写入时间，避免安全收口无限等待数据库。
@@ -30,6 +29,8 @@ type automationRunCoordinator struct {
 	planner actionPlanner
 	// logger 记录运行状态收口和检查点异常。
 	logger *slog.Logger
+	// audit 记录运行创建、动作结果和终态的审计事件；零值为空操作。
+	audit auditRecorder
 	// prepareTask 在创建或恢复运行前补全订单事实和凭证上下文。
 	prepareTask func(context.Context, Task) (Task, error)
 	// actionDelaySeconds 计算当前动作的有效延迟时间。
@@ -52,6 +53,8 @@ type automationRunCoordinator struct {
 	notifyExternalFailure func(context.Context, Task, db.AutomationRule, bool) error
 	// preflightExternalFulfillment 在任何外部采购动作前校验直接付款订单的实时成本和最低利润。
 	preflightExternalFulfillment func(context.Context, Task, []db.AutomationAction) error
+	// orderDetailAvailable 判断是否配置了订单详情查询器；为 nil 或返回 false 时金额缺失无从补全，不据此拦截发货。
+	orderDetailAvailable func() bool
 }
 
 // executeRule 创建或恢复一次自动化运行，并统一处理运行成功、失败、延期和人工核对结果；resultErr 返回动作执行或结果收口错误。
@@ -68,6 +71,17 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 		return errors.New("自动化运行记录缺失，已停止执行外部动作")
 	}
 	task = preparedTask
+	// 把运行关联标识挂到 ctx：动作执行中的 MTOP 请求、发卡、通知等下游日志无需逐处传参即可按 run_id 串联。
+	ctx = logging.With(ctx,
+		slog.Int64("run_id", run.ID),
+		slog.String("account", task.AccountID),
+		slog.String("order_id", task.OrderID),
+		slog.String("trigger", string(task.TriggerType)),
+		slog.Int64("rule_id", rule.ID),
+	)
+	// runStarted 是本次运行开始执行动作的时刻，用于输出运行耗时。
+	runStarted := time.Now()
+	r.audit.record(ctx, task, auditEvent{eventType: auditEventRunStarted, status: db.AuditStatusRunning, ruleID: rule.ID, runID: run.ID, summary: fmt.Sprintf("开始执行，共 %d 个动作", len(task.ActionPlan))})
 	// status 是运行完成时写入数据库的结果状态。
 	status := "success"
 	// errMsg 是运行完成时记录的可重试或人工核对原因。
@@ -123,18 +137,10 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 		if r.hasNotifier() && notifyTerminal {
 			r.notifyResult(finishCtx, task, run.ID, status, sent, errMsg)
 		}
-		if finishErr == nil && status == "failed" && externalFailureDetected && r.notifyExternalFailure != nil {
-			if finalRun != nil && finalRun.NextRetryAt == 0 {
-				if noticeErr := r.notifyExternalFailure(finishCtx, task, rule, safePriceFailureDetected); noticeErr != nil { // noticeErr 是买家提示发送或防重状态保存失败原因。
-					r.logger.Error("发送外部采购最终失败提示失败", "run_id", run.ID, "order_id", task.OrderID, "err", noticeErr)
-					resultErr = errors.Join(resultErr, fmt.Errorf("发送外部采购最终失败提示: %w", noticeErr))
-				}
-			}
+		if finishErr == nil && status == "failed" && externalFailureDetected {
+			resultErr = errors.Join(resultErr, r.notifyExternalTerminalFailure(finishCtx, task, rule, finalRun, safePriceFailureDetected))
 		}
-		if status == "success" {
-			r.logger.Info("自动化规则执行成功", "run_id", run.ID, "account", task.AccountID,
-				"order_id", task.OrderID, "trigger", task.TriggerType, "sent_count", sent)
-		}
+		r.logRunTerminal(ctx, task, rule.ID, run.ID, status, sent, errMsg, runStarted)
 	}()
 	// actions 是当前规则生成的完整动作计划。
 	actions := task.ActionPlan
@@ -170,6 +176,8 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, actionErr.Error())
 			notifyCancel()
 		}
+		r.logger.ErrorContext(ctx, "自动化规则转人工核对", "status", "needs_review", "sent_count", sent, "duration", time.Since(runStarted).Round(time.Millisecond), "reason", actionErr.Error())
+		r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, actionErr.Error())
 		return actionErr
 	}
 	if actionErr != nil {
@@ -193,16 +201,12 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
+			r.logger.ErrorContext(ctx, "自动化规则转人工核对", "status", "needs_review", "sent_count", sent, "duration", time.Since(runStarted).Round(time.Millisecond), "reason", reason)
+			r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, reason)
 			return fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 		}
 		status, errMsg = "failed", actionErr.Error()
-		if externalFailureDetected && externalFailure.noRetry {
-			errMsg = db.NoRetryErrorPrefix + errMsg
-		} else if errors.Is(actionErr, errExternalFulfillmentPending) {
-			errMsg = db.ExternalWaitErrorPrefix + errMsg
-		} else if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
-			errMsg = db.SafeRetryErrorPrefix + errMsg
-		}
+		errMsg = actionFailureRetryMessage(actionErr, externalFailure)
 		return actionErr
 	}
 	if task.TriggerType == TriggerReviewMissingTimeout && task.OrderID != "" {
@@ -227,6 +231,8 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
+			r.logger.ErrorContext(ctx, "自动化规则转人工核对", "status", "needs_review", "sent_count", sent, "duration", time.Since(runStarted).Round(time.Millisecond), "reason", reason)
+			r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, reason)
 			return fmt.Errorf("%w: %v", errAutomationNeedsReview, incrementErr)
 		}
 	}
@@ -257,9 +263,21 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 			blockedReason = paidDeliveryBlockedReason(order)
 		}
 	}
+	// amountBlocked 表示拦截来自成交金额门禁：服务预约单等 ¥0 订单仍是待发货状态，必须与订单状态拦截区分处理。
+	amountBlocked := false
+	if blockedReason == "" && preparedTask.TriggerType == TriggerOrderPaid && preparedTask.OrderID != "" {
+		// 金额取准备阶段合并本地订单与平台详情后的事实；详情补全后仍缺失或不为正数时一律不发货。
+		blockedReason = paidAmountBlockedReason(preparedTask.Amount)
+		if blockedReason == reasonOrderAmountMissing && (r.orderDetailAvailable == nil || !r.orderDetailAvailable()) {
+			// 没有详情查询器时无法补全金额，保持原有行为；有查询器却补全后仍无金额，则按无法证明为正数处理。
+			blockedReason = ""
+		}
+		amountBlocked = blockedReason != ""
+	}
 	if blockedReason != "" && taskAutomationRunID(preparedTask) == 0 {
-		// 迟到的付款事件或延期重放遇到已结束订单时只记录，不创建运行也不触发任何外部动作。
-		r.logger.Info("订单已不再待发货，跳过付款自动发货", "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason, "source", preparedTask.Source)
+		// 迟到的付款事件、延期重放或零金额订单只记录，不创建运行也不触发任何外部动作。
+		r.logger.Info("订单不满足付款自动发货条件，跳过", "amount_blocked", amountBlocked, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason, "source", preparedTask.Source)
+		r.audit.skipped(ctx, preparedTask, "订单不满足付款自动发货条件："+blockedReason)
 		return preparedTask, nil, true, nil
 	}
 	// triggerKey 是用于幂等创建运行的稳定事件键，缺失时安全跳过外部动作。
@@ -280,6 +298,17 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 		if existingRun.Status != "running" || existingRun.RuleID != rule.ID {
 			return preparedTask, nil, true, nil
 		}
+		if amountBlocked && existingRun.SentCount == 0 && existingRun.ActionCursor == 0 && !existingRun.ActionStarted {
+			// 零金额订单仍是待发货状态，条件取消不会生效；尚无外部副作用的运行直接以取消终态收口，且不发送人工通知。
+			cancelReason := "订单金额不是正数（" + blockedReason + "），不自动发货"
+			// finishErr 保存零进度运行收口为取消状态的错误；失败时延期重试，不放行外部动作。
+			if finishErr := r.store.Automation.FinishRun(ctx, existingRun.ID, existingRun.AttemptCount, "canceled", 0, cancelReason); finishErr != nil {
+				return Task{}, nil, false, &preparationError{err: fmt.Errorf("取消零金额付款运行: %w", finishErr)}
+			}
+			r.logger.Info("订单金额不是正数，取消尚未执行动作的付款运行", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
+			r.audit.runFinished(ctx, preparedTask, rule.ID, existingRun.ID, db.AuditStatusCanceled, 0, cancelReason)
+			return preparedTask, nil, true, nil
+		}
 		if blockedReason != "" && existingRun.SentCount == 0 && existingRun.ActionCursor == 0 && !existingRun.ActionStarted {
 			// 尚未产生任何外部副作用的运行可以安全取消；已有进度的运行保留发货凭证，继续交给原恢复与人工核对链路。
 			cancelReason := "订单状态为 " + blockedReason + "，不再需要自动发货"
@@ -288,6 +317,7 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 				return Task{}, nil, false, fmt.Errorf("取消已失效付款运行: %w", cancelErr)
 			}
 			r.logger.Info("订单已不再待发货，取消尚未执行动作的付款运行", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
+			r.audit.runFinished(ctx, preparedTask, rule.ID, existingRun.ID, db.AuditStatusCanceled, 0, cancelReason)
 			return preparedTask, nil, true, nil
 		}
 		if blockedReason == "order_shipped" || blockedReason == "order_completed" || blockedReason == "system_shipped" {
@@ -299,12 +329,16 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 				return Task{}, nil, false, fmt.Errorf("取消已失效付款运行: %w", cancelErr)
 			}
 			r.logger.Info("订单已发货或完成，取消已有进度的付款运行", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
+			r.audit.runFinished(ctx, preparedTask, rule.ID, existingRun.ID, db.AuditStatusCanceled, existingRun.SentCount, cancelReason)
 			return preparedTask, nil, true, nil
 		}
 		if blockedReason != "" {
 			// 已有发货进度的运行遇到订单取消、退款或部分发货时，剩余的发卡、模板与确认发货都不应再执行；
 			// 已发出的内容需要人工核对，因此停止自动重放并发送独立的人工处理通知。
 			reason := "订单状态为 " + blockedReason + "，付款发货已有进度，已停止自动重放，请人工核对"
+			if amountBlocked {
+				reason = "订单金额不是正数（" + blockedReason + "），付款发货已有进度，已停止自动重放，请人工核对"
+			}
 			// quarantineCtx 保证人工核对状态在请求取消后仍能落库。
 			quarantineCtx, quarantineCancel := newAutomationRunCompensationContext(ctx)
 			// quarantineErr 保存人工核对状态写入错误；失败时延期重试，不放行外部动作。
@@ -314,6 +348,7 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 				return Task{}, nil, false, &preparationError{err: fmt.Errorf("订单已结束且付款运行已有进度，保存人工核对状态失败: %w", quarantineErr)}
 			}
 			r.logger.Warn("订单已结束但付款运行已有进度，转人工核对", "run_id", existingRun.ID, "account", preparedTask.AccountID, "order_id", preparedTask.OrderID, "reason", blockedReason)
+			r.audit.runFinished(ctx, preparedTask, rule.ID, existingRun.ID, db.AuditStatusNeedsReview, existingRun.SentCount, reason)
 			if r.hasNotifier() {
 				// notifyCtx 保证人工核对通知在请求取消后仍能进入通知链路。
 				notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
@@ -347,6 +382,7 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 	}
 	if !started {
 		// 同一规则的同一事件已由其他投递处理或已完成，不能把空运行记录交给执行阶段。
+		r.audit.skipped(ctx, preparedTask, "同一规则的同一事件已处理，重复事件已忽略")
 		return preparedTask, nil, true, nil
 	}
 	// createdRun 是重新读取的完整运行状态，包含动作游标和累计发送数。
@@ -355,158 +391,6 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 		return Task{}, nil, false, getErr
 	}
 	return preparedTask, createdRun, false, nil
-}
-
-// continueUncertainActionEnv 控制「消息动作结果不确定时是否放行后续幂等状态动作」：默认开启，显式设为 "0" 时恢复整链熔断。
-// 保留开关是为了在行为出乎预期时能快速止血，而不必回滚二进制。
-const continueUncertainActionEnv = "XIANYU_CONTINUE_AFTER_UNCERTAIN"
-
-// uncertainActionState 保存「消息动作结果不确定但已放行后续幂等状态动作」的待收口信息。
-// 这类运行仍必须收口为人工核对，只是不再把与买家无关的状态动作一并牺牲。
-type uncertainActionState struct {
-	// reason 是写入人工核对记录的原因文本。
-	reason string
-	// proof 是需要加密落库的发货凭证，供人工核对远端发送结果。
-	proof *db.AutomationDeliveryProof
-	// sent 是截至放行时已确认完成的动作数量。
-	sent int
-	// err 是原始的不确定动作错误，用于最终错误链。
-	err error
-}
-
-// continueAfterUncertainActionEnabled 返回当前进程是否允许在消息动作结果不确定时继续执行幂等状态动作。
-func continueAfterUncertainActionEnabled() bool {
-	return strings.TrimSpace(os.Getenv(continueUncertainActionEnv)) != "0"
-}
-
-// canContinueAfterUncertainAction 判断剩余动作是否全部为「不触碰买家、且平台侧幂等」的状态动作。
-// 只有这类动作才允许在无法确认前序消息是否送达时继续执行：它们不会再次向买家发送内容，
-// 重复调用也只会收到平台的「已发货」幂等响应。
-func canContinueAfterUncertainAction(remaining []db.AutomationAction) bool {
-	if len(remaining) == 0 {
-		return false
-	}
-	// action 是剩余动作中的一个，需要逐个确认它是否为平台侧幂等的发货状态动作。
-	for _, action := range remaining {
-		if action.ActionType != ActionConfirmShipment {
-			return false
-		}
-	}
-	return true
-}
-
-// pendingUncertaintyReasonKey 与 pendingUncertaintyErrorKey 是任务快照里记录「待人工核对」的键。
-// 剩余动作可能带延迟：延迟任务被持久化后本次调用的内存状态会丢失，只能靠快照把人工核对收口带过延迟。
-const (
-	pendingUncertaintyReasonKey = "automation_pending_review_reason"
-	pendingUncertaintyErrorKey  = "automation_pending_review_error"
-)
-
-// restorePendingUncertaintyForRun 从任务快照恢复待人工核对状态，并把已确认数量对齐到当前运行。
-// 没有标记时返回 nil，表示本次运行为全新事件而不是延迟重放。
-func restorePendingUncertaintyForRun(task Task, sent int) *uncertainActionState {
-	// restored 保存从任务快照恢复出的待收口状态；非空时已确认的发送数量取当前运行的计数。
-	restored := restorePendingUncertainty(task)
-	if restored == nil {
-		return nil
-	}
-	restored.sent = sent
-	return restored
-}
-
-// markPendingUncertainty 把「消息动作结果不确定，仍需人工核对」写入任务快照，
-// 使带延迟的收尾动作被持久化后，恢复时仍能收口为人工核对而不是被记为成功。
-// 必须传入任务指针：Raw 为空时需要就地创建映射，按值传参会把新映射丢在副本里。
-func markPendingUncertainty(task *Task, reason string, actionErr error) {
-	if task == nil {
-		return
-	}
-	if task.Raw == nil {
-		task.Raw = map[string]any{}
-	}
-	task.Raw[pendingUncertaintyReasonKey] = reason
-	if actionErr != nil {
-		task.Raw[pendingUncertaintyErrorKey] = actionErr.Error()
-	}
-}
-
-// restorePendingUncertainty 从任务快照恢复待人工核对状态；没有标记时返回 nil。
-// 凭证不在此处恢复：放行时已通过 AdvanceRunAction 落库，恢复路径会从运行记录重新装载。
-func restorePendingUncertainty(task Task) *uncertainActionState {
-	if task.Raw == nil {
-		return nil
-	}
-	// reason 保存放行时写入的人工核对原因；为空说明本次调用没有待收口状态。
-	reason, _ := task.Raw[pendingUncertaintyReasonKey].(string)
-	if strings.TrimSpace(reason) == "" {
-		return nil
-	}
-	// errText 保存原始不确定错误文本；恢复时用它还原错误链，人工核对页面才能看到原因。
-	errText, _ := task.Raw[pendingUncertaintyErrorKey].(string)
-	return &uncertainActionState{reason: reason, err: errors.New(errText)}
-}
-
-// tryContinueAfterUncertain 尝试在消息动作结果不确定时放行后续幂等状态动作。
-// 参数 task 是本次运行的任务快照（放行时会把待核对原因写入其中，指针语义）；
-// ctx 是调用方取消边界；run 提供运行 ID 与代次号；ruleID 仅用于日志定位；
-// cursor 是不确定动作在冻结计划中的下标；actions 是完整冻结计划；
-// actionResult 是本动作已明确产生的外部结果；sentPlusN 是截至本动作已确认的动作数量；
-// reason 是人工核对原因文本；proofInput 是需要加密保留的凭证；
-// deliveryProof 是已成功投递凭证的汇总；actionErr 是原始的不确定错误。
-// 返回的待收口状态非空表示已放行，调用方必须继续执行剩余动作并在循环结束时收口为人工核对；
-// 返回的凭证是放行后应继续携带的汇总。返回错误表示检查点推进失败，调用方必须立刻把该错误
-// 作为运行结果返回：此时函数已按原有熔断语义写好人工核对记录，不留中间态。
-func (r automationRunCoordinator) tryContinueAfterUncertain(
-	task *Task,
-	ctx context.Context,
-	run *db.AutomationRun,
-	ruleID int64,
-	cursor int,
-	actions []db.AutomationAction,
-	actionResult actionExecutionResult,
-	sentPlusN int,
-	reason string,
-	proofInput *db.AutomationDeliveryProof,
-	deliveryProof shipmentDeliveryProof,
-	actionErr error,
-) (*uncertainActionState, shipmentDeliveryProof, error) {
-	if !continueAfterUncertainActionEnabled() || !canContinueAfterUncertainAction(actions[cursor+1:]) {
-		return nil, deliveryProof, nil
-	}
-	// 调用方上下文已取消（例如扫描预算耗尽）时不能再放行后续状态动作：检查点推进与确认发货都会因取消失败，
-	// 运行会停留在 running。此时直接沿用整链熔断，由调用方用独立补偿上下文收口为人工核对。
-	if ctx.Err() != nil {
-		return nil, deliveryProof, nil
-	}
-	// 放行前必须排除「确定未执行」这一类失败：发送前就被拒绝、或本地补取与库存恢复失败时，
-	// 买家并没有收到任何内容（例如库存在恢复失败后仍处于占用状态），此时把订单改判为已发货
-	// 只会掩盖本地不一致，必须维持整链熔断。判据与 executeRule 对确定未执行的处理保持一致。
-	if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
-		return nil, deliveryProof, nil
-	}
-	r.logger.Warn("消息动作结果不确定，放行后续幂等状态动作", "run_id", run.ID, "rule_id", ruleID, "cursor", cursor, "remaining_actions", len(actions)-cursor-1, "err", actionErr)
-	// advance 推进游标并保留已产生的发货凭证，但本次动作不计入已确认数量。
-	advance := db.AutomationRunActionAdvance{RunID: run.ID, Attempt: run.AttemptCount, Cursor: cursor, SentDelta: actionResult.sent}
-	if proofInput != nil {
-		advance.DeliveryProof = proofInput
-	}
-	// advanceErr 保存推进动作检查点的写入错误；非空时退回原有熔断语义。
-	if advanceErr := r.store.Automation.AdvanceRunAction(ctx, advance); advanceErr != nil {
-		// 游标推进失败时退回原有熔断语义，避免留下无法解释的中间态。
-		r.logger.Error("放行幂等状态动作时推进检查点失败", "run_id", run.ID, "cursor", cursor, "err", advanceErr)
-		// quarantineErr 保存写入人工核对结果的错误；非空时随其他错误一并上报。
-		if quarantineErr := r.store.Automation.QuarantineRunResultWithProof(ctx, run.ID, run.AttemptCount, sentPlusN, reason, proofInput); quarantineErr != nil {
-			r.logger.Error("保存不确定动作人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
-			return nil, deliveryProof, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
-		}
-		return nil, deliveryProof, fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
-	}
-	// 放行成功后补齐本动作已产生的凭证，供后续状态动作作为发货凭证提交。
-	deliveryProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
-	deliveryProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.reviewProof)
-	// 待核对原因必须同时写入任务快照：收尾动作带延迟时本次调用会先返回，恢复只能凭快照继续收口。
-	markPendingUncertainty(task, reason, actionErr)
-	return &uncertainActionState{reason: reason, proof: proofInput, sent: sentPlusN, err: actionErr}, deliveryProof, nil
 }
 
 // executeRunActions 按动作游标执行计划，并在每个外部动作前后保存检查点。
@@ -580,6 +464,12 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 		if actionErr != nil {
 			// uncertain 标记外部系统可能已经执行动作但本地无法确认的错误。
 			var uncertain *uncertainActionError
+			// failedStatus 区分明确失败与结果不确定：后者买家可能已收到内容，需要人工核对。
+			failedStatus := db.AuditStatusFailed
+			if n > 0 || errors.As(actionErr, &uncertain) {
+				failedStatus = db.AuditStatusNeedsReview
+			}
+			r.audit.record(ctx, task, auditEvent{eventType: auditEventActionFailed, status: failedStatus, ruleID: ruleID, runID: run.ID, actionType: action.ActionType, summary: summarizeAction(action, actionResult), reason: actionErr.Error()})
 			if n > 0 || errors.As(actionErr, &uncertain) {
 				// reason 说明外部动作结果未知时为何必须隔离运行。
 				reason := "外部动作可能已部分或全部执行，已禁止自动重放，请人工核对: " + actionErr.Error()
@@ -682,6 +572,7 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 			}
 			return sent + n, false, fmt.Errorf("%w: %v", errAutomationNeedsReview, err)
 		}
+		r.audit.record(ctx, task, auditEvent{eventType: auditEventActionSucceeded, status: db.AuditStatusSuccess, ruleID: ruleID, runID: run.ID, actionType: action.ActionType, summary: summarizeAction(action, actionResult)})
 		sent += n
 		if proofChanged {
 			deliveryProof = nextProof
