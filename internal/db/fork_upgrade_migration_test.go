@@ -104,7 +104,7 @@ func exerciseReleasedForkUpgrade(t *testing.T, legacyVersion int64) {
 		query string
 		want  int
 	}{
-		{`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`, 64},
+		{`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`, 65},
 		{`SELECT COUNT(*) FROM goose_db_version WHERE version_id BETWEEN 57 AND 59 AND is_applied=1`, 3},
 		{`SELECT COUNT(*) FROM goose_db_version WHERE version_id BETWEEN 60 AND 64 AND is_applied=1`, 5},
 		{`SELECT COUNT(*) FROM ai_reply_settings WHERE cookie_id='fork-account' AND ai_mode='bargain_only'`, 1},

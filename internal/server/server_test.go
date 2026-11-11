@@ -388,7 +388,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		UncertainNotifications: ports.UncertainNotifications, NotificationChannels: ports.NotificationChannels, Analytics: ports.Analytics,
 		AutomationIssues: ports.AutomationIssues, AutomationAudit: ports.AutomationAudit, AutomationRules: ports.AutomationRules, Cards: ports.Cards, Fulfillment: ports.Fulfillment,
 		DeliveryTemplates:      ports.DeliveryTemplates,
-		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, ItemGreetings: ports.ItemGreetings, Library: ports.Library, Keywords: ports.Keywords,
+		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, ItemGreetings: ports.ItemGreetings, AgentReplies: ports.AgentReplies, Library: ports.Library, Keywords: ports.Keywords,
 		Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs, DataBackup: testDataBackupPort{},
 	})}
 }

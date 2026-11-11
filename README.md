@@ -7,7 +7,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](compose.yml)
 [![正式发布](https://github.com/Christ9038/Ydisks-Xianyu-Helper/actions/workflows/release.yml/badge.svg)](https://github.com/Christ9038/Ydisks-Xianyu-Helper/actions/workflows/release.yml)
 
-[功能特性](#功能特性) · [快速开始](#快速开始) · [配置说明](#配置说明) ·
+[在线手册](https://xianyu.ydisks.com/manual/) · [功能特性](#功能特性) · [快速开始](#快速开始) · [配置说明](#配置说明) ·
 [Docker 部署](#docker-部署) · [开发指南](#开发指南) · [开源协议](#开源协议)
 
 操作手册见仓库内的 [GitHub Wiki 文档](docs/wiki/Home.md)：包含数据库选择、账号接入、

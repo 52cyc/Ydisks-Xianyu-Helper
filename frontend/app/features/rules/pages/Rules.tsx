@@ -11,6 +11,7 @@ import {
   ScrollText,
   Layers3,
   MessageCircle,
+  Network,
   Plus,
   RefreshCw,
   Save,
@@ -22,6 +23,7 @@ import {
 } from "lucide-react";
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import AgentReplyPanel from '../components/AgentReplyPanel';
 import ItemGreetingPanel from '../components/ItemGreetingPanel';
 import { ImageSourceField } from '../../../../shared/ui/ImageSourceField';
 import { PageHeader } from '../../../../shared/ui/PageHeader';
@@ -479,7 +481,7 @@ const Rules: React.FC<RulesProps> = ({
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             刷新
           </button>
-          {activeTab !== 'greeting' && activeTab !== 'logs' && (
+          {activeTab !== 'greeting' && activeTab !== 'agent' && activeTab !== 'logs' && (
           <button
             onClick={
               activeTab === "automation"
@@ -506,6 +508,7 @@ const Rules: React.FC<RulesProps> = ({
           { id: 'reply' as const, label: '关键词回复', icon: MessageCircle },
           { id: 'default' as const, label: '账号默认回复', icon: Bot },
           { id: 'greeting' as const, label: '商品首次回复', icon: Gift },
+          { id: 'agent' as const, label: 'Agent 回复', icon: Network },
           { id: 'logs' as const, label: '规则日志', icon: ScrollText },
         ].map(/* 当前回调处理用户交互或异步状态变化。 */ tab => {
           // Icon 渲染Icon React 组件。
@@ -1066,6 +1069,8 @@ const Rules: React.FC<RulesProps> = ({
       )}
 
       {activeTab === 'greeting' && <ItemGreetingPanel accountID={selectedAccountId} libraryImageChooser={libraryImageChooser} />}
+
+      {activeTab === 'agent' && <AgentReplyPanel accountID={selectedAccountId} />}
 
       {activeTab === 'logs' && (
         AuditPanel ? (

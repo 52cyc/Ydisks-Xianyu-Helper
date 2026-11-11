@@ -16,15 +16,15 @@ All three databases run embedded migrations automatically at application startup
 ## Docker + PostgreSQL (recommended)
 
 1. Copy configuration: `cp .env.example .env`.
-2. Edit `.env` and set at least `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `XIANYU_DATA_KEY`, and `XIANYU_ADMIN_PASSWORD`.
+2. Edit `.env`. `compose.yml` requires `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `XIANYU_DATA_KEY`, and `XIANYU_ADMIN_PASSWORD` to all have values; `docker compose` aborts if any is missing. Keep the host `postgres` from the example in `DATABASE_URL`; the user name, database name, and (URL-encoded) password must match the first three.
 3. Generate one long-lived random value for `XIANYU_DATA_KEY`, for example `openssl rand -base64 48`; do not change it during later upgrades.
 4. Start: `docker compose up -d`.
 5. Inspect: `docker compose ps` and `docker compose logs -f app`.
-6. Open `http://server-address:59188`. With `XIANYU_ADMIN_PASSWORD`, Compose creates `admin` automatically on first startup. Other startup methods show the initialization form when the database has no administrator; enter and confirm a password of at least eight characters.
+6. Open `http://server-address:59188` (the port comes from `XIANYU_HTTP_PORT`). Compose starts the app with `-ensure-admin` and uses `XIANYU_ADMIN_PASSWORD` to create `admin` on first startup; later restarts do not reset the password. Other startup methods show the initialization form when the database has no administrator; enter and confirm a password of at least eight characters.
 
 > Security: source and container examples using `-addr :59188` listen on all interfaces. Before initialization there is no pre-shared secret, so the first client reaching the management port can create the administrator. This convenience flow does not restrict by IP. Restrict access at the firewall, security group, or reverse proxy; for public deployments, set `XIANYU_ADMIN_PASSWORD` or initialize with `-init-admin` first.
 
-Compose injects the default connection, so a PostgreSQL URL is not required. Changing `COMPOSE_PROJECT_NAME` changes the new volume prefix; keep the existing `.env` during upgrades to avoid accidentally using an empty new volume.
+`compose.yml` injects the `DATABASE_URL` from `.env` into the app container; the value in `.env.example` already points to the `postgres` service inside Compose (`sslmode=disable`). Data lives in three named volumes: `postgres_data`, `app_data` (`/app/data`), and `browser_data` (`/app/browser_data`). Changing `COMPOSE_PROJECT_NAME` changes the new volume prefix; keep the existing `.env` during upgrades to avoid accidentally using an empty new volume.
 
 Automatic renewal in Docker uses the Linux-native browser fingerprint detected by Chromium inside the container when requesting Xianyu. It does not skip silent renewal just because the host is Linux. The result still depends on the Xianyu response and account login state.
 
@@ -32,7 +32,7 @@ The source service defaults to `-addr :59188` and listens on all interfaces. Doc
 
 ## Versions, images, and releases
 
-Git tags are the source of release versions. A release tag must use the `v1.2.3` format and point to a commit already included in `main`.
+Git tags are the source of release versions. A release tag must use the `v1.2.3` format, point to a commit already included in `main`, and be the highest release-tag version in the repository (an older version tag is rejected so it cannot overwrite `latest`).
 
 After a release tag is pushed, `.github/workflows/release.yml` builds desktop packages and Docker images from that tag; it does not reuse artifacts built earlier from `main`. After build, Chromium launch, and `/health` checks pass, the `production-release` Environment still requires manual approval. Only after approval does the workflow create the GitHub Release, upload packages and `SHA256SUMS`, and update release image tags.
 
@@ -47,7 +47,7 @@ Docker tags:
 
 The current Docker workflow has a branch-push entry only for `dev`; `main` does not build a branch image but remains the base branch for release tags. `latest` changes only during approved release publication, not on every `dev` commit. Pin production to `v1.2.3`, `1.2.3`, or a SHA tag; Compose uses `latest` by default.
 
-Formal Windows and macOS package releases still require the corresponding signing-certificate Secrets. Without them, those platforms fail at signing. Linux packages do not require desktop signing certificates.
+The Windows and macOS signing steps in the desktop CI (`desktop-cd.yml`, which runs on `dev` pushes, manual dispatch, and formal releases) require the corresponding signing-certificate Secrets. Without them, those platform builds fail at signing. Linux packages do not require desktop signing certificates.
 
 ## Standalone packages
 
@@ -55,11 +55,13 @@ Standalone packages and Docker use the same Playwright Chromium source. Chromium
 
 | Platform | Installation | Service identifier | Default URL |
 | --- | --- | --- | --- |
-| Linux amd64/arm64 | Extract and run `./install.sh` as root | `ydisks-xianyu-helper.service` | `http://127.0.0.1:59188` |
-| Windows | Run the Inno Setup installer | `YdisksXianyuHelper` | `http://127.0.0.1:59188` |
+| Linux amd64/arm64 | Extract and run `./install.sh` as root (systemd required) | `ydisks-xianyu-helper.service` | `http://127.0.0.1:59188` |
+| Windows (x64) | Run the Inno Setup installer | `YdisksXianyuHelper` | `http://127.0.0.1:59188` |
 | macOS arm64/amd64 | Run the package for the matching architecture | `com.ydisks.xianyu-helper.server` | `http://127.0.0.1:59188` |
 
-Windows and macOS packages also install an independent tray/menu-bar controller. It shows checking, starting, healthy, and stopping states; starts, stops, and restarts the backend; opens the log directory; and waits for confirmed shutdown before exiting. During Windows installation, the interactive user receives permission to query, start, and stop this service, so normal tray actions do not repeatedly show UAC. Changing service configuration or deleting the service still requires administrator rights. Linux has no desktop tray; use systemd and `journalctl -u ydisks-xianyu-helper.service`.
+Windows and macOS packages also install an independent tray/menu-bar controller (on macOS, the `com.ydisks.xianyu-helper.tray` LaunchAgent). It shows checking, starting, healthy, and stopping states; starts, stops, and restarts the backend; opens the log directory; and waits for confirmed shutdown before exiting. During Windows installation, the interactive user receives permission to query, start, and stop this service, so normal tray actions do not repeatedly show UAC. Changing service configuration or deleting the service still requires administrator rights. The Windows service is registered as delayed-automatic start. Linux has no desktop tray; use systemd (`systemctl status ydisks-xianyu-helper.service`).
+
+On first install the Linux script writes a randomly generated `XIANYU_DATA_KEY` and `LOG_FORMAT=json` to `/etc/ydisks-xianyu-helper/config.env` (mode 0600), without overwriting an existing file. The systemd unit reads it through `EnvironmentFile`; that key takes precedence over `-data-key-file`, so back it up and migrate it together with the data. The script also runs `browser-install -deps-only` to install the system libraries Chromium needs (set `XIANYU_SKIP_BROWSER_DEPS=1` to skip).
 
 Data and log locations are `C:\ProgramData\YdisksXianyuHelper` on Windows, `~/Library/Application Support/YdisksXianyuHelper` and `~/Library/Logs/YdisksXianyuHelper` on macOS, and `/var/lib/ydisks-xianyu-helper` and `/var/log/ydisks-xianyu-helper` on Linux. Select a CPU-matching arm64 or amd64 package on macOS. Install Linux packages on the same architecture as the host; the installer does not use QEMU.
 
@@ -79,17 +81,17 @@ For Intel macOS, replace `arm64` with `amd64` and prepare the matching x64 runti
 
 ## Desktop logs and operations
 
-Windows and macOS tray menus can start, stop, or restart the backend, open the management page, and open the log directory. Choosing Exit Tray stops the backend first, preventing an unmanaged background process. The Windows installer configures the service’s minimum control permission once. A normal interactive user can later query, start, and stop `YdisksXianyuHelper` from the tray without another UAC prompt; changing configuration, deleting the service, and controlling other services still require administrator rights.
+Windows and macOS tray menus show the service status and offer Open Management Page, Open Log Directory, Start Service, Stop Service, Restart Service, and Exit Tray (the Chinese menu labels are “打开管理页面”, “打开日志目录”, “启动服务”, “停止服务”, “重启服务”, “退出托盘”). Choosing Exit Tray stops the backend first, preventing an unmanaged background process. The Windows installer configures the service’s minimum control permission once. A normal interactive user can later query, start, and stop `YdisksXianyuHelper` from the tray without another UAC prompt; changing configuration, deleting the service, and controlling other services still require administrator rights.
 
-- Windows: `C:\ProgramData\YdisksXianyuHelper\logs\server.log`
+- Windows: `C:\ProgramData\YdisksXianyuHelper\logs\server.log`, with tray output in `tray.log` in the same directory; the reason for a failed service registration is written to `service-registration-error.log` there
 - macOS: `~/Library/Logs/YdisksXianyuHelper/server.log`, with tray output in `tray.log` in the same directory
-- Linux: `/var/log/ydisks-xianyu-helper/server.log`; `journalctl -u ydisks-xianyu-helper.service` is also available
+- Linux: `/var/log/ydisks-xianyu-helper/server.log` (set through `XIANYU_LOG_DIR`); `journalctl -u ydisks-xianyu-helper.service` shows systemd start/stop records, while the application's own log is in that file
 
 For first use on desktop, open the management page and enter and confirm the administrator password on the initialization page. No database path or terminal is required.
 
 ## SQLite
 
-SQLite is suitable for development or light single-machine use. The default database path is `data/xianyu_data.db`:
+SQLite is suitable for development or light single-machine use. The default database path is `data/xianyu_data.db` relative to the working directory; on Windows and macOS, when neither `-workdir` nor `-db` is given, it automatically moves to the platform data directory (on macOS `~/Library/Application Support/YdisksXianyuHelper/data/xianyu_data.db`):
 
 ```bash
 go run ./cmd/server -db data/xianyu_data.db -addr :59188
@@ -153,3 +155,27 @@ docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 ```
 
 Upgrade order: back up the database and `.env` → pull/build the new image → `docker compose up -d` → inspect logs for successful migrations → sign in and check accounts and automation. If migration fails, stop and restore from backup rather than continuing.
+
+## Fork: Docker with SQLite
+
+For a single-host source deployment, copy `.env.sqlite.example` to `.env`, retain a stable
+`XIANYU_DATA_KEY`, set `XIANYU_ADMIN_PASSWORD`, and run:
+
+```bash
+docker compose -f compose.sqlite.yml up -d --build
+```
+
+Open the management page on localhost and sign in as `admin`. The default bind address is
+`127.0.0.1`; restrict access with a firewall or reverse proxy before using `0.0.0.0`.
+The `app_data` volume stores `/app/data/xianyu_data.db` and uploads; `browser_data` stores
+Chromium profiles. Export a backup from the management page before upgrading. Pull the
+new source and repeat the build command. Use `docker compose -f compose.sqlite.yml down`
+to stop while retaining data; never add `-v` unless deleting all volumes is intended.
+
+If downloading the Playwright driver from `registry.npmjs.org` fails with
+`x509: certificate signed by unknown authority`, check Docker proxy settings and system time.
+The build refreshes Debian CA certificates. If the official registry remains inaccessible,
+set `PLAYWRIGHT_GO_NPM_REGISTRY=https://registry.npmmirror.com` in `.env` and rebuild without cache.
+This only changes the `playwright-core` download source and retains TLS verification.
+If the mirror reports the same certificate error, install the proxy root CA in the Docker
+trust chain. Do not set `NODE_TLS_REJECT_UNAUTHORIZED=0` or disable certificate validation.

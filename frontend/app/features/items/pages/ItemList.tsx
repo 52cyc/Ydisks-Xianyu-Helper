@@ -8,10 +8,11 @@ getItemPublishBatches,
 getItems,
 getShippingRules,
 } from '../api';
-import { batchStatusClass,batchStatusText } from '../batchState';
+import { batchStatusClass,batchStatusText,toBatchFallbackCategory } from '../batchState';
 import { BatchPhaseIndicator } from '../components/BatchPhaseIndicator';
 import { ItemCloneFlow } from '../components/ItemCloneFlow';
 import { ItemLinkImportFlow } from '../components/ItemLinkImportFlow';
+import { CategoryCandidatePicker } from '../components/CategoryCandidatePicker';
 import ItemTable from '../components/ItemTable';
 import { ManualLocationPicker } from '../components/ManualLocationPicker';
 import { consumeSelectedFile } from '../fileInput';
@@ -116,6 +117,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
     batchCategoryKeyword,
     setBatchCategoryKeyword,
     batchCategoryLoading,
+    batchCategoryCandidates,
     batchFallbackCategory,
     setBatchFallbackCategory,
     batchPreview,
@@ -169,6 +171,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
     publishCategoryKeyword,
     setPublishCategoryKeyword,
     publishCategoryLoading,
+    publishCategoryCandidates,
     publishCategory,
     setPublishCategory,
     selectedItem,
@@ -657,6 +660,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
                     {publishCategoryLoading ? '匹配中...' : '获取类目'}
                   </button>
                 </div>
+                <CategoryCandidatePicker candidates={publishCategoryCandidates} selectedCatId={publishCategory?.cat_id} onSelect={setPublishCategory} />
                 {publishCategory ? (
                   <div className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm">
                     <div><span className="font-bold text-gray-900">{publishCategory.cat_name}</span><span className="ml-2 font-mono text-xs text-gray-500">{publishCategory.cat_id} · 频道 {publishCategory.channel_cat_id}</span></div>
@@ -802,6 +806,11 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
                         {batchCategoryLoading ? '匹配中...' : '获取类目'}
                       </button>
                     </div>
+                    <CategoryCandidatePicker
+                      candidates={batchCategoryCandidates}
+                      selectedCatId={batchFallbackCategory.catId}
+                      onSelect={/* 把点选的候选类目写回批量默认类目。 */ candidate => setBatchFallbackCategory(toBatchFallbackCategory(candidate))}
+                    />
                     {batchFallbackCategory.catId ? (
                       <div className="flex min-h-[46px] items-center justify-between gap-3 border-t border-amber-200 pt-3">
                         <div className="min-w-0">
